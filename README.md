@@ -1,78 +1,89 @@
 # Tunio Radio Player
 
-Приложение Flutter для Android, которое автоматически воспроизводит онлайн радио поток с поддержкой автозагрузки и устойчивости к разрывам сети.
+A Flutter application for Android and macOS that automatically plays online radio streams with auto-start functionality and network resilience.
 
-## Возможности
+## Features
 
-- **Автозагрузка**: Приложение автоматически запускается при загрузке устройства
-- **API интеграция**: Подключение к Tunio API для получения конфигурации потока
-- **Устойчивое воспроизведение**: Автоматическое переподключение при разрыве сети
-- **Буферизация**: Оптимизированная буферизация для непрерывного воспроизведения
-- **Управление громкостью**: Локальное и удаленное управление громкостью
-- **Локальное хранилище**: Сохранение API ключа для автоматического подключения
+- **Auto-start**: Application automatically launches when device boots up
+- **API Integration**: Connects to Tunio API for stream configuration
+- **Resilient Playback**: Automatic reconnection on network interruptions
+- **Buffering**: Optimized buffering for continuous playback
+- **Volume Control**: Local and remote volume management
+- **Local Storage**: API key persistence for automatic connection
+- **Cross-platform**: Supports Android and macOS
+- **Background Playback**: Continues playing when app is minimized
+- **Network Monitoring**: Real-time connectivity status tracking
 
-## Установка
+## Installation
 
-### Предварительные требования
+### Prerequisites
 
-- Flutter SDK (версия 3.4.3 или выше)
-- Android SDK
-- Android устройство или эмулятор (API level 21+)
+- Flutter SDK (version 3.4.3 or higher)
+- Android SDK for Android builds
+- Xcode for macOS builds
+- Android device or emulator (API level 21+)
+- macOS device for macOS builds
 
-### Сборка приложения
+### Building the Application
 
-1. Клонируйте репозиторий:
+1. Clone the repository:
 ```bash
 git clone <repository-url>
 cd tunio_radio_player
 ```
 
-2. Установите зависимости:
+2. Install dependencies:
 ```bash
 flutter pub get
 ```
 
-3. Соберите APK:
+3. For Android - Build APK:
 ```bash
 flutter build apk --release
 ```
 
-4. Установите на устройство:
+4. For macOS - Build app:
+```bash
+flutter build macos --release
+```
+
+5. Install on device:
 ```bash
 flutter install
 ```
 
-## Использование
+## Usage
 
-### Первичная настройка
+### Initial Setup
 
-1. Запустите приложение
-2. Введите ваш Tunio API ключ в поле "API Key"
-3. Нажмите кнопку "Connect"
-4. Приложение автоматически начнет воспроизведение при успешном подключении
+1. Launch the application
+2. Enter your Tunio API key in the "API Key" field
+3. Press the "Connect" button
+4. The app will automatically start playback upon successful connection
 
-### Управление воспроизведением
+### Playback Controls
 
-- **Play/Pause**: Используйте центральную кнопку для управления воспроизведением
-- **Громкость**: Регулируйте громкость с помощью слайдера
-- **Статус**: Мониторьте состояние подключения и воспроизведения
+- **Play/Pause**: Use the central button to control playback
+- **Volume**: Adjust volume using the slider
+- **Status**: Monitor connection and playback status through the status indicator
 
-### Автозагрузка
+### Auto-start Functionality
 
-После сохранения API ключа приложение будет:
-- Автоматически запускаться при загрузке устройства
-- Подключаться к API и начинать воспроизведение
-- Работать в фоновом режиме
+After saving the API key, the application will:
+- Automatically launch when the device boots up
+- Connect to the API and begin playback
+- Run in background mode
+- Survive network disconnections with automatic reconnection
 
-## API интеграция
+## API Integration
 
-Приложение использует Tunio API для получения конфигурации потока:
+The application uses the Tunio API to fetch stream configuration:
 
 ```
 GET https://api.tunio.ai/stream/config?token=YOUR_API_KEY
 ```
 
-Ожидаемый ответ:
+Expected response format:
 ```json
 {
   "stream_url": "http://stream.example.com:8000/stream",
@@ -82,93 +93,154 @@ GET https://api.tunio.ai/stream/config?token=YOUR_API_KEY
 }
 ```
 
-## Технические детали
+## Technical Details
 
-### Архитектура
+### Architecture
 
-- **Модели**: `StreamConfig` для конфигурации потока
-- **Сервисы**: 
-  - `ApiService` - работа с API
-  - `AudioService` - воспроизведение аудио
-  - `StorageService` - локальное хранилище
-- **Контроллеры**: `RadioController` - основная логика приложения
-- **UI**: `HomeScreen` - главный экран приложения
+The application follows a clean architecture pattern with:
 
-### Основные зависимости
+- **Models**: `StreamConfig` for stream configuration data
+- **Services**: 
+  - `ApiService` - API communication
+  - `AudioService` - audio playback management
+  - `StorageService` - local data persistence
+- **Controllers**: `RadioController` - main application logic
+- **UI**: `HomeScreen` - primary user interface
+- **Widgets**: `StatusIndicator` - connection status display
 
-- `just_audio` - аудио воспроизведение
-- `shared_preferences` - локальное хранилище
-- `http` - сетевые запросы
-- `connectivity_plus` - мониторинг сети
-- `audio_session` - управление аудио сессией
+### Key Dependencies
 
-### Устойчивость к сбоям
+- `just_audio: ^0.9.39` - Audio playback engine
+- `shared_preferences: ^2.3.2` - Local storage
+- `http: ^1.2.2` - Network requests
+- `connectivity_plus: ^6.0.5` - Network monitoring
+- `audio_session: ^0.1.21` - Audio session management
 
-- Автоматическое переподключение при потере сети
-- Максимум 10 попыток переподключения с интервалом 5 секунд
-- Буферизация для сглаживания временных перебоев
-- Обработка различных типов ошибок сети
+### Network Resilience
 
-### Разрешения Android
+- Automatic reconnection on network loss
+- Maximum 10 reconnection attempts with 5-second intervals
+- Buffering to smooth over temporary interruptions
+- Comprehensive error handling for various network scenarios
+- Real-time connectivity monitoring
 
-Приложение требует следующие разрешения:
-- `INTERNET` - доступ к интернету
-- `ACCESS_NETWORK_STATE` - мониторинг состояния сети
-- `RECEIVE_BOOT_COMPLETED` - автозагрузка
-- `WAKE_LOCK` - предотвращение перехода в спящий режим
-- `FOREGROUND_SERVICE` - фоновое воспроизведение
+### Android Permissions
 
-## Разработка
+The application requires the following Android permissions:
 
-### Структура проекта
+- `INTERNET` - Internet access
+- `ACCESS_NETWORK_STATE` - Network state monitoring
+- `ACCESS_WIFI_STATE` - WiFi state monitoring
+- `RECEIVE_BOOT_COMPLETED` - Auto-start capability
+- `WAKE_LOCK` - Prevent device sleep during playback
+- `FOREGROUND_SERVICE` - Background playback
+- `MODIFY_AUDIO_SETTINGS` - Audio configuration
+- `AUTOSTART` - Automatic startup
+- `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` - Battery optimization bypass
+
+## Development
+
+### Project Structure
 
 ```
 lib/
-├── models/
-│   └── stream_config.dart          # Модель конфигурации потока
-├── services/
-│   ├── api_service.dart           # Сервис для работы с API
-│   ├── audio_service.dart         # Сервис аудио воспроизведения
-│   └── storage_service.dart       # Сервис локального хранилища
 ├── controllers/
-│   └── radio_controller.dart      # Основной контроллер приложения
+│   └── radio_controller.dart      # Main application controller
+├── models/
+│   └── stream_config.dart         # Stream configuration model
 ├── screens/
-│   └── home_screen.dart           # Главный экран
-└── main.dart                      # Точка входа приложения
+│   └── home_screen.dart           # Primary UI screen
+├── services/
+│   ├── api_service.dart           # API communication service
+│   ├── audio_service.dart         # Audio playback service
+│   └── storage_service.dart       # Local storage service
+├── utils/
+│   ├── constants.dart             # Application constants
+│   └── logger.dart                # Logging utilities
+├── widgets/
+│   └── status_indicator.dart      # Status display widget
+└── main.dart                      # Application entry point
 ```
 
-### Добавление новых функций
+### Platform Support
 
-1. Добавьте новые модели в папку `models/`
-2. Расширьте существующие сервисы или создайте новые в `services/`
-3. Обновите контроллер для интеграции новой логики
-4. Модифицируйте UI в соответствии с новыми возможностями
+- **Android**: Full support with auto-start functionality
+- **macOS**: Full support for desktop usage
 
-## Устранение неполадок
+### Adding New Features
 
-### Проблемы с автозагрузкой
+1. Add new models in the `models/` directory
+2. Extend existing services or create new ones in `services/`
+3. Update the controller to integrate new logic
+4. Modify the UI to accommodate new features
+5. Update permissions in platform-specific manifests if needed
 
-1. Убедитесь, что приложение имеет разрешение на автозапуск в настройках Android
-2. Проверьте, что API ключ сохранен корректно
-3. В некоторых версиях Android может потребоваться отключение оптимизации батареи
+## Troubleshooting
 
-### Проблемы с воспроизведением
+### Auto-start Issues
 
-1. Проверьте интернет-соединение
-2. Убедитесь в корректности API ключа
-3. Проверьте доступность потокового URL
-4. Убедитесь, что приложение имеет аудио разрешения
+1. Ensure the app has auto-start permission in Android settings
+2. Verify the API key is saved correctly
+3. Some Android versions may require disabling battery optimization
+4. Check that the boot receiver is properly configured
 
-### Проблемы с сетью
+### Playback Issues
 
-- Приложение автоматически переподключается при восстановлении сети
-- При длительных перебоях может потребоваться ручное переподключение
-- Проверьте настройки брандмауэра и прокси
+1. Verify internet connection
+2. Confirm API key validity
+3. Check stream URL accessibility
+4. Ensure audio permissions are granted
+5. Verify audio session configuration
 
-## Лицензия
+### Network Issues
 
-[Укажите лицензию вашего проекта]
+- The app automatically reconnects when network is restored
+- Long interruptions may require manual reconnection
+- Check firewall and proxy settings
+- Verify network stability
 
-## Поддержка
+### Platform-specific Issues
 
-Для получения поддержки обращайтесь к разработчикам или создавайте issue в репозитории проекта.
+**Android:**
+- Ensure minimum API level 21
+- Check battery optimization settings
+- Verify auto-start permissions
+
+**macOS:**
+- Ensure proper entitlements are configured
+- Check network access permissions
+- Verify audio access permissions
+
+## Build Configuration
+
+### Android
+- Minimum SDK: API 21 (Android 5.0)
+- Target SDK: Latest stable
+- Supports arm64-v8a and armeabi-v7a architectures
+
+### macOS
+- Minimum version: macOS 10.14
+- Supports both Intel and Apple Silicon
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Test thoroughly on both platforms
+5. Submit a pull request
+
+## License
+
+[Specify your project license]
+
+## Support
+
+For support and issues:
+- Create an issue in the project repository
+- Contact the development team
+- Check the troubleshooting section above
+
+---
+
+**Note**: This application is designed for streaming radio content and requires a valid Tunio API key for operation.
