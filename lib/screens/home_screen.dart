@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../controllers/radio_controller.dart';
 import '../services/audio_service.dart';
+import '../services/storage_service.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -11,6 +12,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   late RadioController _controller;
+  late StorageService _storageService;
   final TextEditingController _apiKeyController = TextEditingController();
 
   String? _currentApiKey;
@@ -20,6 +22,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _currentTitle;
   bool _isConnecting = false;
   double _volume = 1.0;
+  bool _autoStartEnabled = true;
 
   @override
   void initState() {
@@ -29,6 +32,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _initializeController() async {
     _controller = await RadioController.getInstance();
+    _storageService = await StorageService.getInstance();
+
+    setState(() {
+      _autoStartEnabled = _storageService.isAutoStartEnabled();
+    });
 
     _controller.apiKeyStream.listen((apiKey) {
       if (mounted) {
@@ -117,6 +125,13 @@ class _HomeScreenState extends State<HomeScreen> {
     await _controller.setVolume(value);
   }
 
+  Future<void> _onAutoStartChanged(bool value) async {
+    setState(() {
+      _autoStartEnabled = value;
+    });
+    await _storageService.setAutoStartEnabled(value);
+  }
+
   IconData _getPlayPauseIcon() {
     switch (_audioState) {
       case AudioState.playing:
@@ -187,6 +202,25 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                         enabled: !_isConnected && !_isConnecting,
                         obscureText: true,
+                      ),
+                      const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              'Auto-start on boot',
+                              style: TextStyle(
+                                fontSize: 16,
+                                color: _isConnected ? Colors.grey : null,
+                              ),
+                            ),
+                          ),
+                          Switch(
+                            value: _autoStartEnabled,
+                            onChanged:
+                                _isConnected ? null : _onAutoStartChanged,
+                          ),
+                        ],
                       ),
                       const SizedBox(height: 16),
                       ElevatedButton.icon(
@@ -305,18 +339,40 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               const SizedBox(height: 24),
               Card(
-                color: Colors.blue.shade50,
-                child: const Padding(
-                  padding: EdgeInsets.all(12.0),
+                color: _autoStartEnabled
+                    ? Colors.green.shade50
+                    : Colors.orange.shade50,
+                child: Padding(
+                  padding: const EdgeInsets.all(12.0),
                   child: Column(
                     children: [
-                      Icon(Icons.info_outline, color: Colors.blue),
-                      SizedBox(height: 8),
+                      Icon(
+                        _autoStartEnabled
+                            ? Icons.check_circle_outline
+                            : Icons.info_outline,
+                        color: _autoStartEnabled ? Colors.green : Colors.orange,
+                      ),
+                      const SizedBox(height: 8),
                       Text(
-                        'This app will automatically start and connect when your device boots up if an API key is saved.',
+                        _autoStartEnabled
+                            ? 'Auto-start is enabled. The app will automatically start and connect when your device boots up if an API key is saved.'
+                            : 'Auto-start is disabled. The app will not start automatically on device boot.',
                         style: TextStyle(
                           fontSize: 12,
-                          color: Colors.blue,
+                          color:
+                              _autoStartEnabled ? Colors.green : Colors.orange,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Perfect for Android TV boxes and set-top boxes!',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: _autoStartEnabled
+                              ? Colors.green.shade700
+                              : Colors.orange.shade700,
+                          fontWeight: FontWeight.bold,
                         ),
                         textAlign: TextAlign.center,
                       ),
