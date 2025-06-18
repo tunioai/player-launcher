@@ -56,10 +56,6 @@ class RadioController {
       _statusMessageController.add('Audio error: $error');
     });
 
-    if (_currentApiKey != null && _currentApiKey!.isNotEmpty) {
-      await connectWithApiKey(_currentApiKey!);
-    }
-
     _isInitialized = true;
   }
 
@@ -162,8 +158,15 @@ class RadioController {
 
   Future<void> handleAutoStart() async {
     if (_currentApiKey != null && _currentApiKey!.isNotEmpty) {
-      await Future.delayed(const Duration(seconds: 2));
-      await connectWithApiKey(_currentApiKey!);
+      // Запускаем подключение в фоне, не ждем завершения
+      connectWithApiKey(_currentApiKey!).catchError((error) {
+        _statusMessageController.add('Auto-connect failed: $error');
+      });
+      // Сразу устанавливаем статус что автозапуск инициирован
+      _statusMessageController.add('Auto-connecting...');
+    } else {
+      _statusMessageController.add('Ready');
+      _connectionStatusController.add(false);
     }
   }
 

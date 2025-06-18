@@ -52,8 +52,6 @@ class _AppInitializerState extends State<AppInitializer> {
         _initializationStatus = 'Checking for auto-start...';
       });
 
-      await Future.delayed(const Duration(milliseconds: 500));
-
       await controller.handleAutoStart();
 
       setState(() {
