@@ -35,7 +35,11 @@ class ApiService {
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         Logger.info('Successfully parsed stream config: $data', 'ApiService');
-        return StreamConfig.fromJson(data);
+        print('🌐 ApiService: Raw API response: $data');
+        final streamConfig = StreamConfig.fromJson(data);
+        print(
+            '🌐 ApiService: Created StreamConfig with URL: ${streamConfig.streamUrl}');
+        return streamConfig;
       } else if (response.statusCode == 401) {
         Logger.warning('API returned 401: Invalid API key', 'ApiService');
         throw Exception('Invalid API key');

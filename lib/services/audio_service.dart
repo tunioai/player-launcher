@@ -100,28 +100,47 @@ class AudioService {
 
   Future<void> playStream(StreamConfig config) async {
     try {
+      print(
+          '🎵 AudioService: Starting playStream with URL: ${config.streamUrl}');
+      print('🎵 AudioService: Stream title: ${config.title}');
+      print('🎵 AudioService: Stream volume: ${config.volume}');
+
       _stateController.add(AudioState.loading);
 
       if (_currentStreamUrl != config.streamUrl) {
         await _audioPlayer.stop();
 
+        print(
+            '🎵 AudioService: Creating audio source for URL: ${config.streamUrl}');
+        final uri = Uri.parse(config.streamUrl);
+        print('🎵 AudioService: Parsed URI: $uri');
+        print('🎵 AudioService: URI scheme: ${uri.scheme}');
+        print('🎵 AudioService: URI host: ${uri.host}');
+        print('🎵 AudioService: URI path: ${uri.path}');
+
         final audioSource = AudioSource.uri(
-          Uri.parse(config.streamUrl),
+          uri,
           headers: {
             'User-Agent': 'TunioRadioPlayer/1.0',
             'Icy-MetaData': '1',
           },
         );
 
+        print('🎵 AudioService: Setting audio source...');
         await _audioPlayer.setAudioSource(audioSource);
         _currentStreamUrl = config.streamUrl;
+        print('🎵 AudioService: Audio source set successfully');
       }
 
       await setVolume(config.volume);
+      print('🎵 AudioService: Starting playback...');
       await _audioPlayer.play();
 
       _titleController.add(config.title);
+      print('🎵 AudioService: Playback started successfully');
     } catch (e) {
+      print('❌ AudioService: Error in playStream: $e');
+      print('❌ AudioService: Error type: ${e.runtimeType}');
       _handleError('Failed to play stream: $e');
       _scheduleReconnect();
     }

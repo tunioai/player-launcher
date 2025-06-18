@@ -25,6 +25,11 @@ class StreamConfig {
         'Parsed values - streamUrl: $streamUrl, volume: $volume, title: $title, description: $description',
         'StreamConfig');
 
+    print('📝 StreamConfig: Parsing JSON: $json');
+    print('📝 StreamConfig: Found stream_url: ${json['stream_url']}');
+    print('📝 StreamConfig: Found url: ${json['url']}');
+    print('📝 StreamConfig: Final streamUrl: $streamUrl');
+
     return StreamConfig(
       streamUrl: streamUrl,
       volume: volume,
