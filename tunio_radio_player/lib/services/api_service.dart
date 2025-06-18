@@ -11,7 +11,7 @@ class ApiService {
     if (apiKey.isEmpty) return null;
 
     try {
-      final uri = Uri.parse('$baseUrl/stream-params?token=$apiKey');
+      final uri = Uri.parse('$baseUrl/v1/stream-params?token=$apiKey');
 
       final response = await http.get(
         uri,

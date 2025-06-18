@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 import 'package:just_audio/just_audio.dart';
 import 'package:audio_session/audio_session.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
@@ -29,7 +28,7 @@ class AudioService {
   bool _isReconnecting = false;
   int _reconnectAttempts = 0;
   static const int maxReconnectAttempts = 10;
-  static const Duration reconnectInterval = Duration(seconds: 5);
+  static const Duration reconnectInterval = Duration(seconds: 10);
 
   final StreamController<AudioState> _stateController =
       StreamController<AudioState>.broadcast();
@@ -41,8 +40,10 @@ class AudioService {
   AudioService._();
 
   static Future<AudioService> getInstance() async {
-    _instance ??= AudioService._();
-    await _instance!._initialize();
+    if (_instance == null) {
+      _instance = AudioService._();
+      await _instance!._initialize();
+    }
     return _instance!;
   }
 
@@ -65,37 +66,54 @@ class AudioService {
   }
 
   Future<void> _initialize() async {
-    _audioSession = await AudioSession.instance;
-    await _audioSession.configure(const AudioSessionConfiguration.music());
+    try {
+      _audioSession = await AudioSession.instance;
+      await _audioSession.configure(const AudioSessionConfiguration.music());
 
-    _audioPlayer = AudioPlayer();
+      _audioPlayer = AudioPlayer();
 
-    _playerStateSubscription = _audioPlayer.playerStateStream.listen((state) {
-      _stateController.add(currentState);
+      _playerStateSubscription = _audioPlayer.playerStateStream.listen((state) {
+        _stateController.add(currentState);
 
-      if (state.processingState == ProcessingState.completed) {
-        _handleStreamEnd();
-      }
-    });
+        if (state.processingState == ProcessingState.completed) {
+          _handleStreamEnd();
+        }
+      });
 
-    _audioPlayer.playbackEventStream.listen((event) {
-      if (event.processingState == ProcessingState.ready) {
-        _reconnectAttempts = 0;
-        _isReconnecting = false;
-      }
-    });
-
-    _connectivitySubscription =
-        Connectivity().onConnectivityChanged.listen((results) {
-      final hasConnection = results.any((result) =>
-          result == ConnectivityResult.mobile ||
-          result == ConnectivityResult.wifi ||
-          result == ConnectivityResult.ethernet);
-
-      if (hasConnection && _currentStreamUrl != null && !_audioPlayer.playing) {
+      _audioPlayer.playbackEventStream.listen((event) {
+        if (event.processingState == ProcessingState.ready) {
+          _reconnectAttempts = 0;
+          _isReconnecting = false;
+        }
+      }, onError: (error) {
+        _handleError('Playback error: $error');
         _scheduleReconnect();
-      }
-    });
+      });
+
+      _connectivitySubscription =
+          Connectivity().onConnectivityChanged.listen((results) {
+        final hasConnection = results.any((result) =>
+            result == ConnectivityResult.mobile ||
+            result == ConnectivityResult.wifi ||
+            result == ConnectivityResult.ethernet);
+
+        if (!hasConnection &&
+            _currentStreamUrl != null &&
+            _audioPlayer.playing) {
+          _stateController.add(AudioState.error);
+        } else if (hasConnection &&
+            _currentStreamUrl != null &&
+            _reconnectAttempts > 0) {
+          final currentState = this.currentState;
+          if (currentState == AudioState.error) {
+            _scheduleReconnect();
+          }
+        }
+      });
+    } catch (e) {
+      print('AudioService initialization error: $e');
+      rethrow;
+    }
   }
 
   Future<void> playStream(StreamConfig config) async {
@@ -189,9 +207,26 @@ class AudioService {
       if (_currentStreamUrl != null) {
         _reconnectAttempts++;
         try {
+          _stateController.add(AudioState.loading);
+
+          await _audioPlayer.stop();
+
+          final audioSource = AudioSource.uri(
+            Uri.parse(_currentStreamUrl!),
+            headers: {
+              'User-Agent': 'TunioRadioPlayer/1.0',
+              'Icy-MetaData': '1',
+            },
+          );
+
+          await _audioPlayer.setAudioSource(audioSource);
+          await _audioPlayer.setVolume(_currentVolume);
           await _audioPlayer.play();
+
           _isReconnecting = false;
+          _reconnectAttempts = 0;
         } catch (e) {
+          _isReconnecting = false;
           if (_reconnectAttempts < maxReconnectAttempts) {
             _scheduleReconnect();
           } else {

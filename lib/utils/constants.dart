@@ -1,7 +1,7 @@
 class AppConstants {
   static const String appName = 'Tunio Radio Player';
   static const String apiBaseUrl = 'https://api.tunio.ai';
-  static const String streamConfigEndpoint = '/stream/config';
+  static const String streamConfigEndpoint = '/v1/stream-params';
 
   static const Duration apiTimeout = Duration(seconds: 30);
   static const Duration reconnectInterval = Duration(seconds: 5);

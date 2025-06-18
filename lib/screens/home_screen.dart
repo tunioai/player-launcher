@@ -160,169 +160,172 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    const Text(
-                      'API Configuration',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const Text(
+                        'API Configuration',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 16),
-                    TextField(
-                      controller: _apiKeyController,
-                      decoration: const InputDecoration(
-                        labelText: 'API Key',
-                        hintText: 'Enter your Tunio API key',
-                        border: OutlineInputBorder(),
+                      const SizedBox(height: 16),
+                      TextField(
+                        controller: _apiKeyController,
+                        decoration: const InputDecoration(
+                          labelText: 'API Key',
+                          hintText: 'Enter your Tunio API key',
+                          border: OutlineInputBorder(),
+                        ),
+                        enabled: !_isConnected && !_isConnecting,
+                        obscureText: true,
                       ),
-                      enabled: !_isConnected && !_isConnecting,
-                      obscureText: true,
-                    ),
-                    const SizedBox(height: 16),
-                    ElevatedButton.icon(
-                      onPressed: _isConnecting
-                          ? null
-                          : (_isConnected ? _disconnect : _connect),
-                      icon: _isConnecting
-                          ? const SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : Icon(_isConnected ? Icons.logout : Icons.login),
-                      label: Text(_isConnecting
-                          ? 'Connecting...'
-                          : (_isConnected ? 'Disconnect' : 'Connect')),
-                      style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      const SizedBox(height: 16),
+                      ElevatedButton.icon(
+                        onPressed: _isConnecting
+                            ? null
+                            : (_isConnected ? _disconnect : _connect),
+                        icon: _isConnecting
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : Icon(_isConnected ? Icons.logout : Icons.login),
+                        label: Text(_isConnecting
+                            ? 'Connecting...'
+                            : (_isConnected ? 'Disconnect' : 'Connect')),
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(height: 16),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Row(
-                      children: [
-                        Icon(
-                          Icons.radio,
-                          color: _getStatusColor(),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            _statusMessage,
-                            style: TextStyle(
-                              color: _getStatusColor(),
-                              fontWeight: FontWeight.w500,
+              const SizedBox(height: 16),
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(
+                            Icons.radio,
+                            color: _getStatusColor(),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              _statusMessage,
+                              style: TextStyle(
+                                color: _getStatusColor(),
+                                fontWeight: FontWeight.w500,
+                              ),
                             ),
                           ),
+                        ],
+                      ),
+                      if (_currentTitle != null) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          _currentTitle!,
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                          textAlign: TextAlign.center,
                         ),
                       ],
-                    ),
-                    if (_currentTitle != null) ...[
-                      const SizedBox(height: 8),
-                      Text(
-                        _currentTitle!,
-                        style: const TextStyle(
-                          fontSize: 16,
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    children: [
+                      const Text(
+                        'Playback Controls',
+                        style: TextStyle(
+                          fontSize: 18,
                           fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          ElevatedButton(
+                            onPressed: _isConnected ? _togglePlayback : null,
+                            style: ElevatedButton.styleFrom(
+                              shape: const CircleBorder(),
+                              padding: const EdgeInsets.all(16),
+                            ),
+                            child: Icon(
+                              _getPlayPauseIcon(),
+                              size: 32,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          const Icon(Icons.volume_down),
+                          Expanded(
+                            child: Slider(
+                              value: _volume,
+                              onChanged: _isConnected ? _onVolumeChanged : null,
+                              min: 0.0,
+                              max: 1.0,
+                              divisions: 20,
+                              label: '${(_volume * 100).round()}%',
+                            ),
+                          ),
+                          const Icon(Icons.volume_up),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24),
+              Card(
+                color: Colors.blue.shade50,
+                child: const Padding(
+                  padding: EdgeInsets.all(12.0),
+                  child: Column(
+                    children: [
+                      Icon(Icons.info_outline, color: Colors.blue),
+                      SizedBox(height: 8),
+                      Text(
+                        'This app will automatically start and connect when your device boots up if an API key is saved.',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.blue,
                         ),
                         textAlign: TextAlign.center,
                       ),
                     ],
-                  ],
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(height: 16),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  children: [
-                    const Text(
-                      'Playback Controls',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        ElevatedButton(
-                          onPressed: _isConnected ? _togglePlayback : null,
-                          style: ElevatedButton.styleFrom(
-                            shape: const CircleBorder(),
-                            padding: const EdgeInsets.all(16),
-                          ),
-                          child: Icon(
-                            _getPlayPauseIcon(),
-                            size: 32,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    Row(
-                      children: [
-                        const Icon(Icons.volume_down),
-                        Expanded(
-                          child: Slider(
-                            value: _volume,
-                            onChanged: _isConnected ? _onVolumeChanged : null,
-                            min: 0.0,
-                            max: 1.0,
-                            divisions: 20,
-                            label: '${(_volume * 100).round()}%',
-                          ),
-                        ),
-                        const Icon(Icons.volume_up),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const Spacer(),
-            Card(
-              color: Colors.blue.shade50,
-              child: const Padding(
-                padding: EdgeInsets.all(12.0),
-                child: Column(
-                  children: [
-                    Icon(Icons.info_outline, color: Colors.blue),
-                    SizedBox(height: 8),
-                    Text(
-                      'This app will automatically start and connect when your device boots up if an API key is saved.',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.blue,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

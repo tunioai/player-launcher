@@ -1,3 +1,5 @@
+import '../utils/logger.dart';
+
 class StreamConfig {
   final String streamUrl;
   final double volume;
@@ -12,11 +14,22 @@ class StreamConfig {
   });
 
   factory StreamConfig.fromJson(Map<String, dynamic> json) {
+    Logger.debug('Parsing StreamConfig from JSON: $json', 'StreamConfig');
+
+    final streamUrl = json['stream_url'] ?? json['url'] ?? '';
+    final volume = (json['volume'] ?? 1.0).toDouble();
+    final title = json['title'];
+    final description = json['description'];
+
+    Logger.debug(
+        'Parsed values - streamUrl: $streamUrl, volume: $volume, title: $title, description: $description',
+        'StreamConfig');
+
     return StreamConfig(
-      streamUrl: json['stream_url'] ?? json['url'] ?? '',
-      volume: (json['volume'] ?? 1.0).toDouble(),
-      title: json['title'],
-      description: json['description'],
+      streamUrl: streamUrl,
+      volume: volume,
+      title: title,
+      description: description,
     );
   }
 
