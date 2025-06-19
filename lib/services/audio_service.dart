@@ -92,6 +92,12 @@ class AudioService {
       }
     });
 
+    // Listen to error stream for enhanced error handling in just_audio 0.10.x
+    _audioPlayer.errorStream.listen((error) {
+      print('❌ AudioService: Player error: $error');
+      _handleError('Player error: ${error.message}');
+    });
+
     _audioPlayer.playbackEventStream.listen((event) {
       if (event.processingState == ProcessingState.ready) {
         print('🎵 AudioService: Stream ready');
