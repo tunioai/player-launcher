@@ -4,6 +4,7 @@ import '../controllers/radio_controller.dart';
 import '../services/audio_service.dart';
 import '../services/storage_service.dart';
 import '../services/autostart_service.dart';
+import '../widgets/code_input_widget.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -15,16 +16,15 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   late RadioController _controller;
   late StorageService _storageService;
-  final TextEditingController _apiKeyController = TextEditingController();
 
   // Focus nodes for TV remote navigation
-  final FocusNode _apiKeyFocusNode = FocusNode();
+  final FocusNode _codeFocusNode = FocusNode();
   final FocusNode _connectButtonFocusNode = FocusNode();
   final FocusNode _settingsButtonFocusNode = FocusNode();
   final FocusNode _playButtonFocusNode = FocusNode();
   final FocusNode _volumeFocusNode = FocusNode();
 
-  String? _currentApiKey;
+  String _currentCode = '';
   bool _isConnected = false;
   String _statusMessage = 'Ready';
   AudioState _audioState = AudioState.idle;
@@ -42,19 +42,15 @@ class _HomeScreenState extends State<HomeScreen> {
     _controller = await RadioController.getInstance();
     _storageService = await StorageService.getInstance();
 
-    // Проверяем, был ли запущен автозапуск
     final isAutoStarted = await AutoStartService.isAutoStarted();
     if (isAutoStarted) {
       await _controller.handleAutoStart();
     }
 
-    _controller.apiKeyStream.listen((apiKey) {
+    _controller.tokenStream.listen((token) {
       if (mounted) {
         setState(() {
-          _currentApiKey = apiKey;
-          if (apiKey != null && apiKey.isNotEmpty) {
-            _apiKeyController.text = apiKey;
-          }
+          _currentCode = token ?? '';
         });
       }
     });
@@ -97,10 +93,16 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
+  void _onCodeChanged(String code) {
+    setState(() {
+      _currentCode = code;
+    });
+  }
+
   Future<void> _connect() async {
-    if (_apiKeyController.text.trim().isEmpty) {
+    if (_currentCode.length != 6) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter API key')),
+        const SnackBar(content: Text('Please enter 6-digit code')),
       );
       return;
     }
@@ -109,8 +111,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _isConnecting = true;
     });
 
-    final success =
-        await _controller.connectWithApiKey(_apiKeyController.text.trim());
+    final success = await _controller.connectWithToken(_currentCode);
 
     if (!success && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -121,7 +122,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _disconnect() async {
     await _controller.disconnect();
-    _apiKeyController.clear();
+    setState(() {
+      _currentCode = '';
+    });
   }
 
   Future<void> _togglePlayback() async {
@@ -195,14 +198,11 @@ class _HomeScreenState extends State<HomeScreen> {
         case LogicalKeyboardKey.arrowDown:
         case LogicalKeyboardKey.arrowLeft:
         case LogicalKeyboardKey.arrowRight:
-          // D-pad navigation handled by Focus system
           break;
         case LogicalKeyboardKey.select:
         case LogicalKeyboardKey.enter:
-          // OK button pressed
           final currentFocus = FocusScope.of(context).focusedChild;
           if (currentFocus != null) {
-            // Trigger action for focused element
             if (currentFocus == _connectButtonFocusNode) {
               if (!_isConnecting) {
                 _isConnected ? _disconnect() : _connect();
@@ -219,7 +219,6 @@ class _HomeScreenState extends State<HomeScreen> {
           }
           break;
         case LogicalKeyboardKey.escape:
-          // Back button - open system launcher
           AutoStartService.openSystemLauncher();
           break;
       }
@@ -250,40 +249,23 @@ class _HomeScreenState extends State<HomeScreen> {
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
                           const Text(
-                            'API Configuration',
+                            'Connection',
                             style: TextStyle(
                               fontSize: 18,
                               fontWeight: FontWeight.bold,
                             ),
                           ),
                           const SizedBox(height: 16),
-                          TextField(
-                            controller: _apiKeyController,
-                            focusNode: _apiKeyFocusNode,
-                            autofocus: true,
-                            decoration: InputDecoration(
-                              labelText: 'API Key',
-                              hintText: 'Enter your Tunio API key',
-                              border: OutlineInputBorder(
-                                borderSide: BorderSide(
-                                  color: _apiKeyFocusNode.hasFocus
-                                      ? Colors.blue
-                                      : Colors.grey,
-                                  width: _apiKeyFocusNode.hasFocus ? 2 : 1,
-                                ),
-                              ),
-                              focusedBorder: const OutlineInputBorder(
-                                borderSide:
-                                    BorderSide(color: Colors.blue, width: 2),
-                              ),
-                            ),
-                            enabled: !_isConnected && !_isConnecting,
-                            obscureText: true,
-                            onSubmitted: (_) {
+                          CodeInputWidget(
+                            value: _currentCode,
+                            onChanged: _onCodeChanged,
+                            onSubmitted: () {
                               if (!_isConnecting && !_isConnected) {
                                 _connect();
                               }
                             },
+                            enabled: !_isConnected && !_isConnecting,
+                            focusNode: _codeFocusNode,
                           ),
                           const SizedBox(height: 16),
                           Row(
@@ -388,7 +370,8 @@ class _HomeScreenState extends State<HomeScreen> {
                               ],
                             ],
                           ),
-                          if (_currentTitle != null) ...[
+                          if (_currentTitle != null &&
+                              _currentTitle!.isNotEmpty) ...[
                             const SizedBox(height: 8),
                             Text(
                               _currentTitle!,
@@ -492,8 +475,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
-    _apiKeyController.dispose();
-    _apiKeyFocusNode.dispose();
+    _codeFocusNode.dispose();
     _connectButtonFocusNode.dispose();
     _settingsButtonFocusNode.dispose();
     _playButtonFocusNode.dispose();

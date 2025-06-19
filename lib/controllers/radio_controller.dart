@@ -17,13 +17,13 @@ class RadioController {
   Timer? _configCheckTimer;
   Timer? _retryTimer;
   StreamConfig? _currentConfig;
-  String? _currentApiKey;
+  String? _currentToken;
   bool _isInitialized = false;
   bool _autoConnectEnabled = false;
   int _retryAttempts = 0;
   int _maxRetryAttempts = -1; // -1 = бесконечные попытки
 
-  final StreamController<String?> _apiKeyController =
+  final StreamController<String?> _tokenController =
       StreamController<String?>.broadcast();
   final StreamController<bool> _connectionStatusController =
       StreamController<bool>.broadcast();
@@ -40,15 +40,17 @@ class RadioController {
     return _instance!;
   }
 
-  Stream<String?> get apiKeyStream => _apiKeyController.stream;
+  Stream<String?> get tokenStream => _tokenController.stream;
+  Stream<String?> get apiKeyStream => _tokenController.stream; // Compatibility
   Stream<bool> get connectionStatusStream => _connectionStatusController.stream;
   Stream<String> get statusMessageStream => _statusMessageController.stream;
   Stream<AudioState> get audioStateStream => _audioService.stateStream;
   Stream<String> get audioErrorStream => _audioService.errorStream;
   Stream<String?> get titleStream => _audioService.titleStream;
 
-  String? get currentApiKey => _currentApiKey;
-  bool get isConnected => _currentApiKey != null && _currentConfig != null;
+  String? get currentToken => _currentToken;
+  String? get currentApiKey => _currentToken; // Compatibility
+  bool get isConnected => _currentToken != null && _currentConfig != null;
   AudioState get audioState => _audioService.currentState;
 
   Future<void> _initialize() async {
@@ -57,16 +59,25 @@ class RadioController {
     _audioService = await AudioService.getInstance();
     _networkService = NetworkService.getInstance();
 
-    _currentApiKey = _storageService.getApiKey();
-    _apiKeyController.add(_currentApiKey);
+    _currentToken = _storageService.getToken();
+    _tokenController.add(_currentToken);
 
     _audioService.errorStream.listen((error) {
       _statusMessageController.add('Audio error: $error');
     });
 
-    // Слушаем изменения подключения к интернету
+    // Clear audio errors when playback starts successfully
+    _audioService.stateStream.listen((state) {
+      if (state == AudioState.playing) {
+        // Clear any audio error status message
+        if (_statusMessage.contains('Audio error:')) {
+          _statusMessageController.add('Playing');
+        }
+      }
+    });
+
     _networkService.connectivityStream.listen((isConnected) {
-      if (isConnected && _autoConnectEnabled && _currentApiKey != null) {
+      if (isConnected && _autoConnectEnabled && _currentToken != null) {
         Logger.info(
             'RadioController: Internet restored, attempting reconnect...');
         _attemptConnection();
@@ -77,24 +88,25 @@ class RadioController {
     _isInitialized = true;
   }
 
-  Future<bool> connectWithApiKey(String apiKey) async {
-    // Останавливаем автоподключение при ручном подключении
+  String _statusMessage = 'Ready';
+
+  Future<bool> connectWithToken(String token) async {
     _autoConnectEnabled = false;
     _retryTimer?.cancel();
 
     try {
       _statusMessageController.add('Connecting...');
 
-      final config = await _apiService.getStreamConfig(apiKey);
+      final config = await _apiService.getStreamConfigWithToken(token);
       if (config != null) {
-        _currentApiKey = apiKey;
+        _currentToken = token;
         _currentConfig = config;
 
-        await _storageService.saveApiKey(apiKey);
+        await _storageService.saveToken(token);
         await _storageService.saveLastStreamUrl(config.streamUrl);
         await _storageService.saveLastVolume(config.volume);
 
-        _apiKeyController.add(_currentApiKey);
+        _tokenController.add(_currentToken);
         _connectionStatusController.add(true);
         _statusMessageController.add('Connected successfully');
 
@@ -112,18 +124,23 @@ class RadioController {
     }
   }
 
+  // Compatibility method
+  Future<bool> connectWithApiKey(String apiKey) async {
+    return await connectWithToken(apiKey);
+  }
+
   Future<void> disconnect() async {
     _autoConnectEnabled = false;
     _configCheckTimer?.cancel();
     _retryTimer?.cancel();
     await _audioService.stop();
 
-    _currentApiKey = null;
+    _currentToken = null;
     _currentConfig = null;
 
-    await _storageService.clearApiKey();
+    await _storageService.clearToken();
 
-    _apiKeyController.add(null);
+    _tokenController.add(null);
     _connectionStatusController.add(false);
     _statusMessageController.add('Disconnected');
   }
@@ -158,10 +175,11 @@ class RadioController {
   }
 
   Future<void> _refreshConfig() async {
-    if (_currentApiKey == null) return;
+    if (_currentToken == null) return;
 
     try {
-      final newConfig = await _apiService.getStreamConfig(_currentApiKey!);
+      final newConfig =
+          await _apiService.getStreamConfigWithToken(_currentToken!);
       if (newConfig != null && newConfig != _currentConfig) {
         _currentConfig = newConfig;
 
@@ -181,7 +199,7 @@ class RadioController {
   }
 
   Future<void> handleAutoStart() async {
-    if (_currentApiKey != null && _currentApiKey!.isNotEmpty) {
+    if (_currentToken != null && _currentToken!.isNotEmpty) {
       _autoConnectEnabled = true;
       _statusMessageController.add('Waiting for internet connection...');
       _startAutoConnect();
@@ -198,14 +216,13 @@ class RadioController {
 
   Future<void> _attemptConnection() async {
     if (!_autoConnectEnabled ||
-        _currentApiKey == null ||
-        _currentApiKey!.isEmpty) {
+        _currentToken == null ||
+        _currentToken!.isEmpty) {
       return;
     }
 
     _retryAttempts++;
 
-    // Проверяем интернет
     final hasInternet = await _networkService.checkInternetConnection();
     if (!hasInternet) {
       _statusMessageController.add(
@@ -217,7 +234,7 @@ class RadioController {
     _statusMessageController.add('Connecting (attempt $_retryAttempts)...');
 
     try {
-      final config = await _apiService.getStreamConfig(_currentApiKey!);
+      final config = await _apiService.getStreamConfigWithToken(_currentToken!);
       if (config != null) {
         _currentConfig = config;
         await _storageService.saveLastStreamUrl(config.streamUrl);
@@ -251,7 +268,6 @@ class RadioController {
 
     _retryTimer?.cancel();
 
-    // Увеличивающаяся задержка: 5s, 10s, 15s, 30s, 60s, затем каждые 60s
     int delay;
     if (_retryAttempts <= 3) {
       delay = _retryAttempts * 5;
@@ -277,7 +293,7 @@ class RadioController {
     _retryTimer?.cancel();
     _networkService.stopMonitoring();
     await _audioService.dispose();
-    await _apiKeyController.close();
+    await _tokenController.close();
     await _connectionStatusController.close();
     await _statusMessageController.close();
   }
