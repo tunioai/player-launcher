@@ -62,7 +62,11 @@ class AudioService {
     _audioSession = await AudioSession.instance;
     await _audioSession.configure(const AudioSessionConfiguration.music());
 
-    _audioPlayer = AudioPlayer();
+    // Configure audio player with enhanced buffering for radio streaming
+    _audioPlayer = AudioPlayer(
+      // Use proxy for better header support
+      useProxyForRequestHeaders: true,
+    );
 
     _playerStateSubscription = _audioPlayer.playerStateStream.listen((state) {
       _stateController.add(currentState);
@@ -117,8 +121,11 @@ class AudioService {
         final audioSource = AudioSource.uri(
           uri,
           headers: {
-            'User-Agent': 'TunioRadioPlayer/1.0',
+            'User-Agent': 'TunioRadioPlayer/1.0 (Mobile)',
             'Icy-MetaData': '1',
+            'Connection': 'keep-alive',
+            'Cache-Control': 'no-cache',
+            'Accept': 'audio/*',
           },
         );
 
