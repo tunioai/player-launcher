@@ -7,7 +7,14 @@ import '../services/autostart_service.dart';
 import '../widgets/code_input_widget.dart';
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  final VoidCallback onThemeToggle;
+  final ThemeMode themeMode;
+
+  const HomeScreen({
+    super.key,
+    required this.onThemeToggle,
+    required this.themeMode,
+  });
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -216,6 +223,28 @@ class _HomeScreenState extends State<HomeScreen> {
         _statusMessage.contains('Waiting for internet');
   }
 
+  IconData _getThemeIcon() {
+    switch (widget.themeMode) {
+      case ThemeMode.system:
+        return Icons.brightness_auto;
+      case ThemeMode.light:
+        return Icons.light_mode;
+      case ThemeMode.dark:
+        return Icons.dark_mode;
+    }
+  }
+
+  String _getThemeTooltip() {
+    switch (widget.themeMode) {
+      case ThemeMode.system:
+        return 'Auto theme (tap for light)';
+      case ThemeMode.light:
+        return 'Light theme (tap for dark)';
+      case ThemeMode.dark:
+        return 'Dark theme (tap for auto)';
+    }
+  }
+
   void _handleKeyPress(RawKeyEvent event) {
     if (event is RawKeyDownEvent) {
       switch (event.logicalKey) {
@@ -256,6 +285,13 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         title: const Text('Tunio Radio Player'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+        actions: [
+          IconButton(
+            onPressed: widget.onThemeToggle,
+            icon: Icon(_getThemeIcon()),
+            tooltip: _getThemeTooltip(),
+          ),
+        ],
       ),
       body: FocusScope(
         child: RawKeyboardListener(

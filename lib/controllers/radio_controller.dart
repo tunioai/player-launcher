@@ -237,7 +237,7 @@ class RadioController {
       Logger.info(
           'RadioController: Attempting connection with token (autoReconnect: always enabled)');
 
-      final config = await _apiService.getStreamConfigWithToken(token);
+      final config = await _apiService.getStreamConfig(token);
       if (config != null) {
         _currentToken = token;
         _currentConfig = config;
@@ -372,8 +372,7 @@ class RadioController {
     if (_currentToken == null) return;
 
     try {
-      final newConfig =
-          await _apiService.getStreamConfigWithToken(_currentToken!);
+      final newConfig = await _apiService.getStreamConfig(_currentToken!);
       if (newConfig != null && newConfig != _currentConfig) {
         Logger.info('RadioController: Config updated');
         _currentConfig = newConfig;
