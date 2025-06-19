@@ -60,11 +60,27 @@ class AudioService {
 
   Future<void> _initialize() async {
     _audioSession = await AudioSession.instance;
-    await _audioSession.configure(const AudioSessionConfiguration.music());
+    await _audioSession.configure(AudioSessionConfiguration(
+      avAudioSessionCategory: AVAudioSessionCategory.playback,
+      avAudioSessionCategoryOptions:
+          AVAudioSessionCategoryOptions.allowBluetooth |
+              AVAudioSessionCategoryOptions.defaultToSpeaker,
+      avAudioSessionMode: AVAudioSessionMode.defaultMode,
+      avAudioSessionRouteSharingPolicy:
+          AVAudioSessionRouteSharingPolicy.defaultPolicy,
+      avAudioSessionSetActiveOptions: AVAudioSessionSetActiveOptions.none,
+      androidAudioAttributes: const AndroidAudioAttributes(
+        contentType: AndroidAudioContentType.music,
+        flags: AndroidAudioFlags.none,
+        usage: AndroidAudioUsage.media,
+      ),
+      androidAudioFocusGainType: AndroidAudioFocusGainType.gain,
+      androidWillPauseWhenDucked: false,
+    ));
 
     // Configure audio player with enhanced buffering for radio streaming
     _audioPlayer = AudioPlayer(
-      // Use proxy for better header support
+      // Use proxy for better header support and improved buffering
       useProxyForRequestHeaders: true,
     );
 
@@ -118,7 +134,7 @@ class AudioService {
         print('🎵 AudioService: URI host: ${uri.host}');
         print('🎵 AudioService: URI path: ${uri.path}');
 
-        final audioSource = AudioSource.uri(
+        final audioSource = ProgressiveAudioSource(
           uri,
           headers: {
             'User-Agent': 'TunioRadioPlayer/1.0 (Mobile)',
@@ -126,6 +142,7 @@ class AudioService {
             'Connection': 'keep-alive',
             'Cache-Control': 'no-cache',
             'Accept': 'audio/*',
+            'Range': 'bytes=0-',
           },
         );
 
