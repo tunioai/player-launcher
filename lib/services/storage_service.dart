@@ -33,14 +33,19 @@ class StorageService {
   // Token methods (new)
   Future<void> saveToken(String token) async {
     await _prefs!.setString(_tokenKey, token);
+    print('🔑 StorageService: Token saved: ${token.substring(0, 2)}****');
   }
 
   String? getToken() {
-    return _prefs!.getString(_tokenKey);
+    final token = _prefs!.getString(_tokenKey);
+    print(
+        '🔑 StorageService: Token loaded: ${token != null ? '${token.substring(0, 2)}****' : 'NULL'}');
+    return token;
   }
 
   Future<void> clearToken() async {
     await _prefs!.remove(_tokenKey);
+    print('🔑 StorageService: Token cleared');
   }
 
   Future<void> saveLastStreamUrl(String url) async {

@@ -56,7 +56,15 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
     for (int i = 0; i < value.length && i < _codeLength; i++) {
       _digits[i] = value[i];
     }
-    _textController.text = value;
+    // Update text controller and position cursor at the end
+    if (_textController.text != value) {
+      _textController.text = value;
+      if (value.isNotEmpty) {
+        _textController.selection = TextSelection.fromPosition(
+          TextPosition(offset: value.length),
+        );
+      }
+    }
   }
 
   @override
@@ -64,6 +72,7 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.value != widget.value) {
       _updateDigitsFromValue();
+      setState(() {}); // Force UI rebuild to show the updated value
     }
   }
 

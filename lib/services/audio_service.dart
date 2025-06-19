@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 import 'package:just_audio/just_audio.dart';
 import 'package:audio_session/audio_session.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
@@ -22,14 +21,9 @@ class AudioService {
   StreamSubscription<PlayerState>? _playerStateSubscription;
   StreamSubscription<Duration?>? _positionSubscription;
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
-  Timer? _reconnectTimer;
 
   String? _currentStreamUrl;
   double _currentVolume = 1.0;
-  bool _isReconnecting = false;
-  int _reconnectAttempts = 0;
-  static const int maxReconnectAttempts = 10;
-  static const Duration reconnectInterval = Duration(seconds: 5);
 
   final StreamController<AudioState> _stateController =
       StreamController<AudioState>.broadcast();
@@ -80,20 +74,22 @@ class AudioService {
 
     _audioPlayer.playbackEventStream.listen((event) {
       if (event.processingState == ProcessingState.ready) {
-        _reconnectAttempts = 0;
-        _isReconnecting = false;
+        print('🎵 AudioService: Stream ready');
       }
     });
 
     _connectivitySubscription =
         Connectivity().onConnectivityChanged.listen((results) {
+      // Network monitoring only - RadioController handles reconnection logic
       final hasConnection = results.any((result) =>
           result == ConnectivityResult.mobile ||
           result == ConnectivityResult.wifi ||
           result == ConnectivityResult.ethernet);
 
-      if (hasConnection && _currentStreamUrl != null && !_audioPlayer.playing) {
-        _scheduleReconnect();
+      if (!hasConnection) {
+        print('🌐 AudioService: Network connection lost');
+      } else {
+        print('🌐 AudioService: Network connection restored');
       }
     });
   }
@@ -142,7 +138,7 @@ class AudioService {
       print('❌ AudioService: Error in playStream: $e');
       print('❌ AudioService: Error type: ${e.runtimeType}');
       _handleError('Failed to play stream: $e');
-      _scheduleReconnect();
+      // Note: Automatic reconnection is handled by RadioController
     }
   }
 
@@ -159,13 +155,12 @@ class AudioService {
       await _audioPlayer.play();
     } catch (e) {
       _handleError('Failed to resume: $e');
-      _scheduleReconnect();
+      // Note: Automatic reconnection is handled by RadioController
     }
   }
 
   Future<void> stop() async {
     try {
-      _reconnectTimer?.cancel();
       await _audioPlayer.stop();
       _currentStreamUrl = null;
       _stateController.add(AudioState.idle);
@@ -186,9 +181,8 @@ class AudioService {
   double get volume => _currentVolume;
 
   void _handleStreamEnd() {
-    if (_currentStreamUrl != null) {
-      _scheduleReconnect();
-    }
+    // Stream ended - RadioController will handle reconnection if needed
+    _stateController.add(AudioState.idle);
   }
 
   void _handleError(String error) {
@@ -208,33 +202,9 @@ class AudioService {
     _stateController.add(AudioState.error);
   }
 
-  void _scheduleReconnect() {
-    if (_isReconnecting || _reconnectAttempts >= maxReconnectAttempts) {
-      return;
-    }
-
-    _isReconnecting = true;
-    _reconnectTimer?.cancel();
-
-    _reconnectTimer = Timer(reconnectInterval, () async {
-      if (_currentStreamUrl != null) {
-        _reconnectAttempts++;
-        try {
-          await _audioPlayer.play();
-          _isReconnecting = false;
-        } catch (e) {
-          if (_reconnectAttempts < maxReconnectAttempts) {
-            _scheduleReconnect();
-          } else {
-            _handleError('Maximum reconnection attempts reached');
-          }
-        }
-      }
-    });
-  }
+  // Reconnection logic removed - handled by RadioController
 
   Future<void> dispose() async {
-    _reconnectTimer?.cancel();
     await _playerStateSubscription?.cancel();
     await _positionSubscription?.cancel();
     await _connectivitySubscription?.cancel();

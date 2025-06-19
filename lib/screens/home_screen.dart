@@ -42,12 +42,26 @@ class _HomeScreenState extends State<HomeScreen> {
     _controller = await RadioController.getInstance();
     _storageService = await StorageService.getInstance();
 
+    // Initialize the current code and connection state from controller first
+    final initialToken = _controller.currentToken ?? '';
+    print(
+        '🏠 HomeScreen: Initial token from controller: ${initialToken.isNotEmpty ? '${initialToken.substring(0, 2)}****' : 'EMPTY'}');
+    setState(() {
+      _currentCode = initialToken;
+      _isConnected = _controller.isConnected;
+    });
+
     final isAutoStarted = await AutoStartService.isAutoStarted();
     if (isAutoStarted) {
       await _controller.handleAutoStart();
+    } else {
+      // Handle normal app start
+      await _controller.handleNormalStart();
     }
 
     _controller.tokenStream.listen((token) {
+      print(
+          '🏠 HomeScreen: Token stream updated: ${token != null ? '${token.substring(0, 2)}****' : 'NULL'}');
       if (mounted) {
         setState(() {
           _currentCode = token ?? '';
@@ -122,9 +136,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _disconnect() async {
     await _controller.disconnect();
-    setState(() {
-      _currentCode = '';
-    });
+    // Don't clear _currentCode here - let tokenStream handle it
+    // This ensures UI stays in sync with the actual token state
   }
 
   Future<void> _togglePlayback() async {
@@ -366,6 +379,20 @@ class _HomeScreenState extends State<HomeScreen> {
                                     strokeWidth: 2,
                                     color: _getStatusColor(),
                                   ),
+                                ),
+                              ],
+                              if (_statusMessage.contains('error') &&
+                                  !_statusMessage.contains('retrying') &&
+                                  !_isConnecting) ...[
+                                const SizedBox(width: 8),
+                                IconButton(
+                                  onPressed: () async {
+                                    await _controller.reconnect();
+                                  },
+                                  icon: const Icon(Icons.refresh),
+                                  iconSize: 20,
+                                  tooltip: 'Reconnect',
+                                  color: Colors.blue,
                                 ),
                               ],
                             ],
