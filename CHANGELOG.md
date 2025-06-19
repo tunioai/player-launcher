@@ -60,4 +60,29 @@
 - [ ] Уведомления в статус баре
 - [ ] Виджет на рабочий стол
 - [ ] Улучшенная аналитика и метрики
-- [ ] Поддержка playlist/multi-stream 
+- [ ] Поддержка playlist/multi-stream
+
+## [Unreleased]
+
+### Changed
+- **Dynamic Stream URL Management**: 
+  - Removed local storage of `stream_url` - no longer persisted across app restarts
+  - App now always fetches fresh `stream_url` from API on startup
+  - Real-time stream URL updates: when API returns different `stream_url` during playback, the stream automatically switches and restarts playback
+  - Enhanced logging for stream URL changes and updates
+
+### Fixed
+- **Cross-Platform Code Input UX**:
+  - Fixed PIN code input not working on macOS and other desktop platforms
+  - **Desktop platforms** (macOS, Windows, Linux): Clean single text input field with auto-focus
+  - **Mobile platforms** (iOS, Android): Visual 6-digit display with hidden input field
+  - Updated deprecated `RawKeyboardListener` to modern `KeyboardListener`
+  - Enhanced keyboard navigation and focus handling for desktop platforms
+
+### Added
+- **Backend Error Messages in UI**:
+  - Added custom ApiError class to handle backend error messages
+  - API responses with `"success": false` now show exact `"message"` from backend in snackbar notifications
+  - Dark floating snackbar notifications with dismiss button for better UX
+  - Separate error notification stream to distinguish between status messages and error alerts
+  - Enhanced error handling for different HTTP status codes (401, 403, 404, 500, etc.) 

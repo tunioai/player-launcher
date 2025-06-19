@@ -2,7 +2,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 class StorageService {
   static const String _tokenKey = 'token';
-  static const String _lastStreamUrlKey = 'last_stream_url';
   static const String _lastVolumeKey = 'last_volume';
   static const String _isAutoStartEnabledKey = 'auto_start_enabled';
   static const String _isDarkModeEnabledKey = 'dark_mode_enabled';
@@ -34,14 +33,6 @@ class StorageService {
   Future<void> clearToken() async {
     await _prefs!.remove(_tokenKey);
     print('🔑 StorageService: Token cleared');
-  }
-
-  Future<void> saveLastStreamUrl(String url) async {
-    await _prefs!.setString(_lastStreamUrlKey, url);
-  }
-
-  String? getLastStreamUrl() {
-    return _prefs!.getString(_lastStreamUrlKey);
   }
 
   Future<void> saveLastVolume(double volume) async {

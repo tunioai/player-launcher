@@ -106,6 +106,28 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     });
 
+    // Listen for error notifications and show snackbar
+    _controller.errorNotificationStream.listen((errorMessage) {
+      print('🏠 HomeScreen: Error notification: $errorMessage');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(errorMessage),
+            backgroundColor: Colors.red.withOpacity(0.9),
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 4),
+            action: SnackBarAction(
+              label: 'Dismiss',
+              textColor: Colors.white,
+              onPressed: () {
+                ScaffoldMessenger.of(context).hideCurrentSnackBar();
+              },
+            ),
+          ),
+        );
+      }
+    });
+
     // Now trigger the startup logic after ALL listeners are set up
     final isAutoStarted = await AutoStartService.isAutoStarted();
     if (isAutoStarted) {
@@ -135,7 +157,10 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _connect() async {
     if (_currentCode.length != 6) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter 6-digit code')),
+        const SnackBar(
+          content: Text('Please enter 6-digit code'),
+          backgroundColor: Colors.orange,
+        ),
       );
       return;
     }
@@ -144,13 +169,8 @@ class _HomeScreenState extends State<HomeScreen> {
       _isConnecting = true;
     });
 
-    final success = await _controller.connectWithToken(_currentCode);
-
-    if (!success && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(_statusMessage)),
-      );
-    }
+    // Connect - errors will be handled by errorNotificationStream listener
+    await _controller.connectWithToken(_currentCode);
   }
 
   Future<void> _disconnect() async {
@@ -245,14 +265,14 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  void _handleKeyPress(RawKeyEvent event) {
-    if (event is RawKeyDownEvent) {
+  KeyEventResult _handleKeyPress(KeyEvent event) {
+    if (event is KeyDownEvent) {
       switch (event.logicalKey) {
         case LogicalKeyboardKey.arrowUp:
         case LogicalKeyboardKey.arrowDown:
         case LogicalKeyboardKey.arrowLeft:
         case LogicalKeyboardKey.arrowRight:
-          break;
+          return KeyEventResult.ignored;
         case LogicalKeyboardKey.select:
         case LogicalKeyboardKey.enter:
           final currentFocus = FocusScope.of(context).focusedChild;
@@ -261,22 +281,26 @@ class _HomeScreenState extends State<HomeScreen> {
               if (!_isConnecting) {
                 _isConnected ? _disconnect() : _connect();
               }
+              return KeyEventResult.handled;
             } else if (currentFocus == _playButtonFocusNode && _isConnected) {
               _togglePlayback();
+              return KeyEventResult.handled;
             }
           }
-          break;
+          return KeyEventResult.ignored;
         case LogicalKeyboardKey.mediaPlay:
         case LogicalKeyboardKey.mediaPlayPause:
           if (_isConnected) {
             _togglePlayback();
+            return KeyEventResult.handled;
           }
-          break;
+          return KeyEventResult.ignored;
         case LogicalKeyboardKey.escape:
           AutoStartService.openSystemLauncher();
-          break;
+          return KeyEventResult.handled;
       }
     }
+    return KeyEventResult.ignored;
   }
 
   @override
@@ -294,9 +318,9 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
       body: FocusScope(
-        child: RawKeyboardListener(
+        child: KeyboardListener(
           focusNode: FocusNode(),
-          onKey: _handleKeyPress,
+          onKeyEvent: _handleKeyPress,
           child: Padding(
             padding: const EdgeInsets.all(16.0),
             child: SingleChildScrollView(

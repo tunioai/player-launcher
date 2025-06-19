@@ -76,15 +76,6 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
     }
   }
 
-  void _updateCode() {
-    final code = _digits.join('');
-    widget.onChanged(code);
-
-    if (code.length == _codeLength) {
-      widget.onSubmitted?.call();
-    }
-  }
-
   void _onTextChanged(String text) {
     if (!widget.enabled) return;
 
@@ -111,43 +102,6 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
         TextPosition(offset: _codeLength),
       );
     }
-  }
-
-  void _addDigit(String digit) {
-    if (!widget.enabled) return;
-
-    for (int i = 0; i < _codeLength; i++) {
-      if (_digits[i].isEmpty) {
-        setState(() {
-          _digits[i] = digit;
-        });
-        _updateCode();
-        break;
-      }
-    }
-  }
-
-  void _removeLastDigit() {
-    if (!widget.enabled) return;
-
-    for (int i = _codeLength - 1; i >= 0; i--) {
-      if (_digits[i].isNotEmpty) {
-        setState(() {
-          _digits[i] = '';
-        });
-        _updateCode();
-        break;
-      }
-    }
-  }
-
-  void _clearAll() {
-    if (!widget.enabled) return;
-
-    setState(() {
-      _digits = List.filled(_codeLength, '');
-    });
-    _updateCode();
   }
 
   Widget _buildMobileInput() {
@@ -258,112 +212,70 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
   }
 
   Widget _buildDesktopInput() {
-    return Focus(
-      focusNode: _focusNode,
-      onKeyEvent: (node, event) {
-        if (event is KeyDownEvent) {
-          final key = event.logicalKey;
-
-          if (key.keyId >= LogicalKeyboardKey.digit0.keyId &&
-              key.keyId <= LogicalKeyboardKey.digit9.keyId) {
-            final digit =
-                (key.keyId - LogicalKeyboardKey.digit0.keyId).toString();
-            _addDigit(digit);
-            return KeyEventResult.handled;
-          } else if (key.keyId >= LogicalKeyboardKey.numpad0.keyId &&
-              key.keyId <= LogicalKeyboardKey.numpad9.keyId) {
-            final digit =
-                (key.keyId - LogicalKeyboardKey.numpad0.keyId).toString();
-            _addDigit(digit);
-            return KeyEventResult.handled;
-          } else if (key == LogicalKeyboardKey.backspace) {
-            _removeLastDigit();
-            return KeyEventResult.handled;
-          } else if (key == LogicalKeyboardKey.delete ||
-              key == LogicalKeyboardKey.escape) {
-            _clearAll();
-            return KeyEventResult.handled;
-          } else if (key == LogicalKeyboardKey.enter ||
-              key == LogicalKeyboardKey.select) {
-            if (_digits.join('').length == _codeLength) {
-              widget.onSubmitted?.call();
-            }
-            return KeyEventResult.handled;
-          }
-        }
-        return KeyEventResult.ignored;
-      },
-      child: Container(
-        decoration: BoxDecoration(
-          border: Border.all(
-            color: _focusNode.hasFocus ? Colors.blue : Colors.grey,
-            width: _focusNode.hasFocus ? 2 : 1,
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 400),
+      child: Column(
+        children: [
+          Text(
+            'Enter 6-digit code',
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w600,
+              color: widget.enabled ? null : Colors.grey,
+            ),
           ),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            Text(
-              'Enter 6-digit code',
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w500,
-                color: widget.enabled ? null : Colors.grey,
-              ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _textController,
+            focusNode: _focusNode,
+            enabled: widget.enabled,
+            keyboardType: TextInputType.number,
+            inputFormatters: [
+              FilteringTextInputFormatter.digitsOnly,
+              LengthLimitingTextInputFormatter(_codeLength),
+            ],
+            onChanged: _onTextChanged,
+            onSubmitted: (_) {
+              if (_digits.join('').length == _codeLength) {
+                widget.onSubmitted?.call();
+              }
+            },
+            decoration: InputDecoration(
+              labelText: 'PIN Code',
+              hintText: '123456',
+              helperText: 'Enter your 6-digit PIN code',
+              border: const OutlineInputBorder(),
+              counterText: '${_digits.join('').length}/$_codeLength',
+              prefixIcon: const Icon(Icons.lock_outline),
+              suffixIcon: _digits.join('').isNotEmpty
+                  ? IconButton(
+                      icon: const Icon(Icons.clear),
+                      onPressed: () {
+                        _textController.clear();
+                        _onTextChanged('');
+                      },
+                    )
+                  : null,
             ),
-            const SizedBox(height: 16),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: List.generate(_codeLength, (index) {
-                return Container(
-                  width: 40,
-                  height: 50,
-                  decoration: BoxDecoration(
-                    border: Border.all(
-                      color: _digits[index].isNotEmpty
-                          ? (_focusNode.hasFocus
-                              ? Colors.blue
-                              : Colors.grey[600]!)
-                          : Colors.grey[300]!,
-                      width: 2,
-                    ),
-                    borderRadius: BorderRadius.circular(8),
-                    color: _digits[index].isNotEmpty
-                        ? (_focusNode.hasFocus
-                            ? Colors.blue.withOpacity(0.1)
-                            : Colors.grey[50])
-                        : Colors.white,
-                  ),
-                  child: Center(
-                    child: Text(
-                      _digits[index],
-                      style: TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.bold,
-                        color: widget.enabled
-                            ? (_digits[index].isNotEmpty
-                                ? Colors.black
-                                : Colors.grey[400])
-                            : Colors.grey,
-                      ),
-                    ),
-                  ),
-                );
-              }),
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+              letterSpacing: 6,
             ),
-            const SizedBox(height: 12),
-            Text(
-              _isMobile
-                  ? 'Tap above to enter code'
-                  : 'Use remote or keyboard to enter digits',
-              style: TextStyle(
-                fontSize: 12,
-                color: Colors.grey[600],
-              ),
+            maxLength: _codeLength,
+            autofocus: true,
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Use keyboard or remote control to enter digits',
+            style: TextStyle(
+              fontSize: 12,
+              color: Colors.grey[600],
             ),
-          ],
-        ),
+            textAlign: TextAlign.center,
+          ),
+        ],
       ),
     );
   }

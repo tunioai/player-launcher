@@ -1,5 +1,6 @@
 import 'dart:async';
 import '../models/stream_config.dart';
+import '../models/api_error.dart';
 import '../services/api_service.dart';
 import '../services/storage_service.dart';
 import '../services/audio_service.dart';
@@ -25,7 +26,6 @@ class RadioController {
   bool _isStreamHealthy = false;
   int _retryAttempts = 0;
   int _consecutiveFailures = 0;
-  DateTime? _lastSuccessfulConnection;
   DateTime? _lastStreamStart;
 
   final StreamController<String?> _tokenController =
@@ -33,6 +33,8 @@ class RadioController {
   final StreamController<bool> _connectionStatusController =
       StreamController<bool>.broadcast();
   final StreamController<String> _statusMessageController =
+      StreamController<String>.broadcast();
+  final StreamController<String> _errorNotificationController =
       StreamController<String>.broadcast();
 
   RadioController._();
@@ -48,6 +50,8 @@ class RadioController {
   Stream<String?> get tokenStream => _tokenController.stream;
   Stream<bool> get connectionStatusStream => _connectionStatusController.stream;
   Stream<String> get statusMessageStream => _statusMessageController.stream;
+  Stream<String> get errorNotificationStream =>
+      _errorNotificationController.stream;
   Stream<AudioState> get audioStateStream => _audioService.stateStream;
   Stream<String> get audioErrorStream => _audioService.errorStream;
   Stream<String?> get titleStream => _audioService.titleStream;
@@ -67,27 +71,9 @@ class RadioController {
         'RadioController: Loaded token from storage: ${_currentToken != null ? '[PRESENT]' : '[MISSING]'}');
     _tokenController.add(_currentToken);
 
-    // Try to restore last configuration if token exists
-    if (_currentToken != null && _currentToken!.isNotEmpty) {
-      final lastUrl = _storageService.getLastStreamUrl();
-      final lastVolume = _storageService.getLastVolume();
-      if (lastUrl != null && lastUrl.isNotEmpty) {
-        _currentConfig = StreamConfig(
-          streamUrl: lastUrl,
-          title: 'Radio Stream',
-          volume: lastVolume,
-        );
-        Logger.info(
-            'RadioController: Restored last configuration - URL: ${lastUrl.substring(0, 20)}..., Volume: $lastVolume');
-
-        // Set initial connection status based on restored state
-        _connectionStatusController.add(true);
-      } else {
-        _connectionStatusController.add(false);
-      }
-    } else {
-      _connectionStatusController.add(false);
-    }
+    // Always set initial connection status to false
+    // Stream config will be fetched from API on connection
+    _connectionStatusController.add(false);
 
     _setupAudioErrorHandling();
     _setupAudioStateHandling();
@@ -217,8 +203,6 @@ class RadioController {
     _attemptConnection();
   }
 
-  String _statusMessage = 'Ready';
-
   Future<bool> connectWithToken(String token) async {
     return await connect(token);
   }
@@ -243,7 +227,6 @@ class RadioController {
         _currentConfig = config;
 
         await _storageService.saveToken(token);
-        await _storageService.saveLastStreamUrl(config.streamUrl);
         await _storageService.saveLastVolume(config.volume);
 
         _tokenController.add(_currentToken);
@@ -252,7 +235,6 @@ class RadioController {
         Logger.info(
             'RadioController: Broadcasting status message: Connected successfully');
         _statusMessageController.add('Connected successfully');
-        _lastSuccessfulConnection = DateTime.now();
 
         try {
           await _audioService.playStream(config);
@@ -281,7 +263,19 @@ class RadioController {
     } catch (e) {
       Logger.error('RadioController: Connection failed: $e');
       _connectionStatusController.add(false);
-      _statusMessageController.add('Connection failed: $e');
+
+      // Handle different types of errors
+      if (e is ApiError && e.isFromBackend) {
+        // Show backend error message in snackbar
+        _errorNotificationController.add(e.message);
+        _statusMessageController.add('Connection failed');
+      } else {
+        // Show generic error in status and snackbar
+        final errorMessage = e.toString();
+        _statusMessageController.add('Connection failed: $errorMessage');
+        _errorNotificationController.add(errorMessage);
+      }
+
       _consecutiveFailures++;
 
       if (!isRetry) {
@@ -373,20 +367,35 @@ class RadioController {
 
     try {
       final newConfig = await _apiService.getStreamConfig(_currentToken!);
-      if (newConfig != null && newConfig != _currentConfig) {
-        Logger.info('RadioController: Config updated');
-        _currentConfig = newConfig;
+      if (newConfig != null) {
+        // Check if stream URL has changed
+        final streamUrlChanged = _currentConfig == null ||
+            _currentConfig!.streamUrl != newConfig.streamUrl;
 
-        await _storageService.saveLastStreamUrl(newConfig.streamUrl);
-        await _storageService.saveLastVolume(newConfig.volume);
+        if (streamUrlChanged) {
+          Logger.info(
+              'RadioController: Stream URL changed from ${_currentConfig?.streamUrl} to ${newConfig.streamUrl}');
+          _currentConfig = newConfig;
+          await _storageService.saveLastVolume(newConfig.volume);
 
-        if (_audioService.currentState == AudioState.playing ||
-            _audioService.currentState == AudioState.buffering) {
-          _lastStreamStart = DateTime.now();
-          await _audioService.playStream(newConfig);
+          // Restart playback with new stream URL if currently playing/buffering
+          if (_audioService.currentState == AudioState.playing ||
+              _audioService.currentState == AudioState.buffering) {
+            Logger.info(
+                'RadioController: Restarting playback with new stream URL');
+            _lastStreamStart = DateTime.now();
+            await _audioService.playStream(newConfig);
+            _statusMessageController.add('Stream updated - playing new URL');
+          } else {
+            _statusMessageController.add('Stream URL updated');
+          }
+        } else if (_currentConfig != newConfig) {
+          // Other config changes (volume, title, etc.)
+          Logger.info('RadioController: Config updated (non-URL changes)');
+          _currentConfig = newConfig;
+          await _storageService.saveLastVolume(newConfig.volume);
+          _statusMessageController.add('Stream config updated');
         }
-
-        _statusMessageController.add('Stream updated');
       }
     } catch (e) {
       Logger.error('RadioController: Failed to refresh config: $e');
@@ -413,38 +422,7 @@ class RadioController {
       Logger.info(
           'RadioController: $startType with saved token: ${_currentToken!.substring(0, 2)}****');
 
-      // Try to restore from saved config first (faster startup)
-      if (_currentConfig != null) {
-        Logger.info(
-            'RadioController: Found restored config, attempting quick start');
-        Logger.info(
-            'RadioController: Broadcasting connection status: true (quick start)');
-        _connectionStatusController.add(true);
-        Logger.info(
-            'RadioController: Broadcasting status message: Restoring playback...');
-        _statusMessageController.add('Restoring playback...');
-
-        try {
-          _lastStreamStart = DateTime.now();
-          await _audioService.playStream(_currentConfig!);
-          Logger.info(
-              'RadioController: Broadcasting status message: Playing (quick start)');
-          _statusMessageController.add('Playing');
-          _autoConnectEnabled =
-              true; // Enable auto-reconnect for autonomous operation
-          _startConfigPolling();
-          Logger.info(
-              'RadioController: Successfully restored playback from saved config');
-          return;
-        } catch (e) {
-          Logger.error(
-              'RadioController: Failed to start from saved config: $e');
-          _connectionStatusController.add(false);
-          // Fall through to full reconnection
-        }
-      }
-
-      // Full reconnection
+      // Always fetch fresh config from API - no local stream_url restoration
       _statusMessageController.add('Connecting...');
       final success = await connect(_currentToken!);
 
@@ -548,5 +526,6 @@ class RadioController {
     await _tokenController.close();
     await _connectionStatusController.close();
     await _statusMessageController.close();
+    await _errorNotificationController.close();
   }
 }
