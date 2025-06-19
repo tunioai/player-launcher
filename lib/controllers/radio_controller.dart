@@ -247,7 +247,10 @@ class RadioController {
         await _storageService.saveLastVolume(config.volume);
 
         _tokenController.add(_currentToken);
+        Logger.info('RadioController: Broadcasting connection status: true');
         _connectionStatusController.add(true);
+        Logger.info(
+            'RadioController: Broadcasting status message: Connected successfully');
         _statusMessageController.add('Connected successfully');
         _lastSuccessfulConnection = DateTime.now();
 
@@ -415,12 +418,18 @@ class RadioController {
       if (_currentConfig != null) {
         Logger.info(
             'RadioController: Found restored config, attempting quick start');
+        Logger.info(
+            'RadioController: Broadcasting connection status: true (quick start)');
         _connectionStatusController.add(true);
+        Logger.info(
+            'RadioController: Broadcasting status message: Restoring playback...');
         _statusMessageController.add('Restoring playback...');
 
         try {
           _lastStreamStart = DateTime.now();
           await _audioService.playStream(_currentConfig!);
+          Logger.info(
+              'RadioController: Broadcasting status message: Playing (quick start)');
           _statusMessageController.add('Playing');
           _autoConnectEnabled =
               true; // Enable auto-reconnect for autonomous operation

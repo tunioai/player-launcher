@@ -51,7 +51,7 @@ class _HomeScreenState extends State<HomeScreen> {
       // Don't set _isConnected here - let the stream handle it
     });
 
-    // Set up listeners first before triggering any start logic
+    // Set up ALL listeners first before triggering any start logic
     _controller.tokenStream.listen((token) {
       print(
           '🏠 HomeScreen: Token stream updated: ${token != null ? '${token.substring(0, 2)}****' : 'NULL'}');
@@ -72,16 +72,8 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     });
 
-    // Now trigger the startup logic after listeners are set up
-    final isAutoStarted = await AutoStartService.isAutoStarted();
-    if (isAutoStarted) {
-      await _controller.handleAutoStart();
-    } else {
-      // Handle normal app start
-      await _controller.handleNormalStart();
-    }
-
     _controller.statusMessageStream.listen((message) {
+      print('🏠 HomeScreen: Status message updated: $message');
       if (mounted) {
         setState(() {
           _statusMessage = message;
@@ -90,6 +82,7 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     _controller.audioStateStream.listen((state) {
+      print('🏠 HomeScreen: Audio state updated: $state');
       if (mounted) {
         setState(() {
           _audioState = state;
@@ -98,6 +91,7 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     _controller.titleStream.listen((title) {
+      print('🏠 HomeScreen: Title updated: $title');
       if (mounted) {
         setState(() {
           _currentTitle = title;
@@ -105,9 +99,24 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     });
 
-    setState(() {
-      _volume = _controller.volume;
-    });
+    // Now trigger the startup logic after ALL listeners are set up
+    final isAutoStarted = await AutoStartService.isAutoStarted();
+    if (isAutoStarted) {
+      await _controller.handleAutoStart();
+    } else {
+      // Handle normal app start
+      await _controller.handleNormalStart();
+    }
+
+    // Sync UI with current controller state after startup
+    if (mounted) {
+      setState(() {
+        _volume = _controller.volume;
+        _isConnected = _controller.isConnected;
+        _audioState = _controller.audioState;
+        // Status message and title will be updated via streams
+      });
+    }
   }
 
   void _onCodeChanged(String code) {
