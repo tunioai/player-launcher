@@ -192,7 +192,19 @@ class AudioService {
   }
 
   void _handleError(String error) {
-    _errorController.add(error);
+    // Сокращаем сообщение об ошибке для пользователя
+    String shortError = "Failed to play stream";
+    if (error.toLowerCase().contains('network') ||
+        error.toLowerCase().contains('connection')) {
+      shortError = "Network error";
+    } else if (error.toLowerCase().contains('format') ||
+        error.toLowerCase().contains('codec')) {
+      shortError = "Format error";
+    } else if (error.toLowerCase().contains('timeout')) {
+      shortError = "Connection timeout";
+    }
+
+    _errorController.add(shortError);
     _stateController.add(AudioState.error);
   }
 

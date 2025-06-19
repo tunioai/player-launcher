@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../controllers/radio_controller.dart';
 import '../services/audio_service.dart';
 import '../services/storage_service.dart';
+import '../services/autostart_service.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -15,6 +17,13 @@ class _HomeScreenState extends State<HomeScreen> {
   late StorageService _storageService;
   final TextEditingController _apiKeyController = TextEditingController();
 
+  // Focus nodes for TV remote navigation
+  final FocusNode _apiKeyFocusNode = FocusNode();
+  final FocusNode _connectButtonFocusNode = FocusNode();
+  final FocusNode _settingsButtonFocusNode = FocusNode();
+  final FocusNode _playButtonFocusNode = FocusNode();
+  final FocusNode _volumeFocusNode = FocusNode();
+
   String? _currentApiKey;
   bool _isConnected = false;
   String _statusMessage = 'Ready';
@@ -22,7 +31,6 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _currentTitle;
   bool _isConnecting = false;
   double _volume = 1.0;
-  bool _autoStartEnabled = true;
 
   @override
   void initState() {
@@ -34,9 +42,11 @@ class _HomeScreenState extends State<HomeScreen> {
     _controller = await RadioController.getInstance();
     _storageService = await StorageService.getInstance();
 
-    setState(() {
-      _autoStartEnabled = _storageService.isAutoStartEnabled();
-    });
+    // Проверяем, был ли запущен автозапуск
+    final isAutoStarted = await AutoStartService.isAutoStarted();
+    if (isAutoStarted) {
+      await _controller.handleAutoStart();
+    }
 
     _controller.apiKeyStream.listen((apiKey) {
       if (mounted) {
@@ -125,13 +135,6 @@ class _HomeScreenState extends State<HomeScreen> {
     await _controller.setVolume(value);
   }
 
-  Future<void> _onAutoStartChanged(bool value) async {
-    setState(() {
-      _autoStartEnabled = value;
-    });
-    await _storageService.setAutoStartEnabled(value);
-  }
-
   IconData _getPlayPauseIcon() {
     switch (_audioState) {
       case AudioState.playing:
@@ -148,6 +151,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Color _getStatusColor() {
+    if (_isRetrying()) {
+      return Colors.orange;
+    }
     if (_isConnected) {
       switch (_audioState) {
         case AudioState.playing:
@@ -166,6 +172,60 @@ class _HomeScreenState extends State<HomeScreen> {
     return Colors.grey;
   }
 
+  IconData _getConnectionIcon() {
+    if (_isRetrying()) {
+      return Icons.wifi_protected_setup;
+    }
+    if (_isConnected) {
+      return Icons.radio;
+    }
+    return Icons.radio;
+  }
+
+  bool _isRetrying() {
+    return _statusMessage.contains('attempt') ||
+        _statusMessage.contains('retrying') ||
+        _statusMessage.contains('Waiting for internet');
+  }
+
+  void _handleKeyPress(RawKeyEvent event) {
+    if (event is RawKeyDownEvent) {
+      switch (event.logicalKey) {
+        case LogicalKeyboardKey.arrowUp:
+        case LogicalKeyboardKey.arrowDown:
+        case LogicalKeyboardKey.arrowLeft:
+        case LogicalKeyboardKey.arrowRight:
+          // D-pad navigation handled by Focus system
+          break;
+        case LogicalKeyboardKey.select:
+        case LogicalKeyboardKey.enter:
+          // OK button pressed
+          final currentFocus = FocusScope.of(context).focusedChild;
+          if (currentFocus != null) {
+            // Trigger action for focused element
+            if (currentFocus == _connectButtonFocusNode) {
+              if (!_isConnecting) {
+                _isConnected ? _disconnect() : _connect();
+              }
+            } else if (currentFocus == _playButtonFocusNode && _isConnected) {
+              _togglePlayback();
+            }
+          }
+          break;
+        case LogicalKeyboardKey.mediaPlay:
+        case LogicalKeyboardKey.mediaPlayPause:
+          if (_isConnected) {
+            _togglePlayback();
+          }
+          break;
+        case LogicalKeyboardKey.escape:
+          // Back button - open system launcher
+          AutoStartService.openSystemLauncher();
+          break;
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -173,214 +233,257 @@ class _HomeScreenState extends State<HomeScreen> {
         title: const Text('Tunio Radio Player'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      const Text(
-                        'API Configuration',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      TextField(
-                        controller: _apiKeyController,
-                        decoration: const InputDecoration(
-                          labelText: 'API Key',
-                          hintText: 'Enter your Tunio API key',
-                          border: OutlineInputBorder(),
-                        ),
-                        enabled: !_isConnected && !_isConnecting,
-                        obscureText: true,
-                      ),
-                      const SizedBox(height: 16),
-                      Row(
+      body: FocusScope(
+        child: RawKeyboardListener(
+          focusNode: FocusNode(),
+          onKey: _handleKeyPress,
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          Expanded(
-                            child: Text(
-                              'Auto-start on boot',
-                              style: TextStyle(
-                                fontSize: 16,
-                                color: _isConnected ? Colors.grey : null,
-                              ),
+                          const Text(
+                            'API Configuration',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
                             ),
                           ),
-                          Switch(
-                            value: _autoStartEnabled,
-                            onChanged:
-                                _isConnected ? null : _onAutoStartChanged,
+                          const SizedBox(height: 16),
+                          TextField(
+                            controller: _apiKeyController,
+                            focusNode: _apiKeyFocusNode,
+                            autofocus: true,
+                            decoration: InputDecoration(
+                              labelText: 'API Key',
+                              hintText: 'Enter your Tunio API key',
+                              border: OutlineInputBorder(
+                                borderSide: BorderSide(
+                                  color: _apiKeyFocusNode.hasFocus
+                                      ? Colors.blue
+                                      : Colors.grey,
+                                  width: _apiKeyFocusNode.hasFocus ? 2 : 1,
+                                ),
+                              ),
+                              focusedBorder: const OutlineInputBorder(
+                                borderSide:
+                                    BorderSide(color: Colors.blue, width: 2),
+                              ),
+                            ),
+                            enabled: !_isConnected && !_isConnecting,
+                            obscureText: true,
+                            onSubmitted: (_) {
+                              if (!_isConnecting && !_isConnected) {
+                                _connect();
+                              }
+                            },
+                          ),
+                          const SizedBox(height: 16),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Focus(
+                                  focusNode: _connectButtonFocusNode,
+                                  child: ElevatedButton.icon(
+                                    onPressed: _isConnecting
+                                        ? null
+                                        : (_isConnected
+                                            ? _disconnect
+                                            : _connect),
+                                    icon: _isConnecting
+                                        ? const SizedBox(
+                                            width: 16,
+                                            height: 16,
+                                            child: CircularProgressIndicator(
+                                                strokeWidth: 2),
+                                          )
+                                        : Icon(_isConnected
+                                            ? Icons.logout
+                                            : Icons.login),
+                                    label: Text(_isConnecting
+                                        ? 'Connecting...'
+                                        : (_isConnected
+                                            ? 'Disconnect'
+                                            : 'Connect')),
+                                    style: ElevatedButton.styleFrom(
+                                      padding: const EdgeInsets.symmetric(
+                                          vertical: 12),
+                                      side: _connectButtonFocusNode.hasFocus
+                                          ? const BorderSide(
+                                              color: Colors.blue, width: 2)
+                                          : null,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Focus(
+                                focusNode: _settingsButtonFocusNode,
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    border: Border.all(
+                                      color: _settingsButtonFocusNode.hasFocus
+                                          ? Colors.blue
+                                          : Colors.transparent,
+                                      width: 2,
+                                    ),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: IconButton(
+                                    onPressed: () async {
+                                      await AutoStartService
+                                          .openSystemLauncher();
+                                    },
+                                    icon: const Icon(Icons.settings),
+                                    tooltip: 'Open System Launcher',
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
                         ],
                       ),
-                      const SizedBox(height: 16),
-                      ElevatedButton.icon(
-                        onPressed: _isConnecting
-                            ? null
-                            : (_isConnected ? _disconnect : _connect),
-                        icon: _isConnecting
-                            ? const SizedBox(
-                                width: 16,
-                                height: 16,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : Icon(_isConnected ? Icons.logout : Icons.login),
-                        label: Text(_isConnecting
-                            ? 'Connecting...'
-                            : (_isConnected ? 'Disconnect' : 'Connect')),
-                        style: ElevatedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
-                ),
-              ),
-              const SizedBox(height: 16),
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Row(
+                  const SizedBox(height: 16),
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          Icon(
-                            Icons.radio,
-                            color: _getStatusColor(),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              _statusMessage,
-                              style: TextStyle(
+                          Row(
+                            children: [
+                              Icon(
+                                _getConnectionIcon(),
                                 color: _getStatusColor(),
-                                fontWeight: FontWeight.w500,
                               ),
-                            ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  _statusMessage,
+                                  style: TextStyle(
+                                    color: _getStatusColor(),
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ),
+                              if (_isRetrying()) ...[
+                                const SizedBox(width: 8),
+                                SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: _getStatusColor(),
+                                  ),
+                                ),
+                              ],
+                            ],
                           ),
+                          if (_currentTitle != null) ...[
+                            const SizedBox(height: 8),
+                            Text(
+                              _currentTitle!,
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ],
                         ],
                       ),
-                      if (_currentTitle != null) ...[
-                        const SizedBox(height: 8),
-                        Text(
-                          _currentTitle!,
-                          style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
-                          textAlign: TextAlign.center,
-                        ),
-                      ],
-                    ],
+                    ),
                   ),
-                ),
-              ),
-              const SizedBox(height: 16),
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16.0),
-                  child: Column(
-                    children: [
-                      const Text(
-                        'Playback Controls',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
+                  const SizedBox(height: 16),
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Column(
                         children: [
-                          ElevatedButton(
-                            onPressed: _isConnected ? _togglePlayback : null,
-                            style: ElevatedButton.styleFrom(
-                              shape: const CircleBorder(),
-                              padding: const EdgeInsets.all(16),
+                          const Text(
+                            'Playback Controls',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
                             ),
-                            child: Icon(
-                              _getPlayPauseIcon(),
-                              size: 32,
-                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Focus(
+                                focusNode: _playButtonFocusNode,
+                                child: ElevatedButton(
+                                  onPressed:
+                                      _isConnected ? _togglePlayback : null,
+                                  style: ElevatedButton.styleFrom(
+                                    shape: const CircleBorder(),
+                                    padding: const EdgeInsets.all(16),
+                                    side: _playButtonFocusNode.hasFocus
+                                        ? const BorderSide(
+                                            color: Colors.blue, width: 3)
+                                        : null,
+                                  ),
+                                  child: Icon(
+                                    _getPlayPauseIcon(),
+                                    size: 32,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 16),
+                          Row(
+                            children: [
+                              const Icon(Icons.volume_down),
+                              Expanded(
+                                child: Focus(
+                                  focusNode: _volumeFocusNode,
+                                  child: Container(
+                                    decoration: BoxDecoration(
+                                      border: Border.all(
+                                        color: _volumeFocusNode.hasFocus
+                                            ? Colors.blue
+                                            : Colors.transparent,
+                                        width: 2,
+                                      ),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: Slider(
+                                      value: _volume,
+                                      onChanged: _isConnected
+                                          ? _onVolumeChanged
+                                          : null,
+                                      min: 0.0,
+                                      max: 1.0,
+                                      divisions: 20,
+                                      label: '${(_volume * 100).round()}%',
+                                      activeColor: _volumeFocusNode.hasFocus
+                                          ? Colors.blue
+                                          : null,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const Icon(Icons.volume_up),
+                            ],
                           ),
                         ],
                       ),
-                      const SizedBox(height: 16),
-                      Row(
-                        children: [
-                          const Icon(Icons.volume_down),
-                          Expanded(
-                            child: Slider(
-                              value: _volume,
-                              onChanged: _isConnected ? _onVolumeChanged : null,
-                              min: 0.0,
-                              max: 1.0,
-                              divisions: 20,
-                              label: '${(_volume * 100).round()}%',
-                            ),
-                          ),
-                          const Icon(Icons.volume_up),
-                        ],
-                      ),
-                    ],
+                    ),
                   ),
-                ),
+                ],
               ),
-              const SizedBox(height: 24),
-              Card(
-                color: _autoStartEnabled
-                    ? Colors.green.shade50
-                    : Colors.orange.shade50,
-                child: Padding(
-                  padding: const EdgeInsets.all(12.0),
-                  child: Column(
-                    children: [
-                      Icon(
-                        _autoStartEnabled
-                            ? Icons.check_circle_outline
-                            : Icons.info_outline,
-                        color: _autoStartEnabled ? Colors.green : Colors.orange,
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        _autoStartEnabled
-                            ? 'Auto-start is enabled. The app will automatically start and connect when your device boots up if an API key is saved.'
-                            : 'Auto-start is disabled. The app will not start automatically on device boot.',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color:
-                              _autoStartEnabled ? Colors.green : Colors.orange,
-                        ),
-                        textAlign: TextAlign.center,
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        'Perfect for Android TV boxes and set-top boxes!',
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: _autoStartEnabled
-                              ? Colors.green.shade700
-                              : Colors.orange.shade700,
-                          fontWeight: FontWeight.bold,
-                        ),
-                        textAlign: TextAlign.center,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
+            ),
           ),
         ),
       ),
@@ -390,6 +493,11 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _apiKeyController.dispose();
+    _apiKeyFocusNode.dispose();
+    _connectButtonFocusNode.dispose();
+    _settingsButtonFocusNode.dispose();
+    _playButtonFocusNode.dispose();
+    _volumeFocusNode.dispose();
     super.dispose();
   }
 }
