@@ -42,23 +42,16 @@ class _HomeScreenState extends State<HomeScreen> {
     _controller = await RadioController.getInstance();
     _storageService = await StorageService.getInstance();
 
-    // Initialize the current code and connection state from controller first
+    // Initialize the current code from controller
     final initialToken = _controller.currentToken ?? '';
     print(
         '🏠 HomeScreen: Initial token from controller: ${initialToken.isNotEmpty ? '${initialToken.substring(0, 2)}****' : 'EMPTY'}');
     setState(() {
       _currentCode = initialToken;
-      _isConnected = _controller.isConnected;
+      // Don't set _isConnected here - let the stream handle it
     });
 
-    final isAutoStarted = await AutoStartService.isAutoStarted();
-    if (isAutoStarted) {
-      await _controller.handleAutoStart();
-    } else {
-      // Handle normal app start
-      await _controller.handleNormalStart();
-    }
-
+    // Set up listeners first before triggering any start logic
     _controller.tokenStream.listen((token) {
       print(
           '🏠 HomeScreen: Token stream updated: ${token != null ? '${token.substring(0, 2)}****' : 'NULL'}');
@@ -70,6 +63,7 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     _controller.connectionStatusStream.listen((isConnected) {
+      print('🏠 HomeScreen: Connection status updated: $isConnected');
       if (mounted) {
         setState(() {
           _isConnected = isConnected;
@@ -77,6 +71,15 @@ class _HomeScreenState extends State<HomeScreen> {
         });
       }
     });
+
+    // Now trigger the startup logic after listeners are set up
+    final isAutoStarted = await AutoStartService.isAutoStarted();
+    if (isAutoStarted) {
+      await _controller.handleAutoStart();
+    } else {
+      // Handle normal app start
+      await _controller.handleNormalStart();
+    }
 
     _controller.statusMessageStream.listen((message) {
       if (mounted) {

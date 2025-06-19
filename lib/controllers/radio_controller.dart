@@ -46,7 +46,6 @@ class RadioController {
   }
 
   Stream<String?> get tokenStream => _tokenController.stream;
-  Stream<String?> get apiKeyStream => _tokenController.stream;
   Stream<bool> get connectionStatusStream => _connectionStatusController.stream;
   Stream<String> get statusMessageStream => _statusMessageController.stream;
   Stream<AudioState> get audioStateStream => _audioService.stateStream;
@@ -54,7 +53,6 @@ class RadioController {
   Stream<String?> get titleStream => _audioService.titleStream;
 
   String? get currentToken => _currentToken;
-  String? get currentApiKey => _currentToken;
   bool get isConnected => _currentToken != null && _currentConfig != null;
   AudioState get audioState => _audioService.currentState;
 
@@ -81,7 +79,14 @@ class RadioController {
         );
         Logger.info(
             'RadioController: Restored last configuration - URL: ${lastUrl.substring(0, 20)}..., Volume: $lastVolume');
+
+        // Set initial connection status based on restored state
+        _connectionStatusController.add(true);
+      } else {
+        _connectionStatusController.add(false);
       }
+    } else {
+      _connectionStatusController.add(false);
     }
 
     _setupAudioErrorHandling();
@@ -208,18 +213,29 @@ class RadioController {
 
     Logger.info('RadioController: Triggering reconnection - $reason');
     _autoConnectEnabled = true;
-    _startAutoConnect();
+    _retryAttempts = 0;
+    _attemptConnection();
   }
 
   String _statusMessage = 'Ready';
 
   Future<bool> connectWithToken(String token) async {
-    _autoConnectEnabled = false;
-    _retryTimer?.cancel();
+    return await connect(token);
+  }
+
+  /// Unified connection method that handles both manual and automatic connections
+  /// Auto-reconnect is always enabled for autonomous operation
+  Future<bool> connect(String token, {bool isRetry = false}) async {
+    if (!isRetry) {
+      // Stop any existing retry logic when starting a new connection
+      _autoConnectEnabled = false;
+      _retryTimer?.cancel();
+    }
 
     try {
       _statusMessageController.add('Connecting...');
-      Logger.info('RadioController: Attempting connection with token');
+      Logger.info(
+          'RadioController: Attempting connection with token (autoReconnect: always enabled)');
 
       final config = await _apiService.getStreamConfigWithToken(token);
       if (config != null) {
@@ -238,14 +254,23 @@ class RadioController {
         try {
           await _audioService.playStream(config);
           _lastStreamStart = DateTime.now();
+          _statusMessageController.add('Playing');
         } catch (e) {
           Logger.error('RadioController: Failed to start audio stream: $e');
           _triggerReconnection(
               'Failed to start audio after successful API connection');
-          return true; // API connection was successful, let auto-reconnect handle audio
+          return true; // API connection was successful
         }
 
+        // Enable auto-reconnection and start config polling after successful connection
+        _autoConnectEnabled = true;
         _startConfigPolling();
+
+        // Reset retry state on success
+        _retryAttempts = 0;
+        _consecutiveFailures = 0;
+        _isRetrying = false;
+
         return true;
       } else {
         throw Exception('Invalid configuration received from API');
@@ -255,12 +280,15 @@ class RadioController {
       _connectionStatusController.add(false);
       _statusMessageController.add('Connection failed: $e');
       _consecutiveFailures++;
+
+      if (!isRetry) {
+        // Start auto-reconnect logic for failed connections
+        _autoConnectEnabled = true;
+        _triggerReconnection('Initial connection failed');
+      }
+
       return false;
     }
-  }
-
-  Future<bool> connectWithApiKey(String apiKey) async {
-    return await connectWithToken(apiKey);
   }
 
   Future<void> disconnect() async {
@@ -368,29 +396,25 @@ class RadioController {
   }
 
   Future<void> handleAutoStart() async {
-    if (_currentToken != null && _currentToken!.isNotEmpty) {
-      Logger.info(
-          'RadioController: Auto-start triggered with token: ${_currentToken!.substring(0, 2)}****');
-      _autoConnectEnabled = true;
-      _statusMessageController.add('Auto-starting...');
-      _startAutoConnect();
-    } else {
-      Logger.info('RadioController: Auto-start called but no token found');
-      _statusMessageController.add('Ready');
-      _connectionStatusController.add(false);
-    }
+    await _handleAppStart(isAutoStart: true);
   }
 
   Future<void> handleNormalStart() async {
-    // For normal app start, restore token and auto-connect if available
+    await _handleAppStart(isAutoStart: false);
+  }
+
+  /// Unified app start handler for both auto-start and normal start
+  Future<void> _handleAppStart({required bool isAutoStart}) async {
+    final startType = isAutoStart ? 'Auto-start' : 'Normal app start';
+
     if (_currentToken != null && _currentToken!.isNotEmpty) {
       Logger.info(
-          'RadioController: Normal app start with saved token - auto-connecting');
+          'RadioController: $startType with saved token: ${_currentToken!.substring(0, 2)}****');
 
-      // If we already have a restored configuration, try to start playback immediately
+      // Try to restore from saved config first (faster startup)
       if (_currentConfig != null) {
         Logger.info(
-            'RadioController: Found restored config, starting playback immediately');
+            'RadioController: Found restored config, attempting quick start');
         _connectionStatusController.add(true);
         _statusMessageController.add('Restoring playback...');
 
@@ -398,33 +422,33 @@ class RadioController {
           _lastStreamStart = DateTime.now();
           await _audioService.playStream(_currentConfig!);
           _statusMessageController.add('Playing');
+          _autoConnectEnabled =
+              true; // Enable auto-reconnect for autonomous operation
           _startConfigPolling();
           Logger.info(
               'RadioController: Successfully restored playback from saved config');
+          return;
         } catch (e) {
           Logger.error(
-              'RadioController: Failed to start playback from saved config: $e');
-          // Fall back to full reconnection if playback fails
-          _autoConnectEnabled = true;
-          _statusMessageController.add('Restoring connection...');
-          _startAutoConnect();
+              'RadioController: Failed to start from saved config: $e');
+          _connectionStatusController.add(false);
+          // Fall through to full reconnection
         }
-      } else {
-        // No saved config, do full reconnection
-        _autoConnectEnabled = true;
-        _statusMessageController.add('Restoring connection...');
-        _startAutoConnect();
+      }
+
+      // Full reconnection
+      _statusMessageController.add('Connecting...');
+      final success = await connect(_currentToken!);
+
+      if (!success) {
+        Logger.warning(
+            'RadioController: $startType connection failed, auto-reconnect will continue trying');
       }
     } else {
-      Logger.info('RadioController: Normal app start - no saved token found');
+      Logger.info('RadioController: $startType - no saved token found');
       _statusMessageController.add('Ready');
       _connectionStatusController.add(false);
     }
-  }
-
-  void _startAutoConnect() {
-    _retryAttempts = 0;
-    _attemptConnection();
   }
 
   Future<void> _attemptConnection() async {
@@ -449,49 +473,21 @@ class RadioController {
 
     _statusMessageController.add('Connecting (attempt $_retryAttempts)...');
 
-    try {
-      final config = await _apiService.getStreamConfigWithToken(_currentToken!);
-      if (config != null) {
-        _currentConfig = config;
-        await _storageService.saveLastStreamUrl(config.streamUrl);
-        await _storageService.saveLastVolume(config.volume);
+    // Use the unified connect method with retry flag
+    final success = await connect(_currentToken!, isRetry: true);
 
-        _connectionStatusController.add(true);
-        _statusMessageController.add('Connected successfully');
-        _lastSuccessfulConnection = DateTime.now();
-        _consecutiveFailures = 0;
-
-        // Always start audio playback after successful API connection during auto-connect
-        try {
-          _lastStreamStart = DateTime.now();
-          await _audioService.playStream(config);
-          _statusMessageController.add('Playing');
-          _autoConnectEnabled = false;
-          _retryTimer?.cancel();
-          _isRetrying = false;
-          Logger.info(
-              'RadioController: Audio playback started successfully during auto-connect');
-        } catch (e) {
-          Logger.error(
-              'RadioController: Audio start failed after API success: $e');
-          _statusMessageController.add('Audio start failed - retrying...');
-          _scheduleRetry();
-          return;
-        }
-
-        _startConfigPolling();
-        Logger.info(
-            'RadioController: Auto-connect successful after $_retryAttempts attempts');
-        return;
-      } else {
-        throw Exception('Invalid configuration received from API');
-      }
-    } catch (e) {
+    if (success) {
+      // Connection successful - stop retrying
+      _retryTimer?.cancel();
+      _isRetrying = false;
+      Logger.info(
+          'RadioController: Auto-connect successful after $_retryAttempts attempts');
+    } else {
+      // Connection failed - schedule retry
       Logger.error(
-          'RadioController: Connection attempt $_retryAttempts failed: $e');
-      _consecutiveFailures++;
+          'RadioController: Connection attempt $_retryAttempts failed');
       _statusMessageController
-          .add('Connection failed (attempt $_retryAttempts): $e - retrying...');
+          .add('Connection failed (attempt $_retryAttempts) - retrying...');
       _scheduleRetry();
     }
   }
