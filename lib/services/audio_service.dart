@@ -45,15 +45,30 @@ class AudioService {
   Stream<String?> get titleStream => _titleController.stream;
 
   AudioState get currentState {
+    // Check for loading state first
     if (_audioPlayer.processingState == ProcessingState.loading) {
       return AudioState.loading;
-    } else if (_audioPlayer.processingState == ProcessingState.buffering) {
+    }
+    // Check for buffering state
+    else if (_audioPlayer.processingState == ProcessingState.buffering) {
       return AudioState.buffering;
-    } else if (_audioPlayer.playing) {
+    }
+    // Check if player thinks it's playing AND has a valid stream
+    else if (_audioPlayer.playing &&
+        _audioPlayer.processingState == ProcessingState.ready) {
       return AudioState.playing;
-    } else if (_audioPlayer.processingState == ProcessingState.ready) {
+    }
+    // Player might be "playing" but not ready - treat as buffering
+    else if (_audioPlayer.playing &&
+        _audioPlayer.processingState != ProcessingState.ready) {
+      return AudioState.buffering;
+    }
+    // Player is ready but paused
+    else if (_audioPlayer.processingState == ProcessingState.ready) {
       return AudioState.paused;
-    } else {
+    }
+    // All other cases
+    else {
       return AudioState.idle;
     }
   }
@@ -85,9 +100,15 @@ class AudioService {
     );
 
     _playerStateSubscription = _audioPlayer.playerStateStream.listen((state) {
-      _stateController.add(currentState);
+      final currentAudioState = currentState;
+      print(
+          '🎵 AudioService: Player state changed to ${state.processingState}, playing: ${state.playing}');
+      print('🎵 AudioService: Current audio state: $currentAudioState');
+
+      _stateController.add(currentAudioState);
 
       if (state.processingState == ProcessingState.completed) {
+        print('🎵 AudioService: Stream completed, handling stream end');
         _handleStreamEnd();
       }
     });

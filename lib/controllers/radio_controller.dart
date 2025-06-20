@@ -36,6 +36,8 @@ class RadioController {
       StreamController<String>.broadcast();
   final StreamController<String> _errorNotificationController =
       StreamController<String>.broadcast();
+  final StreamController<bool> _retryStateController =
+      StreamController<bool>.broadcast();
 
   RadioController._();
 
@@ -52,13 +54,23 @@ class RadioController {
   Stream<String> get statusMessageStream => _statusMessageController.stream;
   Stream<String> get errorNotificationStream =>
       _errorNotificationController.stream;
+  Stream<bool> get retryStateStream => _retryStateController.stream;
   Stream<AudioState> get audioStateStream => _audioService.stateStream;
   Stream<String> get audioErrorStream => _audioService.errorStream;
   Stream<String?> get titleStream => _audioService.titleStream;
 
   String? get currentToken => _currentToken;
   bool get isConnected => _currentToken != null && _currentConfig != null;
+  bool get isRetrying => _isRetrying;
   AudioState get audioState => _audioService.currentState;
+
+  void _setRetryState(bool isRetrying) {
+    if (_isRetrying != isRetrying) {
+      _isRetrying = isRetrying;
+      _retryStateController.add(_isRetrying);
+      Logger.info('RadioController: Retry state changed to: $_isRetrying');
+    }
+  }
 
   Future<void> _initialize() async {
     _apiService = ApiService();
@@ -104,19 +116,28 @@ class RadioController {
       switch (state) {
         case AudioState.playing:
           _statusMessageController.add('Playing');
-          _isRetrying = false;
+          _setRetryState(false);
           _isStreamHealthy = true;
           _consecutiveFailures = 0;
           _lastStreamStart = DateTime.now();
-          Logger.info('RadioController: Stream playing successfully');
+          Logger.info(
+              'RadioController: Stream playing successfully - audio state is genuinely playing');
           break;
 
         case AudioState.loading:
         case AudioState.buffering:
+          Logger.info(
+              'RadioController: Stream is loading/buffering - setting up timeout monitoring');
+          if (state == AudioState.buffering) {
+            _statusMessageController.add('Buffering...');
+          } else {
+            _statusMessageController.add('Loading...');
+          }
           _handleLoadingBufferingTimeout();
           break;
 
         case AudioState.error:
+          Logger.warning('RadioController: Audio state changed to error');
           _isStreamHealthy = false;
           if (_currentToken != null && _currentConfig != null && !_isRetrying) {
             _triggerReconnection('Stream error');
@@ -124,7 +145,13 @@ class RadioController {
           break;
 
         case AudioState.idle:
+          Logger.info('RadioController: Audio state changed to idle');
           _isStreamHealthy = false;
+          break;
+
+        case AudioState.paused:
+          Logger.info('RadioController: Audio state changed to paused');
+          _statusMessageController.add('Paused');
           break;
 
         default:
@@ -239,7 +266,6 @@ class RadioController {
         try {
           await _audioService.playStream(config);
           _lastStreamStart = DateTime.now();
-          _statusMessageController.add('Playing');
         } catch (e) {
           Logger.error('RadioController: Failed to start audio stream: $e');
           _triggerReconnection(
@@ -254,7 +280,7 @@ class RadioController {
         // Reset retry state on success
         _retryAttempts = 0;
         _consecutiveFailures = 0;
-        _isRetrying = false;
+        _setRetryState(false);
 
         return true;
       } else {
@@ -385,7 +411,7 @@ class RadioController {
                 'RadioController: Restarting playback with new stream URL');
             _lastStreamStart = DateTime.now();
             await _audioService.playStream(newConfig);
-            _statusMessageController.add('Stream updated - playing new URL');
+            // Let audio state handler set the proper status message
           } else {
             _statusMessageController.add('Stream URL updated');
           }
@@ -444,7 +470,7 @@ class RadioController {
       return;
     }
 
-    _isRetrying = true;
+    _setRetryState(true);
     _retryAttempts++;
 
     Logger.info('RadioController: Connection attempt #$_retryAttempts');
@@ -465,7 +491,7 @@ class RadioController {
     if (success) {
       // Connection successful - stop retrying
       _retryTimer?.cancel();
-      _isRetrying = false;
+      _setRetryState(false);
       Logger.info(
           'RadioController: Auto-connect successful after $_retryAttempts attempts');
     } else {
@@ -480,28 +506,28 @@ class RadioController {
 
   void _scheduleRetry() {
     if (!_autoConnectEnabled) {
-      _isRetrying = false;
+      _setRetryState(false);
       return;
     }
 
     _retryTimer?.cancel();
 
     // Adaptive delay based on failure count and attempt number
-    int delay;
-    if (_retryAttempts <= 5) {
-      delay = _retryAttempts * 3; // 3, 6, 9, 12, 15 seconds
-    } else if (_retryAttempts <= 10) {
-      delay = 30; // 30 seconds for attempts 6-10
-    } else if (_retryAttempts <= 20) {
-      delay = 60; // 1 minute for attempts 11-20
-    } else {
-      delay = 300; // 5 minutes for attempts 21+
-    }
+    int delay = 10;
+    // if (_retryAttempts <= 5) {
+    //   delay = _retryAttempts * 3; // 3, 6, 9, 12, 15 seconds
+    // } else if (_retryAttempts <= 10) {
+    //   delay = 30; // 30 seconds for attempts 6-10
+    // } else if (_retryAttempts <= 20) {
+    //   delay = 60; // 1 minute for attempts 11-20
+    // } else {
+    //   delay = 300; // 5 minutes for attempts 21+
+    // }
 
-    // Increase delay if we have many consecutive failures
-    if (_consecutiveFailures > 10) {
-      delay = delay * 2; // Double the delay
-    }
+    // // Increase delay if we have many consecutive failures
+    // if (_consecutiveFailures > 10) {
+    //   delay = delay * 2; // Double the delay
+    // }
 
     Logger.info(
         'RadioController: Scheduling retry #${_retryAttempts + 1} in ${delay}s (consecutive failures: $_consecutiveFailures)');
@@ -510,7 +536,7 @@ class RadioController {
       if (_autoConnectEnabled) {
         _attemptConnection();
       } else {
-        _isRetrying = false;
+        _setRetryState(false);
       }
     });
   }
@@ -527,5 +553,6 @@ class RadioController {
     await _connectionStatusController.close();
     await _statusMessageController.close();
     await _errorNotificationController.close();
+    await _retryStateController.close();
   }
 }

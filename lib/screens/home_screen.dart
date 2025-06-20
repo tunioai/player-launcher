@@ -37,6 +37,7 @@ class _HomeScreenState extends State<HomeScreen> {
   AudioState _audioState = AudioState.idle;
   String? _currentTitle;
   bool _isConnecting = false;
+  bool _isRetrying = false;
   double _volume = 1.0;
 
   @override
@@ -106,6 +107,16 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     });
 
+    // Listen for retry state changes
+    _controller.retryStateStream.listen((isRetrying) {
+      print('🏠 HomeScreen: Retry state updated: $isRetrying');
+      if (mounted) {
+        setState(() {
+          _isRetrying = isRetrying;
+        });
+      }
+    });
+
     // Listen for error notifications and show snackbar
     _controller.errorNotificationStream.listen((errorMessage) {
       print('🏠 HomeScreen: Error notification: $errorMessage');
@@ -143,6 +154,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _volume = _controller.volume;
         _isConnected = _controller.isConnected;
         _audioState = _controller.audioState;
+        _isRetrying = _controller.isRetrying;
         // Status message and title will be updated via streams
       });
     }
@@ -206,7 +218,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Color _getStatusColor() {
-    if (_isRetrying()) {
+    if (_isRetrying) {
       return Colors.orange;
     }
     if (_isConnected) {
@@ -228,19 +240,13 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   IconData _getConnectionIcon() {
-    if (_isRetrying()) {
+    if (_isRetrying) {
       return Icons.wifi_protected_setup;
     }
     if (_isConnected) {
       return Icons.radio;
     }
     return Icons.radio;
-  }
-
-  bool _isRetrying() {
-    return _statusMessage.contains('attempt') ||
-        _statusMessage.contains('retrying') ||
-        _statusMessage.contains('Waiting for internet');
   }
 
   IconData _getThemeIcon() {
@@ -442,7 +448,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   ),
                                 ),
                               ),
-                              if (_isRetrying()) ...[
+                              if (_isRetrying) ...[
                                 const SizedBox(width: 8),
                                 SizedBox(
                                   width: 16,
