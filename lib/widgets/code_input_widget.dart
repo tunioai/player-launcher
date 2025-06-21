@@ -239,51 +239,6 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
             ),
           ),
           const SizedBox(height: 16),
-          // Visual representation of digits for desktop/TV
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: List.generate(_codeLength, (index) {
-              return Container(
-                width: 50,
-                height: 60,
-                decoration: BoxDecoration(
-                  border: Border.all(
-                    color: _digits[index].isNotEmpty
-                        ? (_focusNode.hasFocus
-                            ? Colors.blue
-                            : Colors.grey[600]!)
-                        : (_focusNode.hasFocus
-                            ? Colors.blue
-                            : Colors.grey[300]!),
-                    width: _focusNode.hasFocus ? 3 : 2,
-                  ),
-                  borderRadius: BorderRadius.circular(12),
-                  color: _digits[index].isNotEmpty
-                      ? (_focusNode.hasFocus
-                          ? Colors.blue.withValues(alpha: 0.1)
-                          : Colors.grey[50])
-                      : (_focusNode.hasFocus
-                          ? Colors.blue.withValues(alpha: 0.05)
-                          : Colors.white),
-                ),
-                child: Center(
-                  child: Text(
-                    _digits[index],
-                    style: TextStyle(
-                      fontSize: 28,
-                      fontWeight: FontWeight.bold,
-                      color: widget.enabled
-                          ? (_digits[index].isNotEmpty
-                              ? Colors.black
-                              : Colors.grey[400])
-                          : Colors.grey,
-                    ),
-                  ),
-                ),
-              );
-            }),
-          ),
-          const SizedBox(height: 16),
           TextField(
             controller: _textController,
             focusNode: _focusNode,

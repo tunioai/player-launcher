@@ -632,6 +632,79 @@ class _HomeScreenState extends State<HomeScreen> {
                     child: Padding(
                       padding: const EdgeInsets.all(16.0),
                       child: Column(
+                        children: [
+                          Text(
+                            _currentTitle ?? '',
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          Row(
+                            children: [
+                              Focus(
+                                focusNode: _playButtonFocusNode,
+                                child: ElevatedButton(
+                                  onPressed:
+                                      _isConnected ? _togglePlayback : null,
+                                  style: ElevatedButton.styleFrom(
+                                    shape: const CircleBorder(),
+                                    padding: const EdgeInsets.all(16),
+                                    side: _playButtonFocusNode.hasFocus
+                                        ? const BorderSide(
+                                            color: Colors.blue, width: 3)
+                                        : null,
+                                  ),
+                                  child: Icon(
+                                    _getPlayPauseIcon(),
+                                    size: 32,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 16),
+                              const Icon(Icons.volume_down),
+                              Expanded(
+                                child: Focus(
+                                  focusNode: _volumeFocusNode,
+                                  child: Container(
+                                    decoration: BoxDecoration(
+                                      border: Border.all(
+                                        color: _volumeFocusNode.hasFocus
+                                            ? Colors.blue
+                                            : Colors.transparent,
+                                        width: 2,
+                                      ),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: Slider(
+                                      value: _volume,
+                                      onChanged: _isConnected
+                                          ? _onVolumeChanged
+                                          : null,
+                                      min: 0.0,
+                                      max: 1.0,
+                                      divisions: 20,
+                                      label: '${(_volume * 100).round()}%',
+                                      activeColor: _volumeFocusNode.hasFocus
+                                          ? Colors.blue
+                                          : null,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const Icon(Icons.volume_up),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
                           Row(
@@ -703,79 +776,6 @@ class _HomeScreenState extends State<HomeScreen> {
                           //     textAlign: TextAlign.center,
                           //   ),
                           // ],
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(16.0),
-                      child: Column(
-                        children: [
-                          Text(
-                            _currentTitle ?? '',
-                            style: const TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          const SizedBox(height: 16),
-                          Row(
-                            children: [
-                              Focus(
-                                focusNode: _playButtonFocusNode,
-                                child: ElevatedButton(
-                                  onPressed:
-                                      _isConnected ? _togglePlayback : null,
-                                  style: ElevatedButton.styleFrom(
-                                    shape: const CircleBorder(),
-                                    padding: const EdgeInsets.all(16),
-                                    side: _playButtonFocusNode.hasFocus
-                                        ? const BorderSide(
-                                            color: Colors.blue, width: 3)
-                                        : null,
-                                  ),
-                                  child: Icon(
-                                    _getPlayPauseIcon(),
-                                    size: 32,
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 16),
-                              const Icon(Icons.volume_down),
-                              Expanded(
-                                child: Focus(
-                                  focusNode: _volumeFocusNode,
-                                  child: Container(
-                                    decoration: BoxDecoration(
-                                      border: Border.all(
-                                        color: _volumeFocusNode.hasFocus
-                                            ? Colors.blue
-                                            : Colors.transparent,
-                                        width: 2,
-                                      ),
-                                      borderRadius: BorderRadius.circular(8),
-                                    ),
-                                    child: Slider(
-                                      value: _volume,
-                                      onChanged: _isConnected
-                                          ? _onVolumeChanged
-                                          : null,
-                                      min: 0.0,
-                                      max: 1.0,
-                                      divisions: 20,
-                                      label: '${(_volume * 100).round()}%',
-                                      activeColor: _volumeFocusNode.hasFocus
-                                          ? Colors.blue
-                                          : null,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                              const Icon(Icons.volume_up),
-                            ],
-                          ),
                         ],
                       ),
                     ),
