@@ -37,7 +37,7 @@ jobs:
       run: flutter test
       
     - name: Check formatting
-      run: flutter format --dry-run --set-exit-if-changed lib/ test/
+      run: dart format --output=none --set-exit-if-changed lib/ test/
       
   build-test:
     name: Build Test
