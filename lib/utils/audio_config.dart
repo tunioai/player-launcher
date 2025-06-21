@@ -42,6 +42,22 @@ class AudioConfig {
   static const int goodBufferThresholdSeconds = 10; // Healthy threshold
   static const int excellentBufferThresholdSeconds = 20; // Excellent threshold
 
+  // Live streaming simplified approach
+  static const Duration liveStreamStartupDelay =
+      Duration(seconds: 4); // Configurable startup delay (tested: 2s, 4s work)
+  static const Duration liveStreamFastStartup =
+      Duration(seconds: 2); // Fast networks
+  static const Duration liveStreamSlowStartup =
+      Duration(seconds: 6); // Slow networks
+
+  // Simple live stream settings - no complex buffering
+  static const Duration simpleMinBuffer =
+      Duration(seconds: 2); // Minimal buffer
+  static const Duration simpleMaxBuffer =
+      Duration(seconds: 10); // Reasonable maximum
+  static const int simpleTargetBytes =
+      2 * 1024 * 1024; // 2MB - simple and effective
+
   static AudioLoadConfiguration getStreamingConfiguration() {
     return AudioLoadConfiguration(
       androidLoadControl: AndroidLoadControl(
@@ -119,7 +135,8 @@ class AudioConfig {
       ),
       darwinLoadControl: DarwinLoadControl(
         automaticallyWaitsToMinimizeStalling: true, // Let system handle
-        preferredForwardBufferDuration: Duration(seconds: 15),
+        preferredForwardBufferDuration:
+            Duration(seconds: 25), // STEP 2: 15->25 for better macOS buffering
         canUseNetworkResourcesForLiveStreamingWhilePaused: true,
         preferredPeakBitRate: 192000,
       ),
@@ -193,6 +210,30 @@ class AudioConfig {
         preferredForwardBufferDuration: Duration(seconds: 20), // TV buffer
         canUseNetworkResourcesForLiveStreamingWhilePaused: true,
         preferredPeakBitRate: 192000, // Lower bitrate for TV stability
+      ),
+    );
+  }
+
+  // Simplified Live Stream configuration - focus on stability, not big buffers
+  static AudioLoadConfiguration getSimpleLiveStreamConfiguration() {
+    return AudioLoadConfiguration(
+      androidLoadControl: AndroidLoadControl(
+        // Simple settings optimized for live streaming
+        minBufferDuration: simpleMinBuffer, // 2s minimum
+        maxBufferDuration:
+            simpleMaxBuffer, // 10s maximum - prevent infinite growth
+        bufferForPlaybackDuration: Duration(seconds: 1), // Quick start
+        bufferForPlaybackAfterRebufferDuration:
+            Duration(seconds: 3), // Quick recovery
+        targetBufferBytes: simpleTargetBytes, // 2MB - simple target
+        prioritizeTimeOverSizeThresholds: true,
+        backBufferDuration: Duration(seconds: 1), // Minimal back buffer
+      ),
+      darwinLoadControl: DarwinLoadControl(
+        automaticallyWaitsToMinimizeStalling: false,
+        preferredForwardBufferDuration: Duration(seconds: 8), // Simple 8s ahead
+        canUseNetworkResourcesForLiveStreamingWhilePaused: true,
+        preferredPeakBitRate: 256000, // Reasonable bitrate
       ),
     );
   }

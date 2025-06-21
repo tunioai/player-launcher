@@ -44,6 +44,7 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isRetrying = false;
   double _volume = 1.0;
   Duration _bufferAhead = Duration.zero;
+  String _connectionQuality = "Good"; // Connection quality instead of buffer
 
   @override
   void initState() {
@@ -161,13 +162,23 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     });
 
-    // Listen for real-time buffer updates
+    // Listen for real-time buffer updates (kept for fallback)
     _controller.bufferStream.listen((bufferAhead) {
       Logger.debug('🏠 HomeScreen: Buffer updated: ${bufferAhead.inSeconds}s',
           'HomeScreen');
       if (mounted) {
         setState(() {
           _bufferAhead = bufferAhead;
+        });
+      }
+    });
+
+    // Listen for connection quality updates (replaces buffer display)
+    _controller.connectionQualityStream.listen((quality) {
+      Logger.debug('🏠 HomeScreen: Connection quality: $quality', 'HomeScreen');
+      if (mounted) {
+        setState(() {
+          _connectionQuality = quality;
         });
       }
     });
@@ -304,6 +315,33 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Color _getConnectionQualityColor() {
+    switch (_connectionQuality) {
+      case "Poor":
+        return Colors.red;
+      case "Fair":
+        return Colors.orange;
+      case "Good":
+        return Colors.green;
+      default:
+        return Colors.grey;
+    }
+  }
+
+  IconData _getConnectionQualityIcon() {
+    switch (_connectionQuality) {
+      case "Poor":
+        return Icons.warning;
+      case "Fair":
+        return Icons.wifi;
+      case "Good":
+        return Icons.wifi_tethering;
+      default:
+        return Icons.wifi_off;
+    }
+  }
+
+  // Legacy buffer functions (kept for potential fallback)
   Color _getBufferColor() {
     if (AudioConfig.isBufferCritical(_bufferAhead)) {
       return Colors.red; // Critical: < 5s
@@ -752,7 +790,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   ),
                                 ),
                               ],
-                              // Advanced buffer status indicator with color levels
+                              // Connection quality indicator (replaces buffer counter)
                               if (_isConnected &&
                                   (_audioState == AudioState.playing ||
                                       _audioState == AudioState.buffering ||
@@ -760,17 +798,16 @@ class _HomeScreenState extends State<HomeScreen> {
                                 const SizedBox(width: 8),
                                 Tooltip(
                                   message:
-                                      AudioConfig.getBufferStatusDescription(
-                                          _bufferAhead),
+                                      'Connection Quality: $_connectionQuality',
                                   child: Container(
                                     padding: const EdgeInsets.symmetric(
                                         horizontal: 6, vertical: 2),
                                     decoration: BoxDecoration(
-                                      color: _getBufferColor()
+                                      color: _getConnectionQualityColor()
                                           .withValues(alpha: 0.2),
                                       borderRadius: BorderRadius.circular(10),
                                       border: Border.all(
-                                        color: _getBufferColor(),
+                                        color: _getConnectionQualityColor(),
                                         width: 1,
                                       ),
                                     ),
@@ -778,16 +815,16 @@ class _HomeScreenState extends State<HomeScreen> {
                                       mainAxisSize: MainAxisSize.min,
                                       children: [
                                         Icon(
-                                          _getBufferIcon(),
+                                          _getConnectionQualityIcon(),
                                           size: 10,
-                                          color: _getBufferColor(),
+                                          color: _getConnectionQualityColor(),
                                         ),
                                         const SizedBox(width: 2),
                                         Text(
-                                          '${_bufferAhead.inSeconds}s',
+                                          _connectionQuality,
                                           style: TextStyle(
                                             fontSize: 10,
-                                            color: _getBufferColor(),
+                                            color: _getConnectionQualityColor(),
                                             fontWeight: FontWeight.bold,
                                           ),
                                         ),

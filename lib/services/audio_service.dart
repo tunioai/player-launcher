@@ -27,6 +27,8 @@ class AudioService {
 
   String? _currentStreamUrl;
   double _currentVolume = 1.0;
+  DateTime? _networkLostTime; // Track when network was lost
+  bool _isNetworkConnected = true; // Track network state
 
   final StreamController<AudioState> _stateController =
       StreamController<AudioState>.broadcast();
@@ -34,6 +36,8 @@ class AudioService {
       StreamController<String>.broadcast();
   final StreamController<Duration> _bufferController =
       StreamController<Duration>.broadcast();
+  final StreamController<String> _connectionQualityController =
+      StreamController<String>.broadcast();
 
   AudioService._();
 
@@ -46,6 +50,8 @@ class AudioService {
   Stream<AudioState> get stateStream => _stateController.stream;
   Stream<String> get errorStream => _errorController.stream;
   Stream<Duration> get bufferStream => _bufferController.stream;
+  Stream<String> get connectionQualityStream =>
+      _connectionQualityController.stream;
 
   AudioState get currentState {
     // Check for loading state first
@@ -96,11 +102,10 @@ class AudioService {
       androidWillPauseWhenDucked: false,
     ));
 
-    // Configure audio player with enhanced buffering for radio streaming
-    // FULL ROLLBACK: Using original working simple config
+    // EMERGENCY ROLLBACK: Using known working configuration
     final config = AudioConfig.getSimpleStreamingConfiguration();
-    Logger.info('🔧 AudioService: Using ORIGINAL working simple config',
-        'AudioService');
+    Logger.info(
+        '🔧 AudioService: ROLLBACK to working simple config', 'AudioService');
 
     _audioPlayer = AudioPlayer(
       userAgent: AudioConfig.userAgent,
@@ -115,6 +120,21 @@ class AudioService {
           'AudioService');
       Logger.debug('🎵 AudioService: Current audio state: $currentAudioState',
           'AudioService');
+
+      // REAL BUFFER TEST: Check how long playback continues without network
+      if (!_isNetworkConnected && _networkLostTime != null) {
+        final timeSinceNetworkLoss =
+            DateTime.now().difference(_networkLostTime!);
+        if (state.playing) {
+          Logger.info(
+              '📊 AudioService: REAL BUFFER TEST - Still playing ${timeSinceNetworkLoss.inSeconds}s after network loss (claimed buffer was showing ${_audioPlayer.bufferedPosition.inSeconds - _audioPlayer.position.inSeconds}s)',
+              'AudioService');
+        } else if (state.processingState == ProcessingState.buffering) {
+          Logger.warning(
+              '📊 AudioService: REAL BUFFER TEST - Started buffering after ${timeSinceNetworkLoss.inSeconds}s without network (this is the REAL buffer size)',
+              'AudioService');
+        }
+      }
 
       _stateController.add(currentAudioState);
 
@@ -137,52 +157,38 @@ class AudioService {
       }
     });
 
-    // Enhanced buffering monitoring with detailed diagnostics
+    // Additional position monitoring for live stream diagnostics
+    _audioPlayer.positionStream.listen((position) {
+      Logger.debug('⏱️ AudioService: Position update - ${position.inSeconds}s',
+          'AudioService');
+    });
+
+    // Simplified buffer monitoring + connection quality for live streaming
     _audioPlayer.bufferedPositionStream.listen((bufferedPosition) {
       final currentPosition = _audioPlayer.position;
-      final bufferAhead = bufferedPosition - currentPosition;
+      final rawBufferAhead = bufferedPosition - currentPosition;
 
-      // Always send buffer info to stream (even if 0)
+      // Simple buffer calculation - cap at 10s for live stream
+      final bufferAhead =
+          Duration(seconds: rawBufferAhead.inSeconds.clamp(0, 10));
       _bufferController.add(bufferAhead);
 
-      // Detailed logging for buffer analysis
-      Logger.debug(
-          '🔍 AudioService DETAILED: bufferedPos=${bufferedPosition.inSeconds}s, currentPos=${currentPosition.inSeconds}s, bufferAhead=${bufferAhead.inSeconds}s, playing=${_audioPlayer.playing}, state=${_audioPlayer.processingState}',
-          'AudioService');
-
-      if (bufferAhead.inSeconds >= 0) {
-        final bufferStatus =
-            AudioConfig.getBufferStatusDescription(bufferAhead);
-        final isHealthy = AudioConfig.isBufferHealthy(bufferAhead);
-
-        Logger.debug(
-            '🎵 AudioService: $bufferStatus (pos: ${currentPosition.inSeconds}s, buffered: ${bufferedPosition.inSeconds}s) ${isHealthy ? '✅' : '⚠️'}',
-            'AudioService');
-
-        // Special analysis for stuck buffer
-        if (bufferAhead.inSeconds <= 3 && _audioPlayer.playing) {
-          Logger.warning(
-              '⚠️ AudioService: Buffer stuck at ${bufferAhead.inSeconds}s - AndroidLoadControl settings: targetBufferBytes=8MB, maxBufferDuration=60s',
-              'AudioService');
-          Logger.warning(
-              '📊 AudioService: Raw data - bufferedPos: ${bufferedPosition.inSeconds}s, currentPos: ${currentPosition.inSeconds}s, playing: ${_audioPlayer.playing}, state: ${_audioPlayer.processingState}',
-              'AudioService');
-          Logger.warning(
-              '🔧 AudioService: This suggests either: 1) Network too slow, 2) Stream bitrate too low, 3) Android device limitations, 4) ExoPlayer ignoring our settings',
-              'AudioService');
-        }
-
-        // Warn on low buffer during playback
-        if (!isHealthy && _audioPlayer.playing && bufferAhead.inSeconds > 0) {
-          Logger.warning(
-              '🎵 AudioService: Low buffer detected during playback - potential stuttering risk',
-              'AudioService');
-        }
+      // Connection quality assessment based on buffer behavior
+      String connectionQuality = "Good";
+      if (bufferAhead.inSeconds <= 2 && _audioPlayer.playing) {
+        connectionQuality = "Poor";
+      } else if (bufferAhead.inSeconds <= 5) {
+        connectionQuality = "Fair";
       } else {
-        Logger.warning(
-            '❌ AudioService: Negative buffer - bufferedPos: ${bufferedPosition.inSeconds}s, currentPos: ${currentPosition.inSeconds}s',
-            'AudioService');
+        connectionQuality = "Good";
       }
+
+      _connectionQualityController.add(connectionQuality);
+
+      // Simple logging
+      Logger.debug(
+          '📊 AudioService: Buffer ${bufferAhead.inSeconds}s, Quality: $connectionQuality',
+          'AudioService');
     });
 
     _connectivitySubscription =
@@ -196,9 +202,20 @@ class AudioService {
       if (!hasConnection) {
         Logger.warning(
             '🌐 AudioService: Network connection lost', 'AudioService');
+        _networkLostTime = DateTime.now();
+        _isNetworkConnected = false;
       } else {
-        Logger.info(
-            '🌐 AudioService: Network connection restored', 'AudioService');
+        if (_networkLostTime != null) {
+          final totalOfflineTime = DateTime.now().difference(_networkLostTime!);
+          Logger.info(
+              '🌐 AudioService: Network connection restored after ${totalOfflineTime.inSeconds}s offline',
+              'AudioService');
+        } else {
+          Logger.info(
+              '🌐 AudioService: Network connection restored', 'AudioService');
+        }
+        _isNetworkConnected = true;
+        _networkLostTime = null; // Reset timer
       }
     });
   }
@@ -244,17 +261,11 @@ class AudioService {
           preload: true,
         );
 
-        // ANDROID WORKAROUND: Give time to buffer before starting playback
-        if (Platform.isAndroid) {
-          Logger.info(
-              '🔄 AudioService: Waiting ${AudioConfig.androidPrebufferDelay.inSeconds} seconds to build buffer before playback (Android workaround)',
-              'AudioService');
-          await Future.delayed(AudioConfig.androidPrebufferDelay);
-        } else {
-          Logger.debug(
-              '🍎 AudioService: Skipping prebuffer delay on non-Android platform',
-              'AudioService');
-        }
+        // CONFIGURABLE STARTUP DELAY: Use value from AudioConfig
+        Logger.info(
+            '🔄 AudioService: Waiting ${AudioConfig.liveStreamStartupDelay.inSeconds} seconds for initial buffer',
+            'AudioService');
+        await Future.delayed(AudioConfig.liveStreamStartupDelay);
 
         _currentStreamUrl = config.streamUrl;
         Logger.debug(
@@ -347,5 +358,6 @@ class AudioService {
     await _stateController.close();
     await _errorController.close();
     await _bufferController.close();
+    await _connectionQualityController.close();
   }
 }

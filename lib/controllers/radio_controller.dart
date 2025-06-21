@@ -63,6 +63,8 @@ class RadioController {
   Stream<String> get audioErrorStream => _audioService.errorStream;
   Stream<String?> get titleStream => _titleController.stream;
   Stream<Duration> get bufferStream => _bufferController.stream;
+  Stream<String> get connectionQualityStream =>
+      _audioService.connectionQualityStream;
 
   String? get currentToken => _currentToken;
   bool get isConnected => _currentToken != null && _currentConfig != null;
