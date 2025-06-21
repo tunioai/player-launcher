@@ -4,6 +4,7 @@ import 'package:audio_session/audio_session.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import '../models/stream_config.dart';
 import '../utils/logger.dart';
+import '../utils/audio_config.dart';
 
 enum AudioState {
   idle,
@@ -93,8 +94,9 @@ class AudioService {
 
     // Configure audio player with enhanced buffering for radio streaming
     _audioPlayer = AudioPlayer(
-      // Use proxy for better header support and improved buffering
+      userAgent: AudioConfig.userAgent,
       useProxyForRequestHeaders: true,
+      audioLoadConfiguration: AudioConfig.getStreamingConfiguration(),
     );
 
     _playerStateSubscription = _audioPlayer.playerStateStream.listen((state) {
@@ -123,6 +125,29 @@ class AudioService {
     _audioPlayer.playbackEventStream.listen((event) {
       if (event.processingState == ProcessingState.ready) {
         Logger.debug('🎵 AudioService: Stream ready', 'AudioService');
+      }
+    });
+
+    // Enhanced buffering monitoring with health checks
+    _audioPlayer.bufferedPositionStream.listen((bufferedPosition) {
+      final currentPosition = _audioPlayer.position;
+      final bufferAhead = bufferedPosition - currentPosition;
+
+      if (bufferAhead.inSeconds > 0) {
+        final bufferStatus =
+            AudioConfig.getBufferStatusDescription(bufferAhead);
+        final isHealthy = AudioConfig.isBufferHealthy(bufferAhead);
+
+        Logger.debug(
+            '🎵 AudioService: $bufferStatus (pos: ${currentPosition.inSeconds}s, buffered: ${bufferedPosition.inSeconds}s) ${isHealthy ? '✅' : '⚠️'}',
+            'AudioService');
+
+        // Warn on low buffer
+        if (!isHealthy && _audioPlayer.playing) {
+          Logger.warning(
+              '🎵 AudioService: Low buffer detected during playback - potential stuttering risk',
+              'AudioService');
+        }
       }
     });
 
@@ -171,22 +196,24 @@ class AudioService {
 
         final audioSource = ProgressiveAudioSource(
           uri,
-          headers: {
-            'User-Agent': 'TunioRadioPlayer/1.0 (Mobile)',
-            'Icy-MetaData': '1',
-            'Connection': 'keep-alive',
-            'Cache-Control': 'no-cache',
-            'Accept': 'audio/*',
-            'Range': 'bytes=0-',
-          },
+          headers: AudioConfig.getStreamingHeaders(),
         );
 
         Logger.debug(
-            '🎵 AudioService: Setting audio source...', 'AudioService');
-        await _audioPlayer.setAudioSource(audioSource);
+            '🎵 AudioService: Setting audio source with buffering config...',
+            'AudioService');
+
+        // Set audio source with preloading for better buffering
+        await _audioPlayer.setAudioSource(
+          audioSource,
+          initialPosition: Duration.zero,
+          preload: true,
+        );
+
         _currentStreamUrl = config.streamUrl;
         Logger.debug(
-            '🎵 AudioService: Audio source set successfully', 'AudioService');
+            '🎵 AudioService: Audio source set successfully with enhanced buffering',
+            'AudioService');
       }
 
       await setVolume(config.volume);

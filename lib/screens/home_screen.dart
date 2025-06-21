@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -41,6 +42,8 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isConnecting = false;
   bool _isRetrying = false;
   double _volume = 1.0;
+  Duration _bufferAhead = Duration.zero;
+  bool _isBufferHealthy = true;
 
   @override
   void initState() {
@@ -155,6 +158,28 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
         );
+      }
+    });
+
+    // Listen for buffer updates (mock implementation - would need to be added to controller)
+    Timer.periodic(const Duration(seconds: 5), (timer) {
+      if (!mounted || !_isConnected) {
+        timer.cancel();
+        return;
+      }
+
+      // This would need to be implemented in the controller to expose buffer info
+      // For now, simulate buffer status based on audio state
+      if (_audioState == AudioState.playing) {
+        setState(() {
+          _bufferAhead = const Duration(seconds: 30); // Simulated good buffer
+          _isBufferHealthy = true;
+        });
+      } else if (_audioState == AudioState.buffering) {
+        setState(() {
+          _bufferAhead = const Duration(seconds: 5); // Simulated low buffer
+          _isBufferHealthy = false;
+        });
       }
     });
 
@@ -709,6 +734,41 @@ class _HomeScreenState extends State<HomeScreen> {
                                   child: CircularProgressIndicator(
                                     strokeWidth: 2,
                                     color: _getStatusColor(),
+                                  ),
+                                ),
+                              ],
+                              // Buffer status indicator
+                              if (_isConnected &&
+                                  _audioState == AudioState.playing) ...[
+                                const SizedBox(width: 8),
+                                Tooltip(
+                                  message: 'Buffer: ${_bufferAhead.inSeconds}s',
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: _isBufferHealthy
+                                          ? Colors.green.withValues(alpha: 0.2)
+                                          : Colors.orange
+                                              .withValues(alpha: 0.2),
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(
+                                        color: _isBufferHealthy
+                                            ? Colors.green
+                                            : Colors.orange,
+                                        width: 1,
+                                      ),
+                                    ),
+                                    child: Text(
+                                      '${_bufferAhead.inSeconds}s',
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        color: _isBufferHealthy
+                                            ? Colors.green
+                                            : Colors.orange,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
                                   ),
                                 ),
                               ],
