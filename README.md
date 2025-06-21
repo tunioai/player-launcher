@@ -234,6 +234,11 @@ lib/
 - Target SDK: Latest stable
 - Supports arm64-v8a and armeabi-v7a architectures
 
+### Generate icons
+```
+flutter pub run flutter_launcher_icons
+```
+
 ### macOS
 - Minimum version: macOS 10.14
 - Supports both Intel and Apple Silicon
