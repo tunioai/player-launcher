@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../controllers/radio_controller.dart';
 import '../services/audio_service.dart';
 import '../services/storage_service.dart';
@@ -285,6 +286,35 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _launchPersonalCabinet() async {
+    final uri = Uri.parse('https://cp.tunio.ai');
+    try {
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                  'Could not open browser. Please visit cp.tunio.ai manually'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+                'Could not open browser. Please visit cp.tunio.ai manually'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+    }
+  }
+
   KeyEventResult _handleKeyPress(KeyEvent event) {
     if (event is KeyDownEvent) {
       final currentFocus = FocusScope.of(context).focusedChild;
@@ -446,6 +476,65 @@ class _HomeScreenState extends State<HomeScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
+                  Card(
+                    color: Theme.of(context).colorScheme.secondaryContainer,
+                    child: InkWell(
+                      onTap: _launchPersonalCabinet,
+                      borderRadius: BorderRadius.circular(12),
+                      child: Padding(
+                        padding: const EdgeInsets.all(12.0),
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.lightbulb_outline,
+                              color: Theme.of(context).colorScheme.primary,
+                              size: 20,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: RichText(
+                                text: TextSpan(
+                                  style: TextStyle(
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSecondaryContainer,
+                                    fontSize: 14,
+                                  ),
+                                  children: [
+                                    const TextSpan(
+                                      text: 'TIP: ',
+                                      style: TextStyle(
+                                          fontWeight: FontWeight.bold),
+                                    ),
+                                    const TextSpan(
+                                      text:
+                                          'You can get the broadcast PIN code in your personal account ',
+                                    ),
+                                    TextSpan(
+                                      text: 'cp.tunio.ai',
+                                      style: TextStyle(
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .primary,
+                                        fontWeight: FontWeight.w600,
+                                        decoration: TextDecoration.underline,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            Icon(
+                              Icons.open_in_new,
+                              color: Theme.of(context).colorScheme.primary,
+                              size: 16,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
                   Card(
                     child: Padding(
                       padding: const EdgeInsets.all(16.0),
