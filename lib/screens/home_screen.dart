@@ -722,7 +722,6 @@ class _HomeScreenState extends State<HomeScreen> {
                           ),
                           const SizedBox(height: 16),
                           Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
                             children: [
                               Focus(
                                 focusNode: _playButtonFocusNode,
@@ -743,11 +742,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   ),
                                 ),
                               ),
-                            ],
-                          ),
-                          const SizedBox(height: 16),
-                          Row(
-                            children: [
+                              const SizedBox(width: 16),
                               const Icon(Icons.volume_down),
                               Expanded(
                                 child: Focus(
