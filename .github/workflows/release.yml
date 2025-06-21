@@ -135,6 +135,11 @@ jobs:
     - name: Build Windows app
       run: flutter build windows --release
       
+    - name: List Windows build output
+      run: |
+        dir build\windows\x64\runner\Release
+      shell: cmd
+      
     - name: Create Windows archive
       run: |
         cd build/windows/x64/runner/Release
@@ -202,7 +207,7 @@ jobs:
           - Extract archive and move application to Applications folder
           
           #### Windows:
-          - Extract ZIP archive and run tunio_radio_player.exe
+          - Extract ZIP archive and run tunio_player.exe
           
           ---
           
