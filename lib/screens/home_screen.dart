@@ -30,6 +30,8 @@ class _HomeScreenState extends State<HomeScreen> {
   final FocusNode _settingsButtonFocusNode = FocusNode();
   final FocusNode _playButtonFocusNode = FocusNode();
   final FocusNode _volumeFocusNode = FocusNode();
+  final FocusNode _themeButtonFocusNode = FocusNode();
+  final FocusNode _refreshButtonFocusNode = FocusNode();
 
   String _currentCode = '';
   bool _isConnected = false;
@@ -44,6 +46,18 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _initializeController();
+    _setupFocusNodes();
+  }
+
+  void _setupFocusNodes() {
+    // Setup focus node listeners for visual feedback
+    _codeFocusNode.addListener(() => setState(() {}));
+    _connectButtonFocusNode.addListener(() => setState(() {}));
+    _settingsButtonFocusNode.addListener(() => setState(() {}));
+    _playButtonFocusNode.addListener(() => setState(() {}));
+    _volumeFocusNode.addListener(() => setState(() {}));
+    _themeButtonFocusNode.addListener(() => setState(() {}));
+    _refreshButtonFocusNode.addListener(() => setState(() {}));
   }
 
   Future<void> _initializeController() async {
@@ -124,7 +138,7 @@ class _HomeScreenState extends State<HomeScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(errorMessage),
-            backgroundColor: Colors.red.withOpacity(0.9),
+            backgroundColor: Colors.red.withValues(alpha: 0.9),
             behavior: SnackBarBehavior.floating,
             duration: const Duration(seconds: 4),
             action: SnackBarAction(
@@ -273,15 +287,33 @@ class _HomeScreenState extends State<HomeScreen> {
 
   KeyEventResult _handleKeyPress(KeyEvent event) {
     if (event is KeyDownEvent) {
+      final currentFocus = FocusScope.of(context).focusedChild;
+
       switch (event.logicalKey) {
         case LogicalKeyboardKey.arrowUp:
         case LogicalKeyboardKey.arrowDown:
         case LogicalKeyboardKey.arrowLeft:
         case LogicalKeyboardKey.arrowRight:
+          // Handle volume control when volume slider is focused
+          if (currentFocus == _volumeFocusNode && _isConnected) {
+            double newVolume = _volume;
+            if (event.logicalKey == LogicalKeyboardKey.arrowRight ||
+                event.logicalKey == LogicalKeyboardKey.arrowUp) {
+              newVolume = (_volume + 0.05).clamp(0.0, 1.0);
+            } else if (event.logicalKey == LogicalKeyboardKey.arrowLeft ||
+                event.logicalKey == LogicalKeyboardKey.arrowDown) {
+              newVolume = (_volume - 0.05).clamp(0.0, 1.0);
+            }
+            if (newVolume != _volume) {
+              _onVolumeChanged(newVolume);
+              return KeyEventResult.handled;
+            }
+          }
           return KeyEventResult.ignored;
+
         case LogicalKeyboardKey.select:
         case LogicalKeyboardKey.enter:
-          final currentFocus = FocusScope.of(context).focusedChild;
+        case LogicalKeyboardKey.space:
           if (currentFocus != null) {
             if (currentFocus == _connectButtonFocusNode) {
               if (!_isConnecting) {
@@ -291,9 +323,19 @@ class _HomeScreenState extends State<HomeScreen> {
             } else if (currentFocus == _playButtonFocusNode && _isConnected) {
               _togglePlayback();
               return KeyEventResult.handled;
+            } else if (currentFocus == _settingsButtonFocusNode) {
+              AutoStartService.openSystemLauncher();
+              return KeyEventResult.handled;
+            } else if (currentFocus == _themeButtonFocusNode) {
+              widget.onThemeToggle();
+              return KeyEventResult.handled;
+            } else if (currentFocus == _refreshButtonFocusNode) {
+              _controller.reconnect();
+              return KeyEventResult.handled;
             }
           }
           return KeyEventResult.ignored;
+
         case LogicalKeyboardKey.mediaPlay:
         case LogicalKeyboardKey.mediaPlayPause:
           if (_isConnected) {
@@ -301,9 +343,66 @@ class _HomeScreenState extends State<HomeScreen> {
             return KeyEventResult.handled;
           }
           return KeyEventResult.ignored;
+
+        case LogicalKeyboardKey.mediaStop:
+          if (_isConnected) {
+            _disconnect();
+            return KeyEventResult.handled;
+          }
+          return KeyEventResult.ignored;
+
+        case LogicalKeyboardKey.audioVolumeUp:
+          if (_isConnected) {
+            _onVolumeChanged((_volume + 0.1).clamp(0.0, 1.0));
+            return KeyEventResult.handled;
+          }
+          return KeyEventResult.ignored;
+
+        case LogicalKeyboardKey.audioVolumeDown:
+          if (_isConnected) {
+            _onVolumeChanged((_volume - 0.1).clamp(0.0, 1.0));
+            return KeyEventResult.handled;
+          }
+          return KeyEventResult.ignored;
+
         case LogicalKeyboardKey.escape:
+        case LogicalKeyboardKey.goBack:
           AutoStartService.openSystemLauncher();
           return KeyEventResult.handled;
+
+        // Number keys for code input
+        case LogicalKeyboardKey.digit0:
+        case LogicalKeyboardKey.digit1:
+        case LogicalKeyboardKey.digit2:
+        case LogicalKeyboardKey.digit3:
+        case LogicalKeyboardKey.digit4:
+        case LogicalKeyboardKey.digit5:
+        case LogicalKeyboardKey.digit6:
+        case LogicalKeyboardKey.digit7:
+        case LogicalKeyboardKey.digit8:
+        case LogicalKeyboardKey.digit9:
+          if (currentFocus == _codeFocusNode &&
+              !_isConnected &&
+              !_isConnecting) {
+            final digit = event.logicalKey.keyLabel;
+            if (_currentCode.length < 6) {
+              _onCodeChanged(_currentCode + digit);
+              return KeyEventResult.handled;
+            }
+          }
+          return KeyEventResult.ignored;
+
+        case LogicalKeyboardKey.backspace:
+          if (currentFocus == _codeFocusNode &&
+              !_isConnected &&
+              !_isConnecting) {
+            if (_currentCode.isNotEmpty) {
+              _onCodeChanged(
+                  _currentCode.substring(0, _currentCode.length - 1));
+              return KeyEventResult.handled;
+            }
+          }
+          return KeyEventResult.ignored;
       }
     }
     return KeyEventResult.ignored;
@@ -316,10 +415,24 @@ class _HomeScreenState extends State<HomeScreen> {
         title: const Text('Tunio Radio Player'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: [
-          IconButton(
-            onPressed: widget.onThemeToggle,
-            icon: Icon(_getThemeIcon()),
-            tooltip: _getThemeTooltip(),
+          Focus(
+            focusNode: _themeButtonFocusNode,
+            child: Container(
+              decoration: BoxDecoration(
+                border: Border.all(
+                  color: _themeButtonFocusNode.hasFocus
+                      ? Colors.blue
+                      : Colors.transparent,
+                  width: 2,
+                ),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: IconButton(
+                onPressed: widget.onThemeToggle,
+                icon: Icon(_getThemeIcon()),
+                tooltip: _getThemeTooltip(),
+              ),
+            ),
           ),
         ],
       ),
@@ -463,14 +576,28 @@ class _HomeScreenState extends State<HomeScreen> {
                                   !_statusMessage.contains('retrying') &&
                                   !_isConnecting) ...[
                                 const SizedBox(width: 8),
-                                IconButton(
-                                  onPressed: () async {
-                                    await _controller.reconnect();
-                                  },
-                                  icon: const Icon(Icons.refresh),
-                                  iconSize: 20,
-                                  tooltip: 'Reconnect',
-                                  color: Colors.blue,
+                                Focus(
+                                  focusNode: _refreshButtonFocusNode,
+                                  child: Container(
+                                    decoration: BoxDecoration(
+                                      border: Border.all(
+                                        color: _refreshButtonFocusNode.hasFocus
+                                            ? Colors.blue
+                                            : Colors.transparent,
+                                        width: 2,
+                                      ),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: IconButton(
+                                      onPressed: () async {
+                                        await _controller.reconnect();
+                                      },
+                                      icon: const Icon(Icons.refresh),
+                                      iconSize: 20,
+                                      tooltip: 'Reconnect',
+                                      color: Colors.blue,
+                                    ),
+                                  ),
                                 ),
                               ],
                             ],
@@ -585,6 +712,8 @@ class _HomeScreenState extends State<HomeScreen> {
     _settingsButtonFocusNode.dispose();
     _playButtonFocusNode.dispose();
     _volumeFocusNode.dispose();
+    _themeButtonFocusNode.dispose();
+    _refreshButtonFocusNode.dispose();
     super.dispose();
   }
 }

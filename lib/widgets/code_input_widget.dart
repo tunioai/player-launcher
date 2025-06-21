@@ -39,6 +39,9 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
     _focusNode = widget.focusNode ?? FocusNode();
     _textController = TextEditingController();
     _updateDigitsFromValue();
+
+    // Setup focus listener for visual feedback
+    _focusNode.addListener(() => setState(() {}));
   }
 
   @override
@@ -127,15 +130,17 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
                 border: Border.all(
                   color: _digits[index].isNotEmpty
                       ? (_focusNode.hasFocus ? Colors.blue : Colors.grey[600]!)
-                      : Colors.grey[300]!,
-                  width: 2,
+                      : (_focusNode.hasFocus ? Colors.blue : Colors.grey[300]!),
+                  width: _focusNode.hasFocus ? 3 : 2,
                 ),
                 borderRadius: BorderRadius.circular(8),
                 color: _digits[index].isNotEmpty
                     ? (_focusNode.hasFocus
-                        ? Colors.blue.withOpacity(0.1)
+                        ? Colors.blue.withValues(alpha: 0.1)
                         : Colors.grey[50])
-                    : Colors.white,
+                    : (_focusNode.hasFocus
+                        ? Colors.blue.withValues(alpha: 0.05)
+                        : Colors.white),
               ),
               child: Center(
                 child: Text(
@@ -189,20 +194,29 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
             decoration: BoxDecoration(
               border: Border.all(
                 color: _focusNode.hasFocus ? Colors.blue : Colors.grey[300]!,
-                width: 2,
+                width: _focusNode.hasFocus ? 3 : 2,
               ),
               borderRadius: BorderRadius.circular(8),
               color: widget.enabled
-                  ? Colors.blue.withOpacity(0.05)
+                  ? (_focusNode.hasFocus
+                      ? Colors.blue.withValues(alpha: 0.1)
+                      : Colors.blue.withValues(alpha: 0.05))
                   : Colors.grey[100],
             ),
             child: Text(
-              'Tap to enter code',
+              _focusNode.hasFocus
+                  ? 'Use remote control or tap to enter code'
+                  : 'Tap to enter code',
               textAlign: TextAlign.center,
               style: TextStyle(
                 fontSize: 14,
-                color: widget.enabled ? Colors.blue[700] : Colors.grey,
-                fontWeight: FontWeight.w500,
+                color: widget.enabled
+                    ? (_focusNode.hasFocus
+                        ? Colors.blue[700]
+                        : Colors.blue[600])
+                    : Colors.grey,
+                fontWeight:
+                    _focusNode.hasFocus ? FontWeight.w600 : FontWeight.w500,
               ),
             ),
           ),
@@ -225,6 +239,51 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
             ),
           ),
           const SizedBox(height: 16),
+          // Visual representation of digits for desktop/TV
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: List.generate(_codeLength, (index) {
+              return Container(
+                width: 50,
+                height: 60,
+                decoration: BoxDecoration(
+                  border: Border.all(
+                    color: _digits[index].isNotEmpty
+                        ? (_focusNode.hasFocus
+                            ? Colors.blue
+                            : Colors.grey[600]!)
+                        : (_focusNode.hasFocus
+                            ? Colors.blue
+                            : Colors.grey[300]!),
+                    width: _focusNode.hasFocus ? 3 : 2,
+                  ),
+                  borderRadius: BorderRadius.circular(12),
+                  color: _digits[index].isNotEmpty
+                      ? (_focusNode.hasFocus
+                          ? Colors.blue.withValues(alpha: 0.1)
+                          : Colors.grey[50])
+                      : (_focusNode.hasFocus
+                          ? Colors.blue.withValues(alpha: 0.05)
+                          : Colors.white),
+                ),
+                child: Center(
+                  child: Text(
+                    _digits[index],
+                    style: TextStyle(
+                      fontSize: 28,
+                      fontWeight: FontWeight.bold,
+                      color: widget.enabled
+                          ? (_digits[index].isNotEmpty
+                              ? Colors.black
+                              : Colors.grey[400])
+                          : Colors.grey,
+                    ),
+                  ),
+                ),
+              );
+            }),
+          ),
+          const SizedBox(height: 16),
           TextField(
             controller: _textController,
             focusNode: _focusNode,
@@ -244,7 +303,20 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
               labelText: 'PIN Code',
               hintText: '123456',
               helperText: 'Enter your 6-digit PIN code',
-              border: const OutlineInputBorder(),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide(
+                  color: _focusNode.hasFocus ? Colors.blue : Colors.grey[300]!,
+                  width: _focusNode.hasFocus ? 3 : 2,
+                ),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: const BorderSide(
+                  color: Colors.blue,
+                  width: 3,
+                ),
+              ),
               counterText: '${_digits.join('').length}/$_codeLength',
               prefixIcon: const Icon(Icons.lock_outline),
               suffixIcon: _digits.join('').isNotEmpty
@@ -268,10 +340,14 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
           ),
           const SizedBox(height: 8),
           Text(
-            'Use keyboard or remote control to enter digits',
+            _focusNode.hasFocus
+                ? 'Use number keys on remote control or keyboard'
+                : 'Click to focus and enter digits',
             style: TextStyle(
               fontSize: 12,
-              color: Colors.grey[600],
+              color: _focusNode.hasFocus ? Colors.blue[600] : Colors.grey[600],
+              fontWeight:
+                  _focusNode.hasFocus ? FontWeight.w500 : FontWeight.normal,
             ),
             textAlign: TextAlign.center,
           ),

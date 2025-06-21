@@ -10,9 +10,11 @@ A Flutter application for Android and macOS that automatically plays online radi
 - **Buffering**: Optimized buffering for continuous playback
 - **Volume Control**: Local and remote volume management
 - **Local Storage**: API key persistence for automatic connection
-- **Cross-platform**: Supports Android and macOS
+- **Cross-platform**: Supports Android, macOS, and Android TV
+- **TV Remote Support**: Full navigation with TV remote control
 - **Background Playback**: Continues playing when app is minimized
 - **Network Monitoring**: Real-time connectivity status tracking
+- **Focus Management**: Optimized interface for TV screens and remote control
 
 ## Installation
 
@@ -74,6 +76,19 @@ After saving the API key, the application will:
 - Connect to the API and begin playback
 - Run in background mode
 - Survive network disconnections with automatic reconnection
+
+### TV Remote Control Support
+
+The application is fully optimized for Android TV and supports complete navigation using TV remote control:
+
+- **Navigation**: Use directional pad (D-pad) to navigate between interface elements
+- **Selection**: OK/Enter button to activate selected elements
+- **Media Keys**: Play/Pause, Stop, Volume +/- work globally
+- **Number Input**: Use number keys (0-9) for PIN code entry
+- **Visual Feedback**: Clear focus indicators with blue borders and highlighting
+- **Seamless Control**: All functions accessible without touch input
+
+For detailed instructions, see [TV Remote Guide](TV_REMOTE_GUIDE.md).
 
 ## API Integration
 
@@ -165,6 +180,7 @@ lib/
 ### Platform Support
 
 - **Android**: Full support with auto-start functionality
+- **Android TV**: Optimized for TV screens with full remote control support
 - **macOS**: Full support for desktop usage
 
 ### Adding New Features
