@@ -69,9 +69,6 @@ jobs:
     - name: Build APK (debug)
       run: flutter build apk --debug
       
-    - name: Build web
-      run: flutter build web
-      
   build-test-windows:
     name: Build Test Windows
     runs-on: windows-latest
