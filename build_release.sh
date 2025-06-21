@@ -1,32 +1,32 @@
 #!/bin/bash
 
 # Tunio Player - Release Build Script
-# Этот скрипт автоматизирует процесс сборки release версии
+# This script automates the process of building a release version
 
-set -e # Остановить выполнение при ошибке
+set -e # Stop execution on error
 
-echo "🚀 Начинаем сборку Tunio Player для Google Play"
+echo "🚀 Starting Tunio Player build for Google Play"
 
-# Проверяем наличие Flutter
+# Check if Flutter is available
 if ! command -v flutter &> /dev/null; then
-    echo "❌ Flutter не найден. Установите Flutter SDK."
+    echo "❌ Flutter not found. Please install Flutter SDK."
     exit 1
 fi
 
-# Проверяем Android toolchain
-echo "🔍 Проверяем Android toolchain..."
+# Check Android toolchain
+echo "🔍 Checking Android toolchain..."
 if ! flutter doctor | grep -q "Android toolchain.*✓"; then
-    echo "⚠️  Обнаружены проблемы с Android toolchain."
-    echo "Попробуем собрать с дополнительными флагами..."
+    echo "⚠️  Issues detected with Android toolchain."
+    echo "Will try to build with additional flags..."
     BUILD_FLAGS="--no-shrink"
 else
     BUILD_FLAGS=""
 fi
 
-# Проверяем наличие key.properties
+# Check for key.properties file
 if [ ! -f "android/key.properties" ]; then
-    echo "❌ Файл android/key.properties не найден!"
-    echo "Создайте файл android/key.properties с содержимым:"
+    echo "❌ File android/key.properties not found!"
+    echo "Create android/key.properties file with content:"
     echo "storePassword=your_store_password"
     echo "keyPassword=your_key_password"
     echo "keyAlias=upload"
@@ -34,54 +34,54 @@ if [ ! -f "android/key.properties" ]; then
     exit 1
 fi
 
-# Очищаем проект
-echo "🧹 Очищаем проект..."
+# Clean project
+echo "🧹 Cleaning project..."
 flutter clean
 
-# Устанавливаем зависимости
-echo "📦 Устанавливаем зависимости..."
+# Install dependencies
+echo "📦 Installing dependencies..."
 flutter pub get
 
-# Проверяем конфигурацию
-echo "🔍 Проверяем конфигурацию..."
+# Check configuration
+echo "🔍 Checking configuration..."
 flutter doctor
 
-# Анализируем код
-echo "🔍 Анализируем код..."
+# Analyze code
+echo "🔍 Analyzing code..."
 flutter analyze
 
-# Запускаем тесты (если есть)
-echo "🧪 Запускаем тесты..."
-flutter test || echo "⚠️  Тесты не пройдены или отсутствуют"
+# Run tests (if available)
+echo "🧪 Running tests..."
+flutter test || echo "⚠️  Tests failed or not available"
 
-# Собираем AAB
-echo "🔨 Собираем Android App Bundle..."
+# Build AAB
+echo "🔨 Building Android App Bundle..."
 if [ -n "$BUILD_FLAGS" ]; then
-    echo "📝 Используем дополнительные флаги: $BUILD_FLAGS"
+    echo "📝 Using additional flags: $BUILD_FLAGS"
     flutter build appbundle --release $BUILD_FLAGS
 else
     flutter build appbundle --release
 fi
 
-# Проверяем размер файла
+# Check file size
 AAB_FILE="build/app/outputs/bundle/release/app-release.aab"
 if [ -f "$AAB_FILE" ]; then
     FILE_SIZE=$(ls -lh "$AAB_FILE" | awk '{print $5}')
-    echo "✅ AAB файл успешно создан: $AAB_FILE"
-    echo "📏 Размер файла: $FILE_SIZE"
+    echo "✅ AAB file successfully created: $AAB_FILE"
+    echo "📏 File size: $FILE_SIZE"
     
-    # Проверяем размер (предупреждение если больше 100MB)
+    # Check size (warning if larger than 100MB)
     FILE_SIZE_BYTES=$(stat -c%s "$AAB_FILE" 2>/dev/null || stat -f%z "$AAB_FILE" 2>/dev/null)
     if [ "$FILE_SIZE_BYTES" -gt 104857600 ]; then
-        echo "⚠️  Предупреждение: Размер файла больше 100MB"
+        echo "⚠️  Warning: File size is larger than 100MB"
     fi
 else
-    echo "❌ Ошибка: AAB файл не создан"
+    echo "❌ Error: AAB file not created"
     exit 1
 fi
 
-# Также собираем APK для тестирования
-echo "🔨 Собираем APK для тестирования..."
+# Also build APK for testing
+echo "🔨 Building APK for testing..."
 if [ -n "$BUILD_FLAGS" ]; then
     flutter build apk --release $BUILD_FLAGS
 else
@@ -91,23 +91,23 @@ fi
 APK_FILE="build/app/outputs/flutter-apk/app-release.apk"
 if [ -f "$APK_FILE" ]; then
     APK_SIZE=$(ls -lh "$APK_FILE" | awk '{print $5}')
-    echo "✅ APK файл создан: $APK_FILE"
-    echo "📏 Размер APK: $APK_SIZE"
+    echo "✅ APK file created: $APK_FILE"
+    echo "📏 APK size: $APK_SIZE"
 fi
 
 echo ""
-echo "🎉 Сборка завершена успешно!"
+echo "🎉 Build completed successfully!"
 echo ""
-echo "📁 Файлы для загрузки:"
-echo "   AAB (для Google Play): $AAB_FILE"
-echo "   APK (для тестирования): $APK_FILE"
+echo "📁 Files for upload:"
+echo "   AAB (for Google Play): $AAB_FILE"
+echo "   APK (for testing): $APK_FILE"
 echo ""
-echo "📋 Следующие шаги:"
-echo "1. Протестируйте APK: flutter install --release"
-echo "2. Загрузите AAB в Google Play Console"
-echo "3. Заполните описание приложения"
-echo "4. Отправьте на модерацию"
+echo "📋 Next steps:"
+echo "1. Test APK: flutter install --release"
+echo "2. Upload AAB to Google Play Console"
+echo "3. Fill in app description"
+echo "4. Submit for review"
 echo ""
-echo "📖 Подробная инструкция в README.md и PUBLISH_CHECKLIST.md" 
+echo "📖 Detailed instructions in README.md and PUBLISH_CHECKLIST.md" 
 
 adb install -r build/app/outputs/flutter-apk/app-release.apk

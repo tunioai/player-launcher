@@ -1,23 +1,23 @@
-# Пример файла key.properties для подписи Android приложения
-# Скопируйте этот файл в key.properties и заполните своими данными
+# Example key.properties file for Android app signing
+# Copy this file to key.properties and fill in your data
 
-# Пароль для keystore файла
-storePassword=ваш_пароль_keystore
+# Password for keystore file
+storePassword=your_keystore_password
 
-# Пароль для ключа
-keyPassword=ваш_пароль_ключа
+# Password for key
+keyPassword=your_key_password
 
-# Псевдоним ключа (alias)
+# Key alias
 keyAlias=upload
 
-# Путь к keystore файлу
-# Пример для macOS/Linux:
+# Path to keystore file
+# Example for macOS/Linux:
 storeFile=./upload-keystore.jks
-# Пример для Windows:
+# Example for Windows:
 # storeFile=C:\\Users\\username\\upload-keystore.jks
 
-# ВАЖНО:
-# 1. Никогда не коммитьте этот файл в git!
-# 2. Сохраните пароли в безопасном месте
-# 3. Сделайте резервную копию keystore файла
-# 4. Без keystore файла и паролей вы не сможете обновить приложение в Google Play! 
+# IMPORTANT:
+# 1. Never commit this file to git!
+# 2. Save passwords in a secure place
+# 3. Make a backup copy of the keystore file
+# 4. Without the keystore file and passwords you won't be able to update the app in Google Play! 
