@@ -92,10 +92,13 @@ jobs:
     - name: Build macOS app
       run: flutter build macos --release
       
+    - name: List macOS build output
+      run: ls -la build/macos/Build/Products/Release/
+      
     - name: Create macOS archive
       run: |
         cd build/macos/Build/Products/Release
-        tar -czf tunio-player-macos.tar.gz tunio_radio_player.app
+        tar -czf tunio-player-macos.tar.gz "Tunio Player.app"
         
     - name: Upload macOS artifacts
       uses: actions/upload-artifact@v4
