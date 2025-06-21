@@ -40,6 +40,8 @@ class RadioController {
       StreamController<bool>.broadcast();
   final StreamController<String?> _titleController =
       StreamController<String?>.broadcast();
+  final StreamController<Duration> _bufferController =
+      StreamController<Duration>.broadcast();
 
   RadioController._();
 
@@ -60,6 +62,7 @@ class RadioController {
   Stream<AudioState> get audioStateStream => _audioService.stateStream;
   Stream<String> get audioErrorStream => _audioService.errorStream;
   Stream<String?> get titleStream => _titleController.stream;
+  Stream<Duration> get bufferStream => _bufferController.stream;
 
   String? get currentToken => _currentToken;
   bool get isConnected => _currentToken != null && _currentConfig != null;
@@ -91,6 +94,7 @@ class RadioController {
 
     _setupAudioErrorHandling();
     _setupAudioStateHandling();
+    _setupBufferMonitoring();
     _setupNetworkHandling();
     _startStreamHealthMonitoring();
 
@@ -156,6 +160,16 @@ class RadioController {
           _statusMessageController.add('Paused');
           break;
       }
+    });
+  }
+
+  void _setupBufferMonitoring() {
+    _audioService.bufferStream.listen((bufferAhead) {
+      // Forward buffer info to UI
+      _bufferController.add(bufferAhead);
+
+      Logger.debug('RadioController: Buffer ahead: ${bufferAhead.inSeconds}s',
+          'RadioController');
     });
   }
 

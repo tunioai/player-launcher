@@ -7,6 +7,7 @@ import '../services/audio_service.dart';
 import '../services/autostart_service.dart';
 import '../widgets/code_input_widget.dart';
 import '../utils/logger.dart';
+import '../utils/audio_config.dart';
 
 class HomeScreen extends StatefulWidget {
   final VoidCallback onThemeToggle;
@@ -161,24 +162,14 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     });
 
-    // Listen for buffer updates (mock implementation - would need to be added to controller)
-    Timer.periodic(const Duration(seconds: 5), (timer) {
-      if (!mounted || !_isConnected) {
-        timer.cancel();
-        return;
-      }
-
-      // This would need to be implemented in the controller to expose buffer info
-      // For now, simulate buffer status based on audio state
-      if (_audioState == AudioState.playing) {
+    // Listen for real-time buffer updates
+    _controller.bufferStream.listen((bufferAhead) {
+      Logger.debug('🏠 HomeScreen: Buffer updated: ${bufferAhead.inSeconds}s',
+          'HomeScreen');
+      if (mounted) {
         setState(() {
-          _bufferAhead = const Duration(seconds: 30); // Simulated good buffer
-          _isBufferHealthy = true;
-        });
-      } else if (_audioState == AudioState.buffering) {
-        setState(() {
-          _bufferAhead = const Duration(seconds: 5); // Simulated low buffer
-          _isBufferHealthy = false;
+          _bufferAhead = bufferAhead;
+          _isBufferHealthy = AudioConfig.isBufferHealthy(bufferAhead);
         });
       }
     });
@@ -312,6 +303,32 @@ class _HomeScreenState extends State<HomeScreen> {
         return 'Light theme (tap for dark)';
       case ThemeMode.dark:
         return 'Dark theme (tap for auto)';
+    }
+  }
+
+  Color _getBufferColor() {
+    if (AudioConfig.isBufferCritical(_bufferAhead)) {
+      return Colors.red; // Critical: < 5s
+    } else if (AudioConfig.isBufferHealthy(_bufferAhead)) {
+      if (AudioConfig.isBufferExcellent(_bufferAhead)) {
+        return Colors.blue; // Excellent: >= 20s
+      } else {
+        return Colors.green; // Good: 10-19s
+      }
+    } else {
+      return Colors.orange; // Building: 5-9s
+    }
+  }
+
+  IconData _getBufferIcon() {
+    if (AudioConfig.isBufferCritical(_bufferAhead)) {
+      return Icons.warning; // Critical buffer
+    } else if (AudioConfig.isBufferExcellent(_bufferAhead)) {
+      return Icons.verified; // Excellent buffer
+    } else if (AudioConfig.isBufferHealthy(_bufferAhead)) {
+      return Icons.check_circle; // Good buffer
+    } else {
+      return Icons.schedule; // Building buffer
     }
   }
 
@@ -737,37 +754,46 @@ class _HomeScreenState extends State<HomeScreen> {
                                   ),
                                 ),
                               ],
-                              // Buffer status indicator
+                              // Advanced buffer status indicator with color levels
                               if (_isConnected &&
-                                  _audioState == AudioState.playing) ...[
+                                  (_audioState == AudioState.playing ||
+                                      _audioState == AudioState.buffering ||
+                                      _audioState == AudioState.loading)) ...[
                                 const SizedBox(width: 8),
                                 Tooltip(
-                                  message: 'Buffer: ${_bufferAhead.inSeconds}s',
+                                  message:
+                                      AudioConfig.getBufferStatusDescription(
+                                          _bufferAhead),
                                   child: Container(
                                     padding: const EdgeInsets.symmetric(
                                         horizontal: 6, vertical: 2),
                                     decoration: BoxDecoration(
-                                      color: _isBufferHealthy
-                                          ? Colors.green.withValues(alpha: 0.2)
-                                          : Colors.orange
-                                              .withValues(alpha: 0.2),
+                                      color: _getBufferColor()
+                                          .withValues(alpha: 0.2),
                                       borderRadius: BorderRadius.circular(10),
                                       border: Border.all(
-                                        color: _isBufferHealthy
-                                            ? Colors.green
-                                            : Colors.orange,
+                                        color: _getBufferColor(),
                                         width: 1,
                                       ),
                                     ),
-                                    child: Text(
-                                      '${_bufferAhead.inSeconds}s',
-                                      style: TextStyle(
-                                        fontSize: 10,
-                                        color: _isBufferHealthy
-                                            ? Colors.green
-                                            : Colors.orange,
-                                        fontWeight: FontWeight.bold,
-                                      ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          _getBufferIcon(),
+                                          size: 10,
+                                          color: _getBufferColor(),
+                                        ),
+                                        const SizedBox(width: 2),
+                                        Text(
+                                          '${_bufferAhead.inSeconds}s',
+                                          style: TextStyle(
+                                            fontSize: 10,
+                                            color: _getBufferColor(),
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ],
                                     ),
                                   ),
                                 ),

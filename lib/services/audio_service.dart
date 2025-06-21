@@ -31,6 +31,8 @@ class AudioService {
       StreamController<AudioState>.broadcast();
   final StreamController<String> _errorController =
       StreamController<String>.broadcast();
+  final StreamController<Duration> _bufferController =
+      StreamController<Duration>.broadcast();
 
   AudioService._();
 
@@ -42,6 +44,7 @@ class AudioService {
 
   Stream<AudioState> get stateStream => _stateController.stream;
   Stream<String> get errorStream => _errorController.stream;
+  Stream<Duration> get bufferStream => _bufferController.stream;
 
   AudioState get currentState {
     // Check for loading state first
@@ -93,10 +96,16 @@ class AudioService {
     ));
 
     // Configure audio player with enhanced buffering for radio streaming
+    // TEMPORARILY USING SIMPLE CONFIG to diagnose buffer issues
+    final config = AudioConfig.getSimpleStreamingConfiguration();
+    Logger.info(
+        '🔧 AudioService: Using SIMPLE buffer config - min: ${config.androidLoadControl?.minBufferDuration?.inSeconds}s, max: ${config.androidLoadControl?.maxBufferDuration?.inSeconds}s, playback: ${config.androidLoadControl?.bufferForPlaybackDuration?.inSeconds}s',
+        'AudioService');
+
     _audioPlayer = AudioPlayer(
       userAgent: AudioConfig.userAgent,
       useProxyForRequestHeaders: true,
-      audioLoadConfiguration: AudioConfig.getStreamingConfiguration(),
+      audioLoadConfiguration: config,
     );
 
     _playerStateSubscription = _audioPlayer.playerStateStream.listen((state) {
@@ -128,12 +137,20 @@ class AudioService {
       }
     });
 
-    // Enhanced buffering monitoring with health checks
+    // Enhanced buffering monitoring with detailed diagnostics
     _audioPlayer.bufferedPositionStream.listen((bufferedPosition) {
       final currentPosition = _audioPlayer.position;
       final bufferAhead = bufferedPosition - currentPosition;
 
-      if (bufferAhead.inSeconds > 0) {
+      // Always send buffer info to stream (even if 0)
+      _bufferController.add(bufferAhead);
+
+      // Detailed logging for buffer analysis
+      Logger.debug(
+          '🔍 AudioService DETAILED: bufferedPos=${bufferedPosition.inSeconds}s, currentPos=${currentPosition.inSeconds}s, bufferAhead=${bufferAhead.inSeconds}s, playing=${_audioPlayer.playing}, state=${_audioPlayer.processingState}',
+          'AudioService');
+
+      if (bufferAhead.inSeconds >= 0) {
         final bufferStatus =
             AudioConfig.getBufferStatusDescription(bufferAhead);
         final isHealthy = AudioConfig.isBufferHealthy(bufferAhead);
@@ -142,12 +159,26 @@ class AudioService {
             '🎵 AudioService: $bufferStatus (pos: ${currentPosition.inSeconds}s, buffered: ${bufferedPosition.inSeconds}s) ${isHealthy ? '✅' : '⚠️'}',
             'AudioService');
 
-        // Warn on low buffer
-        if (!isHealthy && _audioPlayer.playing) {
+        // Special analysis for stuck buffer
+        if (bufferAhead.inSeconds <= 2 && _audioPlayer.playing) {
+          Logger.warning(
+              '⚠️ AudioService: Buffer stuck at ${bufferAhead.inSeconds}s - This might indicate AndroidLoadControl settings are not working properly on this device',
+              'AudioService');
+          Logger.warning(
+              '📊 AudioService: Raw data - bufferedPos: ${bufferedPosition.inSeconds}s, currentPos: ${currentPosition.inSeconds}s, playing: ${_audioPlayer.playing}, state: ${_audioPlayer.processingState}',
+              'AudioService');
+        }
+
+        // Warn on low buffer during playback
+        if (!isHealthy && _audioPlayer.playing && bufferAhead.inSeconds > 0) {
           Logger.warning(
               '🎵 AudioService: Low buffer detected during playback - potential stuttering risk',
               'AudioService');
         }
+      } else {
+        Logger.warning(
+            '❌ AudioService: Negative buffer - bufferedPos: ${bufferedPosition.inSeconds}s, currentPos: ${currentPosition.inSeconds}s',
+            'AudioService');
       }
     });
 
@@ -300,5 +331,6 @@ class AudioService {
     await _audioPlayer.dispose();
     await _stateController.close();
     await _errorController.close();
+    await _bufferController.close();
   }
 }
