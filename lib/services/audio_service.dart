@@ -99,7 +99,7 @@ class AudioService {
     // TEMPORARILY USING SIMPLE CONFIG to diagnose buffer issues
     final config = AudioConfig.getSimpleStreamingConfiguration();
     Logger.info(
-        '🔧 AudioService: Using SIMPLE buffer config - min: ${config.androidLoadControl?.minBufferDuration?.inSeconds}s, max: ${config.androidLoadControl?.maxBufferDuration?.inSeconds}s, playback: ${config.androidLoadControl?.bufferForPlaybackDuration?.inSeconds}s',
+        '🔧 AudioService: Using SIMPLE buffer config for better compatibility',
         'AudioService');
 
     _audioPlayer = AudioPlayer(

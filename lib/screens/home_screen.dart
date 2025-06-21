@@ -44,7 +44,6 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isRetrying = false;
   double _volume = 1.0;
   Duration _bufferAhead = Duration.zero;
-  bool _isBufferHealthy = true;
 
   @override
   void initState() {
@@ -169,7 +168,6 @@ class _HomeScreenState extends State<HomeScreen> {
       if (mounted) {
         setState(() {
           _bufferAhead = bufferAhead;
-          _isBufferHealthy = AudioConfig.isBufferHealthy(bufferAhead);
         });
       }
     });
