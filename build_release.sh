@@ -7,6 +7,42 @@ set -e # Stop execution on error
 
 echo "🚀 Starting Tunio Player build for Google Play"
 
+# Check and ensure Java 17 is configured for Flutter
+echo "☕ Checking Flutter Java configuration..."
+
+# Check if Flutter is using Java 17
+FLUTTER_JAVA_VERSION=$(flutter doctor --verbose 2>/dev/null | grep "Java version" | head -n 1 | grep -o "17\|11\|8")
+
+if [ "$FLUTTER_JAVA_VERSION" != "17" ]; then
+    echo "⚠️  Flutter is using Java $FLUTTER_JAVA_VERSION, configuring Java 17..."
+    
+    # Try to find Java 17 on macOS
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        JAVA_17_HOME=$(/usr/libexec/java_home -v 17 2>/dev/null || echo "")
+        
+        if [ -n "$JAVA_17_HOME" ]; then
+            echo "✅ Found Java 17 at: $JAVA_17_HOME"
+            flutter config --jdk-dir="$JAVA_17_HOME"
+            echo "🔄 Configured Flutter to use Java 17"
+        else
+            echo "❌ Java 17 not found. Run './setup_java.sh' to install it"
+            exit 1
+        fi
+    else
+        echo "❌ Please install Java 17 and configure Flutter:"
+        echo "   flutter config --jdk-dir=\"/path/to/java17\""
+        exit 1
+    fi
+else
+    echo "✅ Flutter is already using Java 17"
+fi
+
+# Set Gradle JVM arguments for better performance and Java 17 compatibility
+export GRADLE_OPTS="-Xmx4g -Dfile.encoding=UTF-8"
+if [ -n "$JAVA_HOME" ]; then
+    export GRADLE_OPTS="$GRADLE_OPTS -Dorg.gradle.java.home=$JAVA_HOME"
+fi
+
 # Check if Flutter is available
 if ! command -v flutter &> /dev/null; then
     echo "❌ Flutter not found. Please install Flutter SDK."
