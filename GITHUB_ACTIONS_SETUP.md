@@ -1,138 +1,140 @@
-# Настройка GitHub Actions для автоматической сборки
+# GitHub Actions Setup for Automated Builds
 
-## Обзор
+## Overview
 
-GitHub Actions настроены для автоматической сборки приложения при каждом релизе. Система создает сборки для Android и macOS, а затем автоматически создает релиз с артефактами.
+GitHub Actions are configured to automatically build the application for each release. The system creates builds for Android, macOS, and Windows, then automatically creates a release with artifacts.
 
 ## Workflows
 
-1. **`ci.yml`** - Проверка кода при push/PR
-2. **`release.yml`** - Создание релизов при пуше тега
+1. **`ci.yml`** - Code checks on push/PR
+2. **`release.yml`** - Release creation on tag push
 
-## Настройка Secrets
+## Setup Secrets
 
-Для работы автоматической сборки нужно настроить следующие секреты в GitHub:
+To enable automated builds, you need to configure the following secrets in GitHub:
 
-### Переход в настройки секретов:
-1. Перейдите в репозиторий на GitHub
+### Navigate to secrets settings:
+1. Go to the repository on GitHub
 2. Settings → Secrets and variables → Actions
-3. Нажмите "New repository secret"
+3. Click "New repository secret"
 
-### Необходимые секреты:
+### Required secrets:
 
 #### 1. `ANDROID_KEYSTORE`
 ```bash
-# Конвертируйте ваш keystore в base64
+# Convert your keystore to base64
 base64 -i android/app/upload-keystore.jks | pbcopy
 ```
-Вставьте результат в секрет `ANDROID_KEYSTORE`
+Paste the result into the `ANDROID_KEYSTORE` secret
 
 #### 2. `KEYSTORE_PASSWORD`
-Пароль от keystore файла
+Password for the keystore file
 
 #### 3. `KEY_PASSWORD`
-Пароль от ключа
+Password for the key
 
 #### 4. `KEY_ALIAS`
-Псевдоним ключа (обычно "upload")
+Key alias (usually "upload")
 
-## Как создать релиз
+## How to create a release
 
-### 1. Обновите версию в pubspec.yaml
+### 1. Update version in pubspec.yaml
 ```yaml
-version: 1.0.1+7  # Увеличьте версию
+version: 1.0.1+7  # Increment version
 ```
 
-### 2. Создайте и запушьте тег
+### 2. Create and push tag
 ```bash
-# Создать тег
+# Create tag
 git tag v1.0.1
 
-# Запушить тег
+# Push tag
 git push origin v1.0.1
 ```
 
-### 3. Автоматическая сборка
-GitHub Actions автоматически:
-- Соберет APK и AAB для Android
-- Соберет приложение для macOS
-- Создаст релиз с файлами для скачивания
-- Добавит описание релиза
+### 3. Automatic build
+GitHub Actions will automatically:
+- Build APK and AAB for Android
+- Build application for macOS
+- Build application for Windows
+- Create release with downloadable files
+- Add release description
 
-## Структура релиза
+## Release structure
 
-Каждый релиз будет содержать:
-- `app-release.aab` - для загрузки в Google Play
-- `app-release.apk` - для тестирования/прямой установки
-- `tunio-player-macos.tar.gz` - macOS приложение
+Each release will contain:
+- `app-release.aab` - for Google Play upload
+- `app-release.apk` - for testing/direct installation
+- `tunio-player-macos.tar.gz` - macOS application
+- `tunio-player-windows.zip` - Windows application
 
-## Преимущества
+## Benefits
 
-✅ **Автоматизация** - нет необходимости в ручной сборке
-✅ **Консистентность** - одинаковая среда сборки
-✅ **Безопасность** - ключи хранятся в GitHub Secrets
-✅ **Мультиплатформенность** - Android и macOS одновременно
-✅ **Артефакты** - автоматическое создание релизов
+✅ **Automation** - no need for manual builds
+✅ **Consistency** - same build environment
+✅ **Security** - keys stored in GitHub Secrets
+✅ **Multi-platform** - Android, macOS, and Windows simultaneously
+✅ **Artifacts** - automatic release creation
 
-## Мониторинг
+## Monitoring
 
-Вы можете отслеживать процесс сборки:
-1. Перейдите на вкладку "Actions" в репозитории
-2. Выберите нужный workflow
-3. Смотрите прогресс в реальном времени
+You can track the build process:
+1. Go to the "Actions" tab in the repository
+2. Select the required workflow
+3. Watch progress in real-time
 
-## Устранение проблем
+## Troubleshooting
 
-### Проблема с keystore
-Если сборка не удается из-за keystore:
-1. Убедитесь, что keystore файл существует
-2. Проверьте, что все секреты заполнены
-3. Убедитесь, что base64 конвертация выполнена правильно
+### Keystore issues
+If build fails due to keystore:
+1. Make sure keystore file exists
+2. Check that all secrets are filled
+3. Ensure base64 conversion was done correctly
 
-### Проблема с версией Flutter
-Если нужна другая версия Flutter, измените в workflows:
+### Flutter version issues
+If you need a different Flutter version, change in workflows:
 ```yaml
 - name: Setup Flutter
   uses: subosito/flutter-action@v2
   with:
-    flutter-version: '3.24.3'  # Измените версию
+    flutter-version: '3.27.0'  # Change version
     channel: 'stable'
 ```
 
-### Проблема с зависимостями
-Если сборка не удается из-за зависимостей:
-1. Проверьте, что все зависимости совместимы
-2. Убедитесь, что pubspec.yaml корректен
-3. Проверьте лог ошибок в Actions
+### Dependencies issues
+If build fails due to dependencies:
+1. Check that all dependencies are compatible
+2. Make sure pubspec.yaml is correct
+3. Check error logs in Actions
 
-## Команды для локальной проверки
+## Commands for local verification
 
 ```bash
-# Проверить форматирование
+# Check formatting
 flutter format lib/ test/
 
-# Анализ кода
+# Code analysis
 flutter analyze
 
-# Запустить тесты
+# Run tests
 flutter test
 
-# Локальная сборка
+# Local build
 flutter build apk --release
 flutter build appbundle --release
 ```
 
-## Альтернативы
+## Alternatives
 
-Если GitHub Actions не подходит, рассмотрите:
-- **Codemagic** - специализированная CI/CD для Flutter
-- **GitLab CI** - если используете GitLab
-- **Bitrise** - мобильная CI/CD платформа
+If GitHub Actions doesn't suit you, consider:
+- **Codemagic** - specialized CI/CD for Flutter
+- **GitLab CI** - if using GitLab
+- **Bitrise** - mobile CI/CD platform
 
-## Дополнительные возможности
+## Additional features
 
-### Автоматическая загрузка в Google Play
-Можно добавить автоматическую загрузку в Google Play Console:
+### Automatic Google Play upload
+You can add automatic upload to Google Play Console:
 ```yaml
 - name: Upload to Google Play
   uses: r0adkll/upload-google-play@v1
@@ -143,12 +145,12 @@ flutter build appbundle --release
     track: production
 ```
 
-### Уведомления
-Можно добавить уведомления в Slack/Discord/Telegram при успешной сборке.
+### Notifications
+You can add notifications to Slack/Discord/Telegram on successful builds.
 
-### Тестирование
-Можно добавить более продвинутые тесты, интеграционные тесты и т.д.
+### Testing
+You can add more advanced tests, integration tests, etc.
 
 ---
 
-**Готово!** Теперь каждый раз, когда вы пушите тег, GitHub Actions автоматически создаст релиз с готовыми для загрузки файлами. 
+**Done!** Now every time you push a tag, GitHub Actions will automatically create a release with ready-to-download files. 

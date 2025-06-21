@@ -35,7 +35,7 @@ class MainActivity: FlutterActivity() {
         if (isAutoStart || isHomeAction) {
             Log.d("MainActivity", "Auto-start or Home launch detected - Boot: $isBootStart, Service: $isServiceStart, Home: $isHomeAction")
             
-            // Настройки для полноэкранного режима
+            // Settings for fullscreen mode
             window.addFlags(
                 WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD or
                 WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
@@ -43,7 +43,7 @@ class MainActivity: FlutterActivity() {
                 WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
             )
             
-            // Скрываем системные элементы для TV режима
+            // Hide system elements for TV mode
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 window.insetsController?.let { controller ->
                     controller.hide(android.view.WindowInsets.Type.statusBars())
@@ -73,7 +73,7 @@ class MainActivity: FlutterActivity() {
                     result.success(isAutoStart)
                 }
                 "requestIgnoreBatteryOptimizations" -> {
-                    // Этот метод может быть полезен для TV-приставок
+                    // This method can be useful for TV set-top boxes
                     result.success(true)
                 }
 

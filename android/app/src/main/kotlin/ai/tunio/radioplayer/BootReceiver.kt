@@ -36,7 +36,7 @@ class BootReceiver : BroadcastReceiver() {
     }
     
     private fun startAppWithMultipleMethods(context: Context) {
-        // Увеличенная задержка для TV-приставок
+        // Increased delay for TV set-top boxes
         val delay = when {
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> 20000L // Android 10+
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.O -> 15000L // Android 8+
@@ -48,15 +48,15 @@ class BootReceiver : BroadcastReceiver() {
         Handler(Looper.getMainLooper()).postDelayed({
             Log.d("BootReceiver", "Attempting multiple start methods...")
             
-            // Метод 1: Через сервис (работает лучше на большинстве устройств)
+            // Method 1: Via service (works better on most devices)
             tryStartViaService(context)
             
-            // Метод 2: Прямой запуск активити с задержкой
+            // Method 2: Direct activity launch with delay
             Handler(Looper.getMainLooper()).postDelayed({
                 tryDirectActivityStart(context)
             }, 2000L)
             
-            // Метод 3: Запасной вариант с дополнительными флагами
+            // Method 3: Fallback option with additional flags
             Handler(Looper.getMainLooper()).postDelayed({
                 tryFallbackStart(context)
             }, 5000L)

@@ -18,11 +18,14 @@ jobs:
     - name: Setup Flutter
       uses: subosito/flutter-action@v2
       with:
-        flutter-version: '3.24.3'
+        flutter-version: '3.27.0'
         channel: 'stable'
         
     - name: Flutter version
       run: flutter --version
+      
+    - name: Disable Flutter analytics
+      run: flutter config --no-analytics
       
     - name: Install dependencies
       run: flutter pub get
@@ -54,14 +57,44 @@ jobs:
     - name: Setup Flutter
       uses: subosito/flutter-action@v2
       with:
-        flutter-version: '3.24.3'
+        flutter-version: '3.27.0'
         channel: 'stable'
         
     - name: Install dependencies
       run: flutter pub get
       
+    - name: Disable Flutter analytics
+      run: flutter config --no-analytics
+      
     - name: Build APK (debug)
       run: flutter build apk --debug
       
     - name: Build web
-      run: flutter build web 
+      run: flutter build web
+      
+  build-test-windows:
+    name: Build Test Windows
+    runs-on: windows-latest
+    needs: test
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+        
+    - name: Setup Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: '3.27.0'
+        channel: 'stable'
+        
+    - name: Install dependencies
+      run: flutter pub get
+      
+    - name: Disable Flutter analytics
+      run: flutter config --no-analytics
+      
+    - name: Enable Windows desktop
+      run: flutter config --enable-windows-desktop
+      
+    - name: Build Windows app (debug)
+      run: flutter build windows --debug 

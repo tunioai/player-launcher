@@ -248,7 +248,7 @@ class AudioService {
   }
 
   void _handleError(String error) {
-    // Сокращаем сообщение об ошибке для пользователя
+    // Shorten error message for user
     String shortError = "Failed to play stream";
     if (error.toLowerCase().contains('network') ||
         error.toLowerCase().contains('connection')) {

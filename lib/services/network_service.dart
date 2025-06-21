@@ -28,7 +28,7 @@ class NetworkService {
       _checkConnectivity();
     });
 
-    // Проверяем сразу
+    // Check immediately
     _checkConnectivity();
   }
 
@@ -69,12 +69,12 @@ class NetworkService {
     Timer? timeoutTimer;
     StreamSubscription? subscription;
 
-    // Проверяем текущее состояние
+    // Check current state
     if (await checkInternetConnection()) {
       return true;
     }
 
-    // Ждем появления соединения
+    // Wait for connection to appear
     subscription = connectivityStream.listen((isConnected) {
       if (isConnected) {
         timeoutTimer?.cancel();
@@ -85,7 +85,7 @@ class NetworkService {
       }
     });
 
-    // Таймаут
+    // Timeout
     timeoutTimer = Timer(Duration(seconds: maxWaitSeconds), () {
       subscription?.cancel();
       if (!completer.isCompleted) {

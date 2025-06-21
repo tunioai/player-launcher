@@ -23,11 +23,14 @@ jobs:
     - name: Setup Flutter
       uses: subosito/flutter-action@v2
       with:
-        flutter-version: '3.24.3'
+        flutter-version: '3.27.0'
         channel: 'stable'
         
     - name: Flutter version
       run: flutter --version
+      
+    - name: Disable Flutter analytics
+      run: flutter config --no-analytics
       
     - name: Install dependencies
       run: flutter pub get
@@ -71,11 +74,14 @@ jobs:
     - name: Setup Flutter
       uses: subosito/flutter-action@v2
       with:
-        flutter-version: '3.24.3'
+        flutter-version: '3.27.0'
         channel: 'stable'
         
     - name: Flutter version
       run: flutter --version
+      
+    - name: Disable Flutter analytics
+      run: flutter config --no-analytics
       
     - name: Install dependencies
       run: flutter pub get
@@ -97,9 +103,50 @@ jobs:
         name: macos-builds
         path: build/macos/Build/Products/Release/tunio-player-macos.tar.gz
         
+  build-windows:
+    name: Build Windows
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Setup Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: '3.27.0'
+        channel: 'stable'
+        
+    - name: Flutter version
+      run: flutter --version
+      
+    - name: Disable Flutter analytics
+      run: flutter config --no-analytics
+      
+    - name: Install dependencies
+      run: flutter pub get
+      
+    - name: Enable Windows desktop
+      run: flutter config --enable-windows-desktop
+      
+    - name: Build Windows app
+      run: flutter build windows --release
+      
+    - name: Create Windows archive
+      run: |
+        cd build/windows/x64/runner/Release
+        Compress-Archive -Path * -DestinationPath tunio-player-windows.zip
+      shell: powershell
+        
+    - name: Upload Windows artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: windows-builds
+        path: build/windows/x64/runner/Release/tunio-player-windows.zip
+        
   create-release:
     name: Create Release
-    needs: [build-android, build-macos]
+    needs: [build-android, build-macos, build-windows]
     runs-on: ubuntu-latest
     
     steps:
@@ -122,35 +169,46 @@ jobs:
         name: macos-builds
         path: ./macos-builds
         
+    - name: Download Windows artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: windows-builds
+        path: ./windows-builds
+        
     - name: Create Release
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ steps.get_version.outputs.VERSION }}
         name: Release ${{ steps.get_version.outputs.VERSION }}
         body: |
-          ## Что нового в версии ${{ steps.get_version.outputs.VERSION }}
+          ## What's new in version ${{ steps.get_version.outputs.VERSION }}
           
-          ### Файлы для скачивания:
-          - **app-release.aab** - Android App Bundle для загрузки в Google Play
-          - **app-release.apk** - APK файл для тестирования на Android
-          - **tunio-player-macos.tar.gz** - macOS приложение
+          ### Download files:
+          - **app-release.aab** - Android App Bundle for Google Play upload
+          - **app-release.apk** - APK file for Android testing
+          - **tunio-player-macos.tar.gz** - macOS application
+          - **tunio-player-windows.zip** - Windows application
           
-          ### Инструкции по установке:
+          ### Installation instructions:
           
           #### Android:
-          - Для обычной установки: скачайте APK и установите
-          - Для публикации в Google Play: используйте AAB файл
+          - For regular installation: download APK and install
+          - For Google Play publishing: use AAB file
           
           #### macOS:
-          - Распакуйте архив и перенесите приложение в папку Applications
+          - Extract archive and move application to Applications folder
+          
+          #### Windows:
+          - Extract ZIP archive and run tunio_radio_player.exe
           
           ---
           
-          Проект автоматически собран через GitHub Actions
+          Project automatically built via GitHub Actions
         files: |
           ./android-builds/app-release.aab
           ./android-builds/app-release.apk
           ./macos-builds/tunio-player-macos.tar.gz
+          ./windows-builds/tunio-player-windows.zip
         draft: false
         prerelease: false
       env:
