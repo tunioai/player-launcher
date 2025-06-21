@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 import 'package:just_audio/just_audio.dart';
 import 'package:audio_session/audio_session.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';

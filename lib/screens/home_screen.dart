@@ -7,7 +7,6 @@ import '../services/audio_service.dart';
 import '../services/autostart_service.dart';
 import '../widgets/code_input_widget.dart';
 import '../utils/logger.dart';
-import '../utils/audio_config.dart';
 
 class HomeScreen extends StatefulWidget {
   final VoidCallback onThemeToggle;
@@ -43,8 +42,7 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isConnecting = false;
   bool _isRetrying = false;
   double _volume = 1.0;
-  Duration _bufferAhead = Duration.zero;
-  String _connectionQuality = "Good"; // Connection quality instead of buffer
+  String _connectionQuality = "Good";
 
   @override
   void initState() {
@@ -159,17 +157,6 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
         );
-      }
-    });
-
-    // Listen for real-time buffer updates (kept for fallback)
-    _controller.bufferStream.listen((bufferAhead) {
-      Logger.debug('🏠 HomeScreen: Buffer updated: ${bufferAhead.inSeconds}s',
-          'HomeScreen');
-      if (mounted) {
-        setState(() {
-          _bufferAhead = bufferAhead;
-        });
       }
     });
 
@@ -338,33 +325,6 @@ class _HomeScreenState extends State<HomeScreen> {
         return Icons.wifi_tethering;
       default:
         return Icons.wifi_off;
-    }
-  }
-
-  // Legacy buffer functions (kept for potential fallback)
-  Color _getBufferColor() {
-    if (AudioConfig.isBufferCritical(_bufferAhead)) {
-      return Colors.red; // Critical: < 5s
-    } else if (AudioConfig.isBufferHealthy(_bufferAhead)) {
-      if (AudioConfig.isBufferExcellent(_bufferAhead)) {
-        return Colors.blue; // Excellent: >= 20s
-      } else {
-        return Colors.green; // Good: 10-19s
-      }
-    } else {
-      return Colors.orange; // Building: 5-9s
-    }
-  }
-
-  IconData _getBufferIcon() {
-    if (AudioConfig.isBufferCritical(_bufferAhead)) {
-      return Icons.warning; // Critical buffer
-    } else if (AudioConfig.isBufferExcellent(_bufferAhead)) {
-      return Icons.verified; // Excellent buffer
-    } else if (AudioConfig.isBufferHealthy(_bufferAhead)) {
-      return Icons.check_circle; // Good buffer
-    } else {
-      return Icons.schedule; // Building buffer
     }
   }
 
