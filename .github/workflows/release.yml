@@ -161,6 +161,13 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
       
+    - name: Check prerequisite jobs
+      run: |
+        echo "All prerequisite jobs should have completed successfully"
+        echo "build-android: ${{ needs.build-android.result }}"
+        echo "build-macos: ${{ needs.build-macos.result }}"
+        echo "build-windows: ${{ needs.build-windows.result }}"
+      
     - name: Get version from tag
       id: get_version
       run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
@@ -170,6 +177,17 @@ jobs:
       with:
         name: android-builds
         path: ./android-builds
+        
+    - name: Debug Android artifacts
+      run: |
+        echo "Checking android-builds directory:"
+        ls -la ./android-builds/ || echo "android-builds directory not found"
+        echo "Checking for APK file:"
+        ls -la ./android-builds/app-release.apk || echo "APK file not found"
+        echo "Checking for AAB file:"
+        ls -la ./android-builds/app-release.aab || echo "AAB file not found"
+        echo "All files in android-builds:"
+        find ./android-builds -type f || echo "No files found"
         
     - name: Download macOS artifacts
       uses: actions/download-artifact@v4
@@ -182,6 +200,15 @@ jobs:
       with:
         name: windows-builds
         path: ./windows-builds
+        
+    - name: Debug all artifacts
+      run: |
+        echo "All downloaded artifacts:"
+        ls -la ./ || echo "No artifacts found"
+        echo "macOS artifacts:"
+        ls -la ./macos-builds/ || echo "macOS artifacts not found"
+        echo "Windows artifacts:"
+        ls -la ./windows-builds/ || echo "Windows artifacts not found"
         
     - name: Create Release
       uses: softprops/action-gh-release@v1
