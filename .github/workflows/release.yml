@@ -183,9 +183,9 @@ jobs:
         echo "Checking android-builds directory:"
         ls -la ./android-builds/ || echo "android-builds directory not found"
         echo "Checking for APK file:"
-        ls -la ./android-builds/app-release.apk || echo "APK file not found"
+        ls -la ./android-builds/flutter-apk/app-release.apk || echo "APK file not found"
         echo "Checking for AAB file:"
-        ls -la ./android-builds/app-release.aab || echo "AAB file not found"
+        ls -la ./android-builds/bundle/release/app-release.aab || echo "AAB file not found"
         echo "All files in android-builds:"
         find ./android-builds -type f || echo "No files found"
         
@@ -240,8 +240,8 @@ jobs:
           
           Project automatically built via GitHub Actions
         files: |
-          ./android-builds/app-release.aab
-          ./android-builds/app-release.apk
+          ./android-builds/bundle/release/app-release.aab
+          ./android-builds/flutter-apk/app-release.apk
           ./macos-builds/tunio-player-macos.tar.gz
           ./windows-builds/tunio-player-windows.zip
         draft: false
