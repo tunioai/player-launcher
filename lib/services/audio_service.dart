@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:just_audio/just_audio.dart';
 import 'package:audio_session/audio_session.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
@@ -96,10 +97,9 @@ class AudioService {
     ));
 
     // Configure audio player with enhanced buffering for radio streaming
-    // TEMPORARILY USING SIMPLE CONFIG to diagnose buffer issues
+    // FULL ROLLBACK: Using original working simple config
     final config = AudioConfig.getSimpleStreamingConfiguration();
-    Logger.info(
-        '🔧 AudioService: Using SIMPLE buffer config for better compatibility',
+    Logger.info('🔧 AudioService: Using ORIGINAL working simple config',
         'AudioService');
 
     _audioPlayer = AudioPlayer(
@@ -160,12 +160,15 @@ class AudioService {
             'AudioService');
 
         // Special analysis for stuck buffer
-        if (bufferAhead.inSeconds <= 2 && _audioPlayer.playing) {
+        if (bufferAhead.inSeconds <= 3 && _audioPlayer.playing) {
           Logger.warning(
-              '⚠️ AudioService: Buffer stuck at ${bufferAhead.inSeconds}s - This might indicate AndroidLoadControl settings are not working properly on this device',
+              '⚠️ AudioService: Buffer stuck at ${bufferAhead.inSeconds}s - AndroidLoadControl settings: targetBufferBytes=8MB, maxBufferDuration=60s',
               'AudioService');
           Logger.warning(
               '📊 AudioService: Raw data - bufferedPos: ${bufferedPosition.inSeconds}s, currentPos: ${currentPosition.inSeconds}s, playing: ${_audioPlayer.playing}, state: ${_audioPlayer.processingState}',
+              'AudioService');
+          Logger.warning(
+              '🔧 AudioService: This suggests either: 1) Network too slow, 2) Stream bitrate too low, 3) Android device limitations, 4) ExoPlayer ignoring our settings',
               'AudioService');
         }
 
@@ -241,9 +244,21 @@ class AudioService {
           preload: true,
         );
 
+        // ANDROID WORKAROUND: Give time to buffer before starting playback
+        if (Platform.isAndroid) {
+          Logger.info(
+              '🔄 AudioService: Waiting ${AudioConfig.androidPrebufferDelay.inSeconds} seconds to build buffer before playback (Android workaround)',
+              'AudioService');
+          await Future.delayed(AudioConfig.androidPrebufferDelay);
+        } else {
+          Logger.debug(
+              '🍎 AudioService: Skipping prebuffer delay on non-Android platform',
+              'AudioService');
+        }
+
         _currentStreamUrl = config.streamUrl;
         Logger.debug(
-            '🎵 AudioService: Audio source set successfully with enhanced buffering',
+            '🎵 AudioService: Audio source set successfully with enhanced buffering + 3s prebuffer',
             'AudioService');
       }
 

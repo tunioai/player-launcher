@@ -1,4 +1,5 @@
 import 'package:just_audio/just_audio.dart';
+import '../utils/logger.dart';
 
 class AudioConfig {
   // Two-level buffering strategy (like YouTube)
@@ -17,8 +18,21 @@ class AudioConfig {
       Duration(seconds: 30); // iOS/macOS
   static const Duration backBufferDuration = Duration(seconds: 5);
 
+  // Android-specific prebuffer delay
+  static const Duration androidPrebufferDelay =
+      Duration(seconds: 5); // Android workaround
+  static const Duration androidFastPrebuffer =
+      Duration(seconds: 2); // Fast devices/good network
+  static const Duration androidSlowPrebuffer =
+      Duration(seconds: 5); // Slow devices/poor network
+  static const Duration androidTVPrebuffer = Duration(seconds: 4); // TV devices
+
   // Network and quality settings
-  static const int targetBufferBytes = 3 * 1024 * 1024; // 3MB (optimized)
+  static const int targetBufferBytes =
+      8 * 1024 * 1024; // 8MB (increased for Android)
+  static const int androidTargetBufferBytes =
+      8 * 1024 * 1024; // 8MB for Android
+  static const int tvTargetBufferBytes = 4 * 1024 * 1024; // 4MB for TV
   static const int maxBitRate = 320000; // 320 kbps
   static const String userAgent = 'TunioRadioPlayer/1.0 (Mobile; Streaming)';
 
@@ -31,15 +45,16 @@ class AudioConfig {
   static AudioLoadConfiguration getStreamingConfiguration() {
     return AudioLoadConfiguration(
       androidLoadControl: AndroidLoadControl(
-        // FIXED: Two-level buffering strategy
-        minBufferDuration:
-            quickStartBuffer, // Start with 2s minimum (CRITICAL!)
+        // OPTIMIZED: Android-specific buffering strategy
+        minBufferDuration: quickStartBuffer, // Start with 3s minimum
         maxBufferDuration: maxBufferDuration, // Build up to 60s maximum
-        bufferForPlaybackDuration: quickStartBuffer, // Fast start (2s)
+        bufferForPlaybackDuration: Duration(seconds: 2), // Quick start (2s)
         bufferForPlaybackAfterRebufferDuration:
             rebufferPlaybackBuffer, // Recovery (8s)
-        targetBufferBytes: targetBufferBytes,
-        prioritizeTimeOverSizeThresholds: false, // Let ExoPlayer manage both
+        targetBufferBytes:
+            androidTargetBufferBytes, // 8MB - increased for better buffering
+        prioritizeTimeOverSizeThresholds:
+            true, // Priority to time - allows buffer growth
         backBufferDuration: backBufferDuration,
       ),
       darwinLoadControl: DarwinLoadControl(
@@ -94,10 +109,12 @@ class AudioConfig {
       androidLoadControl: AndroidLoadControl(
         // Simplified settings - sometimes complex settings don't work on TV
         minBufferDuration: Duration(seconds: 5), // Simple minimum
-        maxBufferDuration: Duration(seconds: 30), // Reasonable maximum
-        bufferForPlaybackDuration: Duration(seconds: 2), // Quick start
+        maxBufferDuration:
+            Duration(seconds: 60), // Increased to 60s to allow more buffer
+        bufferForPlaybackDuration: Duration(seconds: 3), // Quick start
         bufferForPlaybackAfterRebufferDuration: Duration(seconds: 5), // Resume
-        // Remove complex settings that might not work on TV
+        targetBufferBytes:
+            8 * 1024 * 1024, // 8MB - increased to force more buffering
         prioritizeTimeOverSizeThresholds: true,
       ),
       darwinLoadControl: DarwinLoadControl(
@@ -109,25 +126,71 @@ class AudioConfig {
     );
   }
 
+  // Gentle improvement to simple config for better Android buffering
+  static AudioLoadConfiguration getImprovedSimpleConfiguration() {
+    return AudioLoadConfiguration(
+      androidLoadControl: AndroidLoadControl(
+        // Conservative improvements to simple config
+        minBufferDuration: Duration(seconds: 5), // Keep same
+        maxBufferDuration: Duration(seconds: 45), // Modest increase 30->45
+        bufferForPlaybackDuration:
+            Duration(seconds: 2), // Slightly faster start
+        bufferForPlaybackAfterRebufferDuration:
+            Duration(seconds: 6), // Slightly more recovery
+        targetBufferBytes: 5 * 1024 * 1024, // Modest increase to 5MB
+        prioritizeTimeOverSizeThresholds: true, // Allow buffer growth
+      ),
+      darwinLoadControl: DarwinLoadControl(
+        automaticallyWaitsToMinimizeStalling: true,
+        preferredForwardBufferDuration:
+            Duration(seconds: 20), // Modest increase
+        canUseNetworkResourcesForLiveStreamingWhilePaused: true,
+        preferredPeakBitRate: 256000, // Modest increase
+      ),
+    );
+  }
+
+  // ALTERNATIVE: Aggressive Android configuration for problematic devices
+  static AudioLoadConfiguration getAggressiveAndroidConfiguration() {
+    return AudioLoadConfiguration(
+      androidLoadControl: AndroidLoadControl(
+        // Very aggressive buffering for Android devices with buffer issues
+        minBufferDuration: Duration(seconds: 2), // Quick start
+        maxBufferDuration: Duration(seconds: 90), // Allow large buffers
+        bufferForPlaybackDuration: Duration(seconds: 1), // Start very fast
+        bufferForPlaybackAfterRebufferDuration:
+            Duration(seconds: 5), // Resume fast
+        targetBufferBytes: 16 * 1024 * 1024, // 16MB target
+        prioritizeTimeOverSizeThresholds:
+            true, // Time priority for buffer growth
+        backBufferDuration: Duration(seconds: 3),
+      ),
+      darwinLoadControl: DarwinLoadControl(
+        automaticallyWaitsToMinimizeStalling: false,
+        preferredForwardBufferDuration: Duration(seconds: 45),
+        canUseNetworkResourcesForLiveStreamingWhilePaused: true,
+        preferredPeakBitRate: maxBitRate.toDouble(),
+      ),
+    );
+  }
+
   // Special configuration for Android TV/Set-top boxes
   static AudioLoadConfiguration getTVStreamingConfiguration() {
     return AudioLoadConfiguration(
       androidLoadControl: AndroidLoadControl(
-        // More aggressive buffering for TV devices
-        minBufferDuration: Duration(seconds: 15), // Reduced for TV
-        maxBufferDuration:
-            Duration(seconds: 60), // Reduced for TV memory constraints
+        // TV-optimized buffering
+        minBufferDuration: Duration(seconds: 3), // TV quick start
+        maxBufferDuration: Duration(seconds: 45), // TV memory constraints
         bufferForPlaybackDuration: Duration(seconds: 1), // Start faster on TV
         bufferForPlaybackAfterRebufferDuration:
             Duration(seconds: 3), // Resume faster
-        targetBufferBytes: 2 * 1024 * 1024, // 2MB for TV (less memory)
+        targetBufferBytes: tvTargetBufferBytes, // 4MB for TV
         prioritizeTimeOverSizeThresholds: true,
-        backBufferDuration: Duration(seconds: 5), // Less back buffer for TV
+        backBufferDuration: Duration(seconds: 3), // Less back buffer for TV
       ),
       darwinLoadControl: DarwinLoadControl(
-        automaticallyWaitsToMinimizeStalling: false, // Don't wait on TV
-        preferredForwardBufferDuration:
-            Duration(seconds: 30), // Less buffer on TV
+        automaticallyWaitsToMinimizeStalling: false,
+        preferredForwardBufferDuration: Duration(seconds: 20), // TV buffer
         canUseNetworkResourcesForLiveStreamingWhilePaused: true,
         preferredPeakBitRate: 192000, // Lower bitrate for TV stability
       ),
@@ -138,5 +201,27 @@ class AudioConfig {
     // This would need platform-specific detection
     // For now, we'll add logging to help identify TV devices
     return false; // Will be detected at runtime
+  }
+
+  // Adaptive configuration selection based on device capabilities
+  static AudioLoadConfiguration getAdaptiveConfiguration() {
+    // For now, start with improved configuration
+    // Later can be enhanced with device detection logic
+    return getStreamingConfiguration();
+  }
+
+  // Method to get aggressive configuration for devices with buffer issues
+  static AudioLoadConfiguration getConfigurationForBufferIssues() {
+    Logger.info(
+        '⚠️ AudioConfig: Switching to aggressive buffer configuration due to buffer growth issues',
+        'AudioConfig');
+    return getAggressiveAndroidConfiguration();
+  }
+
+  // Diagnostic method to log current buffer configuration
+  static void logBufferConfiguration(String configName) {
+    Logger.info(
+        '📊 AudioConfig: Using $configName - targetBufferBytes: ${androidTargetBufferBytes ~/ (1024 * 1024)}MB, maxBuffer: ${maxBufferDuration.inSeconds}s',
+        'AudioConfig');
   }
 }
