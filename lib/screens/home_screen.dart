@@ -602,18 +602,18 @@ class _HomeScreenState extends State<HomeScreen> {
                               ],
                             ],
                           ),
-                          if (_currentTitle != null &&
-                              _currentTitle!.isNotEmpty) ...[
-                            const SizedBox(height: 8),
-                            Text(
-                              _currentTitle!,
-                              style: const TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
-                              ),
-                              textAlign: TextAlign.center,
-                            ),
-                          ],
+                          // if (_currentTitle != null &&
+                          //     _currentTitle!.isNotEmpty) ...[
+                          //   const SizedBox(height: 8),
+                          //   Text(
+                          //     _currentTitle!,
+                          //     style: const TextStyle(
+                          //       fontSize: 16,
+                          //       fontWeight: FontWeight.bold,
+                          //     ),
+                          //     textAlign: TextAlign.center,
+                          //   ),
+                          // ],
                         ],
                       ),
                     ),
@@ -624,9 +624,9 @@ class _HomeScreenState extends State<HomeScreen> {
                       padding: const EdgeInsets.all(16.0),
                       child: Column(
                         children: [
-                          const Text(
-                            'Playback Controls',
-                            style: TextStyle(
+                          Text(
+                            _currentTitle ?? '',
+                            style: const TextStyle(
                               fontSize: 18,
                               fontWeight: FontWeight.bold,
                             ),

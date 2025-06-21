@@ -29,8 +29,6 @@ class AudioService {
       StreamController<AudioState>.broadcast();
   final StreamController<String> _errorController =
       StreamController<String>.broadcast();
-  final StreamController<String?> _titleController =
-      StreamController<String?>.broadcast();
 
   AudioService._();
 
@@ -42,7 +40,6 @@ class AudioService {
 
   Stream<AudioState> get stateStream => _stateController.stream;
   Stream<String> get errorStream => _errorController.stream;
-  Stream<String?> get titleStream => _titleController.stream;
 
   AudioState get currentState {
     // Check for loading state first
@@ -183,7 +180,6 @@ class AudioService {
       print('🎵 AudioService: Starting playback...');
       await _audioPlayer.play();
 
-      _titleController.add(config.title);
       print('🎵 AudioService: Playback started successfully');
     } catch (e) {
       print('❌ AudioService: Error in playStream: $e');
@@ -262,6 +258,5 @@ class AudioService {
     await _audioPlayer.dispose();
     await _stateController.close();
     await _errorController.close();
-    await _titleController.close();
   }
 }

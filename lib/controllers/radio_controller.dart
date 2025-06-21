@@ -38,6 +38,8 @@ class RadioController {
       StreamController<String>.broadcast();
   final StreamController<bool> _retryStateController =
       StreamController<bool>.broadcast();
+  final StreamController<String?> _titleController =
+      StreamController<String?>.broadcast();
 
   RadioController._();
 
@@ -57,7 +59,7 @@ class RadioController {
   Stream<bool> get retryStateStream => _retryStateController.stream;
   Stream<AudioState> get audioStateStream => _audioService.stateStream;
   Stream<String> get audioErrorStream => _audioService.errorStream;
-  Stream<String?> get titleStream => _audioService.titleStream;
+  Stream<String?> get titleStream => _titleController.stream;
 
   String? get currentToken => _currentToken;
   bool get isConnected => _currentToken != null && _currentConfig != null;
@@ -252,6 +254,7 @@ class RadioController {
       if (config != null) {
         _currentToken = token;
         _currentConfig = config;
+        _titleController.add(config.title);
 
         await _storageService.saveToken(token);
         await _storageService.saveLastVolume(config.volume);
@@ -333,6 +336,7 @@ class RadioController {
     _tokenController.add(null);
     _connectionStatusController.add(false);
     _statusMessageController.add('Disconnected');
+    _titleController.add(null);
   }
 
   Future<void> playPause() async {
@@ -402,6 +406,7 @@ class RadioController {
           Logger.info(
               'RadioController: Stream URL changed from ${_currentConfig?.streamUrl} to ${newConfig.streamUrl}');
           _currentConfig = newConfig;
+          _titleController.add(newConfig.title);
           await _storageService.saveLastVolume(newConfig.volume);
 
           // Restart playback with new stream URL if currently playing/buffering
@@ -419,6 +424,7 @@ class RadioController {
           // Other config changes (volume, title, etc.)
           Logger.info('RadioController: Config updated (non-URL changes)');
           _currentConfig = newConfig;
+          _titleController.add(newConfig.title);
           await _storageService.saveLastVolume(newConfig.volume);
           _statusMessageController.add('Stream config updated');
         }
@@ -554,5 +560,6 @@ class RadioController {
     await _statusMessageController.close();
     await _errorNotificationController.close();
     await _retryStateController.close();
+    await _titleController.close();
   }
 }
