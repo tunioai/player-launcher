@@ -107,12 +107,12 @@ class StatusIndicator extends StatelessWidget {
 
   Color _getBackgroundColor() {
     final baseColor = _getIconColor();
-    return baseColor.withOpacity(0.1);
+    return baseColor.withValues(alpha: 0.1);
   }
 
   Color _getBorderColor() {
     final baseColor = _getIconColor();
-    return baseColor.withOpacity(0.3);
+    return baseColor.withValues(alpha: 0.3);
   }
 
   bool _isLoading() {
@@ -143,8 +143,8 @@ class ConnectionStatusBadge extends StatelessWidget {
             shape: BoxShape.circle,
             boxShadow: [
               BoxShadow(
-                color:
-                    (isConnected ? Colors.green : Colors.red).withOpacity(0.3),
+                color: (isConnected ? Colors.green : Colors.red)
+                    .withValues(alpha: 0.3),
                 blurRadius: 4,
                 spreadRadius: 1,
               ),

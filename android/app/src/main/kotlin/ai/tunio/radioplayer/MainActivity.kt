@@ -1,4 +1,4 @@
-package com.example.tunio_radio_player
+package ai.tunio.radioplayer
 
 import android.content.Intent
 import android.os.Build
@@ -76,35 +76,10 @@ class MainActivity: FlutterActivity() {
                     // Этот метод может быть полезен для TV-приставок
                     result.success(true)
                 }
-                "openSystemLauncher" -> {
-                    openSystemLauncher()
-                    result.success(true)
-                }
+
                 else -> result.notImplemented()
             }
         }
     }
-    
-    private fun openSystemLauncher() {
-        try {
-            val intent = Intent(Intent.ACTION_MAIN)
-            intent.addCategory(Intent.CATEGORY_HOME)
-            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            
-            // Исключаем наше приложение из списка
-            val resolveInfoList = packageManager.queryIntentActivities(intent, 0)
-            for (resolveInfo in resolveInfoList) {
-                if (resolveInfo.activityInfo.packageName != packageName) {
-                    val launcherIntent = Intent(Intent.ACTION_MAIN)
-                    launcherIntent.addCategory(Intent.CATEGORY_HOME)
-                    launcherIntent.setPackage(resolveInfo.activityInfo.packageName)
-                    launcherIntent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    startActivity(launcherIntent)
-                    break
-                }
-            }
-        } catch (e: Exception) {
-            Log.e("MainActivity", "Failed to open system launcher: ${e.message}")
-        }
-    }
 }
+

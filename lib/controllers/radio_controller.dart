@@ -155,9 +155,6 @@ class RadioController {
           Logger.info('RadioController: Audio state changed to paused');
           _statusMessageController.add('Paused');
           break;
-
-        default:
-          break;
       }
     });
   }

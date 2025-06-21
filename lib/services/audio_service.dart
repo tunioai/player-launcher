@@ -3,6 +3,7 @@ import 'package:just_audio/just_audio.dart';
 import 'package:audio_session/audio_session.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import '../models/stream_config.dart';
+import '../utils/logger.dart';
 
 enum AudioState {
   idle,
@@ -98,27 +99,30 @@ class AudioService {
 
     _playerStateSubscription = _audioPlayer.playerStateStream.listen((state) {
       final currentAudioState = currentState;
-      print(
-          '🎵 AudioService: Player state changed to ${state.processingState}, playing: ${state.playing}');
-      print('🎵 AudioService: Current audio state: $currentAudioState');
+      Logger.debug(
+          '🎵 AudioService: Player state changed to ${state.processingState}, playing: ${state.playing}',
+          'AudioService');
+      Logger.debug('🎵 AudioService: Current audio state: $currentAudioState',
+          'AudioService');
 
       _stateController.add(currentAudioState);
 
       if (state.processingState == ProcessingState.completed) {
-        print('🎵 AudioService: Stream completed, handling stream end');
+        Logger.debug('🎵 AudioService: Stream completed, handling stream end',
+            'AudioService');
         _handleStreamEnd();
       }
     });
 
     // Listen to error stream for enhanced error handling in just_audio 0.10.x
     _audioPlayer.errorStream.listen((error) {
-      print('❌ AudioService: Player error: $error');
+      Logger.error('❌ AudioService: Player error: $error', 'AudioService');
       _handleError('Player error: ${error.message}');
     });
 
     _audioPlayer.playbackEventStream.listen((event) {
       if (event.processingState == ProcessingState.ready) {
-        print('🎵 AudioService: Stream ready');
+        Logger.debug('🎵 AudioService: Stream ready', 'AudioService');
       }
     });
 
@@ -131,32 +135,39 @@ class AudioService {
           result == ConnectivityResult.ethernet);
 
       if (!hasConnection) {
-        print('🌐 AudioService: Network connection lost');
+        Logger.warning(
+            '🌐 AudioService: Network connection lost', 'AudioService');
       } else {
-        print('🌐 AudioService: Network connection restored');
+        Logger.info(
+            '🌐 AudioService: Network connection restored', 'AudioService');
       }
     });
   }
 
   Future<void> playStream(StreamConfig config) async {
     try {
-      print(
-          '🎵 AudioService: Starting playStream with URL: ${config.streamUrl}');
-      print('🎵 AudioService: Stream title: ${config.title}');
-      print('🎵 AudioService: Stream volume: ${config.volume}');
+      Logger.debug(
+          '🎵 AudioService: Starting playStream with URL: ${config.streamUrl}',
+          'AudioService');
+      Logger.debug(
+          '🎵 AudioService: Stream title: ${config.title}', 'AudioService');
+      Logger.debug(
+          '🎵 AudioService: Stream volume: ${config.volume}', 'AudioService');
 
       _stateController.add(AudioState.loading);
 
       if (_currentStreamUrl != config.streamUrl) {
         await _audioPlayer.stop();
 
-        print(
-            '🎵 AudioService: Creating audio source for URL: ${config.streamUrl}');
+        Logger.debug(
+            '🎵 AudioService: Creating audio source for URL: ${config.streamUrl}',
+            'AudioService');
         final uri = Uri.parse(config.streamUrl);
-        print('🎵 AudioService: Parsed URI: $uri');
-        print('🎵 AudioService: URI scheme: ${uri.scheme}');
-        print('🎵 AudioService: URI host: ${uri.host}');
-        print('🎵 AudioService: URI path: ${uri.path}');
+        Logger.debug('🎵 AudioService: Parsed URI: $uri', 'AudioService');
+        Logger.debug(
+            '🎵 AudioService: URI scheme: ${uri.scheme}', 'AudioService');
+        Logger.debug('🎵 AudioService: URI host: ${uri.host}', 'AudioService');
+        Logger.debug('🎵 AudioService: URI path: ${uri.path}', 'AudioService');
 
         final audioSource = ProgressiveAudioSource(
           uri,
@@ -170,20 +181,24 @@ class AudioService {
           },
         );
 
-        print('🎵 AudioService: Setting audio source...');
+        Logger.debug(
+            '🎵 AudioService: Setting audio source...', 'AudioService');
         await _audioPlayer.setAudioSource(audioSource);
         _currentStreamUrl = config.streamUrl;
-        print('🎵 AudioService: Audio source set successfully');
+        Logger.debug(
+            '🎵 AudioService: Audio source set successfully', 'AudioService');
       }
 
       await setVolume(config.volume);
-      print('🎵 AudioService: Starting playback...');
+      Logger.debug('🎵 AudioService: Starting playback...', 'AudioService');
       await _audioPlayer.play();
 
-      print('🎵 AudioService: Playback started successfully');
+      Logger.debug(
+          '🎵 AudioService: Playback started successfully', 'AudioService');
     } catch (e) {
-      print('❌ AudioService: Error in playStream: $e');
-      print('❌ AudioService: Error type: ${e.runtimeType}');
+      Logger.error('❌ AudioService: Error in playStream: $e', 'AudioService');
+      Logger.error(
+          '❌ AudioService: Error type: ${e.runtimeType}', 'AudioService');
       _handleError('Failed to play stream: $e');
       // Note: Automatic reconnection is handled by RadioController
     }

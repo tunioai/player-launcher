@@ -1,4 +1,4 @@
-package com.example.tunio_radio_player
+package ai.tunio.radioplayer
 
 import android.app.Service
 import android.content.Intent

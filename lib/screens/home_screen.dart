@@ -3,9 +3,9 @@ import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../controllers/radio_controller.dart';
 import '../services/audio_service.dart';
-import '../services/storage_service.dart';
 import '../services/autostart_service.dart';
 import '../widgets/code_input_widget.dart';
+import '../utils/logger.dart';
 
 class HomeScreen extends StatefulWidget {
   final VoidCallback onThemeToggle;
@@ -23,12 +23,11 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   late RadioController _controller;
-  late StorageService _storageService;
 
   // Focus nodes for TV remote navigation
   final FocusNode _codeFocusNode = FocusNode();
   final FocusNode _connectButtonFocusNode = FocusNode();
-  final FocusNode _settingsButtonFocusNode = FocusNode();
+
   final FocusNode _playButtonFocusNode = FocusNode();
   final FocusNode _volumeFocusNode = FocusNode();
   final FocusNode _themeButtonFocusNode = FocusNode();
@@ -54,7 +53,7 @@ class _HomeScreenState extends State<HomeScreen> {
     // Setup focus node listeners for visual feedback
     _codeFocusNode.addListener(() => setState(() {}));
     _connectButtonFocusNode.addListener(() => setState(() {}));
-    _settingsButtonFocusNode.addListener(() => setState(() {}));
+
     _playButtonFocusNode.addListener(() => setState(() {}));
     _volumeFocusNode.addListener(() => setState(() {}));
     _themeButtonFocusNode.addListener(() => setState(() {}));
@@ -63,12 +62,12 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _initializeController() async {
     _controller = await RadioController.getInstance();
-    _storageService = await StorageService.getInstance();
 
     // Initialize the current code from controller
     final initialToken = _controller.currentToken ?? '';
-    print(
-        '🏠 HomeScreen: Initial token from controller: ${initialToken.isNotEmpty ? '${initialToken.substring(0, 2)}****' : 'EMPTY'}');
+    Logger.debug(
+        '🏠 HomeScreen: Initial token from controller: ${initialToken.isNotEmpty ? '${initialToken.substring(0, 2)}****' : 'EMPTY'}',
+        'HomeScreen');
     setState(() {
       _currentCode = initialToken;
       // Don't set _isConnected here - let the stream handle it
@@ -76,8 +75,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
     // Set up ALL listeners first before triggering any start logic
     _controller.tokenStream.listen((token) {
-      print(
-          '🏠 HomeScreen: Token stream updated: ${token != null ? '${token.substring(0, 2)}****' : 'NULL'}');
+      Logger.debug(
+          '🏠 HomeScreen: Token stream updated: ${token != null ? '${token.substring(0, 2)}****' : 'NULL'}',
+          'HomeScreen');
       if (mounted) {
         setState(() {
           _currentCode = token ?? '';
@@ -86,7 +86,8 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     _controller.connectionStatusStream.listen((isConnected) {
-      print('🏠 HomeScreen: Connection status updated: $isConnected');
+      Logger.debug('🏠 HomeScreen: Connection status updated: $isConnected',
+          'HomeScreen');
       if (mounted) {
         setState(() {
           _isConnected = isConnected;
@@ -96,7 +97,8 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     _controller.statusMessageStream.listen((message) {
-      print('🏠 HomeScreen: Status message updated: $message');
+      Logger.debug(
+          '🏠 HomeScreen: Status message updated: $message', 'HomeScreen');
       if (mounted) {
         setState(() {
           _statusMessage = message;
@@ -105,7 +107,7 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     _controller.audioStateStream.listen((state) {
-      print('🏠 HomeScreen: Audio state updated: $state');
+      Logger.debug('🏠 HomeScreen: Audio state updated: $state', 'HomeScreen');
       if (mounted) {
         setState(() {
           _audioState = state;
@@ -114,7 +116,7 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     _controller.titleStream.listen((title) {
-      print('🏠 HomeScreen: Title updated: $title');
+      Logger.debug('🏠 HomeScreen: Title updated: $title', 'HomeScreen');
       if (mounted) {
         setState(() {
           _currentTitle = title;
@@ -124,7 +126,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
     // Listen for retry state changes
     _controller.retryStateStream.listen((isRetrying) {
-      print('🏠 HomeScreen: Retry state updated: $isRetrying');
+      Logger.debug(
+          '🏠 HomeScreen: Retry state updated: $isRetrying', 'HomeScreen');
       if (mounted) {
         setState(() {
           _isRetrying = isRetrying;
@@ -134,7 +137,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
     // Listen for error notifications and show snackbar
     _controller.errorNotificationStream.listen((errorMessage) {
-      print('🏠 HomeScreen: Error notification: $errorMessage');
+      Logger.debug(
+          '🏠 HomeScreen: Error notification: $errorMessage', 'HomeScreen');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -353,9 +357,6 @@ class _HomeScreenState extends State<HomeScreen> {
             } else if (currentFocus == _playButtonFocusNode && _isConnected) {
               _togglePlayback();
               return KeyEventResult.handled;
-            } else if (currentFocus == _settingsButtonFocusNode) {
-              AutoStartService.openSystemLauncher();
-              return KeyEventResult.handled;
             } else if (currentFocus == _themeButtonFocusNode) {
               widget.onThemeToggle();
               return KeyEventResult.handled;
@@ -397,7 +398,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
         case LogicalKeyboardKey.escape:
         case LogicalKeyboardKey.goBack:
-          AutoStartService.openSystemLauncher();
+          // User can exit the app manually if needed
           return KeyEventResult.handled;
 
         // Number keys for code input
@@ -442,7 +443,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Tunio Radio Player'),
+        title: const Text('Tunio Player'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: [
           Focus(
@@ -595,29 +596,6 @@ class _HomeScreenState extends State<HomeScreen> {
                                               color: Colors.blue, width: 2)
                                           : null,
                                     ),
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Focus(
-                                focusNode: _settingsButtonFocusNode,
-                                child: Container(
-                                  decoration: BoxDecoration(
-                                    border: Border.all(
-                                      color: _settingsButtonFocusNode.hasFocus
-                                          ? Colors.blue
-                                          : Colors.transparent,
-                                      width: 2,
-                                    ),
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                  child: IconButton(
-                                    onPressed: () async {
-                                      await AutoStartService
-                                          .openSystemLauncher();
-                                    },
-                                    icon: const Icon(Icons.settings),
-                                    tooltip: 'Open System Launcher',
                                   ),
                                 ),
                               ),
@@ -793,7 +771,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void dispose() {
     _codeFocusNode.dispose();
     _connectButtonFocusNode.dispose();
-    _settingsButtonFocusNode.dispose();
+
     _playButtonFocusNode.dispose();
     _volumeFocusNode.dispose();
     _themeButtonFocusNode.dispose();

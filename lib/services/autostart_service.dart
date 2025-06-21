@@ -29,15 +29,4 @@ class AutoStartService {
       return false;
     }
   }
-
-  static Future<bool> openSystemLauncher() async {
-    try {
-      final bool result = await _channel.invokeMethod('openSystemLauncher');
-      Logger.info('AutoStartService: System launcher opened: $result');
-      return result;
-    } catch (e) {
-      Logger.error('AutoStartService: Failed to open system launcher: $e');
-      return false;
-    }
-  }
 }

@@ -57,12 +57,13 @@ class ApiService {
           throw Exception('No stream data available');
         }
 
-        print('🌐 ApiService: Raw API response: $data');
-        print('🌐 ApiService: Stream data: $streamData');
+        Logger.debug('🌐 ApiService: Raw API response: $data', 'ApiService');
+        Logger.debug('🌐 ApiService: Stream data: $streamData', 'ApiService');
 
         final streamConfig = StreamConfig.fromJson(streamData);
-        print(
-            '🌐 ApiService: Created StreamConfig with URL: ${streamConfig.streamUrl}');
+        Logger.debug(
+            '🌐 ApiService: Created StreamConfig with URL: ${streamConfig.streamUrl}',
+            'ApiService');
         return streamConfig;
       } else {
         // Try to parse error message from response body for non-200 status codes
@@ -100,7 +101,7 @@ class ApiService {
 
   Future<bool> validateToken(String token) async {
     Logger.debug(
-        'Validating token: ${token.length >= 6 ? token.substring(0, 3) + "***" : token}',
+        'Validating token: ${token.length >= 6 ? "${token.substring(0, 3)}***" : token}',
         'ApiService');
     try {
       await getStreamConfig(token);

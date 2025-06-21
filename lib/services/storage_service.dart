@@ -1,4 +1,5 @@
 import 'package:shared_preferences/shared_preferences.dart';
+import '../utils/logger.dart';
 
 class StorageService {
   static const String _tokenKey = 'token';
@@ -20,19 +21,21 @@ class StorageService {
   // Token methods / Pincode
   Future<void> saveToken(String token) async {
     await _prefs!.setString(_tokenKey, token);
-    print('🔑 StorageService: Token saved: ${token.substring(0, 2)}****');
+    Logger.debug('🔑 StorageService: Token saved: ${token.substring(0, 2)}****',
+        'StorageService');
   }
 
   String? getToken() {
     final token = _prefs!.getString(_tokenKey);
-    print(
-        '🔑 StorageService: Token loaded: ${token != null ? '${token.substring(0, 2)}****' : 'NULL'}');
+    Logger.debug(
+        '🔑 StorageService: Token loaded: ${token != null ? '${token.substring(0, 2)}****' : 'NULL'}',
+        'StorageService');
     return token;
   }
 
   Future<void> clearToken() async {
     await _prefs!.remove(_tokenKey);
-    print('🔑 StorageService: Token cleared');
+    Logger.debug('🔑 StorageService: Token cleared', 'StorageService');
   }
 
   Future<void> saveLastVolume(double volume) async {

@@ -5,7 +5,6 @@
 // gestures. You can also use WidgetTester to find child widgets in the widget
 // tree, read text, and verify that the values of widget properties are correct.
 
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:tunio_radio_player/main.dart';
@@ -16,7 +15,7 @@ void main() {
     await tester.pumpWidget(const TunioRadioApp());
 
     // Verify that the app loads with the title
-    expect(find.text('Tunio Radio Player'), findsOneWidget);
+    expect(find.text('Tunio Player'), findsOneWidget);
 
     // Wait for initialization
     await tester.pumpAndSettle();

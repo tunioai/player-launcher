@@ -1,4 +1,4 @@
-# Tunio Radio Player
+# Tunio Player
 
 A Flutter application for Android and macOS that automatically plays online radio streams with auto-start functionality and network resilience.
 
@@ -265,3 +265,130 @@ For support and issues:
 ---
 
 **Note**: This application is designed for streaming radio content and requires a valid Tunio API key for operation.
+
+## Google Play Publishing Guide
+
+### Prerequisites
+
+- Flutter SDK installed
+- Android SDK with build tools
+- Google Play Console account
+- Java JDK 11 or higher
+
+### Step 1: Generate Upload Keystore
+
+Create a keystore for signing your app:
+
+```bash
+keytool -genkey -v -keystore ~/upload-keystore.jks -keyalg RSA -keysize 2048 -validity 10000 -alias upload
+```
+
+**Important:** Save the keystore file and remember the passwords! You'll need them for all future updates.
+
+### Step 2: Configure Signing
+
+Create a `key.properties` file in the `android/` directory:
+
+```properties
+storePassword=your_store_password
+keyPassword=your_key_password
+keyAlias=upload
+storeFile=/path/to/your/upload-keystore.jks
+```
+
+Example:
+```properties
+storePassword=myStorePassword123
+keyPassword=myKeyPassword123
+keyAlias=upload
+storeFile=/Users/yourname/upload-keystore.jks
+```
+
+**⚠️ Security:** Add `key.properties` to `.gitignore` to keep your credentials safe!
+
+### Step 3: Update App Information
+
+1. **Update version in `pubspec.yaml`:**
+   ```yaml
+   version: 1.0.0+1  # Format: semantic_version+build_number
+   ```
+
+2. **App name and description:**
+   - Update `android/app/src/main/AndroidManifest.xml` if needed
+   - The current app name is "Tunio Player"
+
+### Step 4: Build Release APK/AAB
+
+#### Build Android App Bundle (AAB) - Recommended for Google Play:
+```bash
+flutter build appbundle --release
+```
+
+#### Build APK (alternative):
+```bash
+flutter build apk --release
+```
+
+The built files will be located at:
+- AAB: `build/app/outputs/bundle/release/app-release.aab`
+- APK: `build/app/outputs/flutter-apk/app-release.apk`
+
+### Step 5: Test Release Build
+
+Before uploading, test your release build:
+
+```bash
+# Install and test the release APK
+flutter install --release
+```
+
+### Step 6: Upload to Google Play Console
+
+1. **Go to Google Play Console:** https://play.google.com/console
+2. **Create new app** or select existing app
+3. **Upload your AAB file** in "Release management" → "App releases"
+4. **Fill in app details:**
+   - App title: "Tunio Player"
+   - Short description: "Radio streaming app with auto-start functionality"
+   - Full description: Detailed description of features
+   - Screenshots: Take screenshots of the app
+   - App icon: Use the existing icon from `assets/icon/app_icon.png`
+
+### Step 7: Configure App Details
+
+#### Required Information:
+- **Category:** Music & Audio
+- **Content rating:** Complete the questionnaire
+- **Target audience:** Select appropriate age groups
+- **Privacy policy:** Provide if collecting user data
+
+#### App Permissions Explanation:
+Your app requests several permissions. Provide explanations:
+- `INTERNET`, `ACCESS_NETWORK_STATE`: For streaming radio
+- `MODIFY_AUDIO_SETTINGS`: For volume control
+- `WAKE_LOCK`, `FOREGROUND_SERVICE`: For background playback
+- `RECEIVE_BOOT_COMPLETED`: For auto-start functionality
+- `SYSTEM_ALERT_WINDOW`: For TV box compatibility
+
+### Step 8: Review and Publish
+
+1. Complete all sections in Google Play Console
+2. Review your app listing
+3. Submit for review
+4. Wait for approval (usually 1-3 days)
+
+## Updating Your App
+
+For future updates:
+
+1. **Update version in `pubspec.yaml`:**
+   ```yaml
+   version: 1.0.1+2  # Increment version and build number
+   ```
+
+2. **Build new release:**
+   ```bash
+   flutter build appbundle --release
+   ```
+
+3. **Upload to Google Play Console** in the same app listing

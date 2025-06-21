@@ -1,4 +1,5 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="ai.tunio.radioplayer">
     
     <!-- Internet and network permissions -->
     <uses-permission android:name="android.permission.INTERNET" />
@@ -25,15 +26,13 @@
     <!-- Additional permissions for TV boxes and set-top boxes -->
     <uses-permission android:name="android.permission.START_FOREGROUND_SERVICES_FROM_BACKGROUND" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
-    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
-    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     
     <!-- TV features -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
     <application
-        android:label="Tunio Radio Player"
+        android:label="Tunio Player"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true">
