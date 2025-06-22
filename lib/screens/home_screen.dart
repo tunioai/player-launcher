@@ -8,6 +8,7 @@ import '../services/autostart_service.dart';
 import '../widgets/code_input_widget.dart';
 import '../widgets/status_indicator.dart';
 import '../utils/logger.dart';
+import '../main.dart' show TunioColors;
 
 class HomeScreen extends StatefulWidget {
   final VoidCallback onThemeToggle;
@@ -456,7 +457,6 @@ class _HomeScreenState extends State<HomeScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Tunio Player'),
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: [
           Focus(
             focusNode: _themeButtonFocusNode,
@@ -464,7 +464,7 @@ class _HomeScreenState extends State<HomeScreen> {
               decoration: BoxDecoration(
                 border: Border.all(
                   color: _themeButtonFocusNode.hasFocus
-                      ? Colors.blue
+                      ? TunioColors.primary
                       : Colors.transparent,
                   width: 2,
                 ),
@@ -604,8 +604,9 @@ class _HomeScreenState extends State<HomeScreen> {
                                       padding: const EdgeInsets.symmetric(
                                           vertical: 12),
                                       side: _connectButtonFocusNode.hasFocus
-                                          ? const BorderSide(
-                                              color: Colors.blue, width: 2)
+                                          ? BorderSide(
+                                              color: TunioColors.primary,
+                                              width: 2)
                                           : null,
                                     ),
                                   ),
@@ -642,8 +643,9 @@ class _HomeScreenState extends State<HomeScreen> {
                                     shape: const CircleBorder(),
                                     padding: const EdgeInsets.all(16),
                                     side: _playButtonFocusNode.hasFocus
-                                        ? const BorderSide(
-                                            color: Colors.blue, width: 3)
+                                        ? BorderSide(
+                                            color: TunioColors.primary,
+                                            width: 3)
                                         : null,
                                   ),
                                   child: Icon(
@@ -661,7 +663,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                     decoration: BoxDecoration(
                                       border: Border.all(
                                         color: _volumeFocusNode.hasFocus
-                                            ? Colors.blue
+                                            ? TunioColors.primary
                                             : Colors.transparent,
                                         width: 2,
                                       ),
@@ -677,7 +679,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                       divisions: 20,
                                       label: '${(_volume * 100).round()}%',
                                       activeColor: _volumeFocusNode.hasFocus
-                                          ? Colors.blue
+                                          ? TunioColors.primary
                                           : null,
                                     ),
                                   ),

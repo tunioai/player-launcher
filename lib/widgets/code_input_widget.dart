@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import '../main.dart' show TunioColors;
 import 'package:flutter/foundation.dart';
 
 class CodeInputWidget extends StatefulWidget {
@@ -129,17 +130,21 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
               decoration: BoxDecoration(
                 border: Border.all(
                   color: _digits[index].isNotEmpty
-                      ? (_focusNode.hasFocus ? Colors.blue : Colors.grey[600]!)
-                      : (_focusNode.hasFocus ? Colors.blue : Colors.grey[300]!),
+                      ? (_focusNode.hasFocus
+                          ? TunioColors.primary
+                          : Colors.grey[600]!)
+                      : (_focusNode.hasFocus
+                          ? TunioColors.primary
+                          : Colors.grey[300]!),
                   width: _focusNode.hasFocus ? 3 : 2,
                 ),
                 borderRadius: BorderRadius.circular(8),
                 color: _digits[index].isNotEmpty
                     ? (_focusNode.hasFocus
-                        ? Colors.blue.withValues(alpha: 0.1)
+                        ? TunioColors.primary.withValues(alpha: 0.1)
                         : Colors.grey[50])
                     : (_focusNode.hasFocus
-                        ? Colors.blue.withValues(alpha: 0.05)
+                        ? TunioColors.primary.withValues(alpha: 0.05)
                         : Colors.white),
               ),
               child: Center(
@@ -193,14 +198,16 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
             padding: const EdgeInsets.symmetric(vertical: 12),
             decoration: BoxDecoration(
               border: Border.all(
-                color: _focusNode.hasFocus ? Colors.blue : Colors.grey[300]!,
+                color: _focusNode.hasFocus
+                    ? TunioColors.primary
+                    : Colors.grey[300]!,
                 width: _focusNode.hasFocus ? 3 : 2,
               ),
               borderRadius: BorderRadius.circular(8),
               color: widget.enabled
                   ? (_focusNode.hasFocus
-                      ? Colors.blue.withValues(alpha: 0.1)
-                      : Colors.blue.withValues(alpha: 0.05))
+                      ? TunioColors.primary.withValues(alpha: 0.1)
+                      : TunioColors.primary.withValues(alpha: 0.05))
                   : Colors.grey[100],
             ),
             child: Text(
@@ -212,8 +219,8 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
                 fontSize: 14,
                 color: widget.enabled
                     ? (_focusNode.hasFocus
-                        ? Colors.blue[700]
-                        : Colors.blue[600])
+                        ? TunioColors.primaryDark
+                        : TunioColors.primary)
                     : Colors.grey,
                 fontWeight:
                     _focusNode.hasFocus ? FontWeight.w600 : FontWeight.w500,
@@ -261,14 +268,16 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(12),
                 borderSide: BorderSide(
-                  color: _focusNode.hasFocus ? Colors.blue : Colors.grey[300]!,
+                  color: _focusNode.hasFocus
+                      ? TunioColors.primary
+                      : Colors.grey[300]!,
                   width: _focusNode.hasFocus ? 3 : 2,
                 ),
               ),
               focusedBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(12),
                 borderSide: const BorderSide(
-                  color: Colors.blue,
+                  color: TunioColors.primary,
                   width: 3,
                 ),
               ),
@@ -300,7 +309,8 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
                 : 'Click to focus and enter digits',
             style: TextStyle(
               fontSize: 12,
-              color: _focusNode.hasFocus ? Colors.blue[600] : Colors.grey[600],
+              color:
+                  _focusNode.hasFocus ? TunioColors.primary : Colors.grey[600],
               fontWeight:
                   _focusNode.hasFocus ? FontWeight.w500 : FontWeight.normal,
             ),

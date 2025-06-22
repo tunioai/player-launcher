@@ -2,6 +2,14 @@ import 'package:flutter/material.dart';
 import 'screens/home_screen.dart';
 import 'services/storage_service.dart';
 
+// Фирменные цвета Tunio
+class TunioColors {
+  static const Color primary = Color(0xFF434C58);
+  static const Color primaryLight = Color(0xFF5A6370);
+  static const Color primaryDark = Color(0xFF2D3440);
+  static const Color accent = Color(0xFF434C58);
+}
+
 void main() {
   runApp(const TunioRadioApp());
 }
@@ -59,17 +67,27 @@ class _TunioRadioAppState extends State<TunioRadioApp> {
       themeMode: _themeMode,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
-          seedColor: Colors.deepPurple,
+          seedColor: TunioColors.primary,
           brightness: Brightness.light,
         ),
         useMaterial3: true,
+        appBarTheme: AppBarTheme(
+          backgroundColor: TunioColors.primary,
+          foregroundColor: Colors.white,
+          elevation: 2,
+        ),
       ),
       darkTheme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
-          seedColor: Colors.deepPurple,
+          seedColor: TunioColors.primary,
           brightness: Brightness.dark,
         ),
         useMaterial3: true,
+        appBarTheme: AppBarTheme(
+          backgroundColor: TunioColors.primaryDark,
+          foregroundColor: Colors.white,
+          elevation: 2,
+        ),
       ),
       home: HomeScreen(onThemeToggle: _toggleTheme, themeMode: _themeMode),
       debugShowCheckedModeBanner: false,

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/audio_service.dart';
+import '../main.dart' show TunioColors;
 
 class StatusIndicator extends StatelessWidget {
   final AudioState audioState;
@@ -90,7 +91,7 @@ class StatusIndicator extends StatelessWidget {
       case AudioState.playing:
         return Colors.green;
       case AudioState.paused:
-        return Colors.blue;
+        return TunioColors.primary;
       case AudioState.loading:
       case AudioState.buffering:
         return Colors.orange;
@@ -284,7 +285,7 @@ class StreamNetworkIndicator extends StatelessWidget {
               decoration: BoxDecoration(
                 border: Border.all(
                   color: refreshButtonFocusNode?.hasFocus == true
-                      ? Colors.blue
+                      ? TunioColors.primary
                       : Colors.transparent,
                   width: 2,
                 ),
@@ -295,7 +296,7 @@ class StreamNetworkIndicator extends StatelessWidget {
                 icon: const Icon(Icons.refresh),
                 iconSize: 20,
                 tooltip: 'Reconnect to stream',
-                color: Colors.blue,
+                color: TunioColors.primary,
               ),
             ),
           ),
@@ -377,7 +378,7 @@ class StreamNetworkIndicator extends StatelessWidget {
               decoration: BoxDecoration(
                 border: Border.all(
                   color: refreshButtonFocusNode?.hasFocus == true
-                      ? Colors.blue
+                      ? TunioColors.primary
                       : Colors.transparent,
                   width: 2,
                 ),
@@ -388,7 +389,7 @@ class StreamNetworkIndicator extends StatelessWidget {
                 icon: const Icon(Icons.refresh),
                 iconSize: 20,
                 tooltip: 'Reconnect to stream',
-                color: Colors.blue,
+                color: TunioColors.primary,
               ),
             ),
           ),
@@ -681,7 +682,7 @@ class StreamNetworkIndicator extends StatelessWidget {
       case AudioState.playing:
         return connectionQuality == "Poor" ? Colors.orange : Colors.green;
       case AudioState.paused:
-        return Colors.blue;
+        return TunioColors.primary;
       case AudioState.loading:
       case AudioState.buffering:
         return Colors.orange;
