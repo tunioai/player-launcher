@@ -26,6 +26,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   late RadioController _controller;
+  bool _controllerInitialized = false;
 
   // Focus nodes for TV remote navigation
   final FocusNode _codeFocusNode = FocusNode();
@@ -69,6 +70,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _initializeController() async {
     _controller = await RadioController.getInstance();
+    setState(() {
+      _controllerInitialized = true;
+    });
 
     // Initialize the current code from controller
     final initialToken = _controller.currentToken ?? '';
@@ -699,13 +703,16 @@ class _HomeScreenState extends State<HomeScreen> {
                     connectionQuality: _connectionQuality,
                     bufferSize: _bufferSize,
                     pingMs: _currentPing,
-                    reconnectCount: _controller.reconnectCount,
+                    reconnectCount:
+                        _controllerInitialized ? _controller.reconnectCount : 0,
                     isNetworkAvailable: _isNetworkAvailable,
                     statusMessage: _statusMessage,
                     isRetrying: _isRetrying,
-                    onReconnect: () async {
-                      await _controller.reconnect();
-                    },
+                    onReconnect: _controllerInitialized
+                        ? () async {
+                            await _controller.reconnect();
+                          }
+                        : null,
                     refreshButtonFocusNode: _refreshButtonFocusNode,
                   ),
                 ],
