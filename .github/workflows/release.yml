@@ -98,13 +98,13 @@ jobs:
     - name: Create macOS archive
       run: |
         cd build/macos/Build/Products/Release
-        tar -czf tunio-player-macos.tar.gz "Tunio Spot.app"
+        tar -czf tunio-spot-macos.tar.gz "Tunio Spot.app"
         
     - name: Upload macOS artifacts
       uses: actions/upload-artifact@v4
       with:
         name: macos-builds
-        path: build/macos/Build/Products/Release/tunio-player-macos.tar.gz
+        path: build/macos/Build/Products/Release/tunio-spot-macos.tar.gz
         
   build-windows:
     name: Build Windows
@@ -143,14 +143,14 @@ jobs:
     - name: Create Windows archive
       run: |
         cd build/windows/x64/runner/Release
-        Compress-Archive -Path * -DestinationPath tunio-player-windows.zip
+        Compress-Archive -Path * -DestinationPath tunio-spot-windows.zip
       shell: powershell
         
     - name: Upload Windows artifacts
       uses: actions/upload-artifact@v4
       with:
         name: windows-builds
-        path: build/windows/x64/runner/Release/tunio-player-windows.zip
+        path: build/windows/x64/runner/Release/tunio-spot-windows.zip
         
   create-release:
     name: Create Release
@@ -221,8 +221,8 @@ jobs:
           ### Download files:
           - **app-release.aab** - Android App Bundle for Google Play upload
           - **app-release.apk** - APK file for Android testing
-          - **tunio-player-macos.tar.gz** - macOS application
-          - **tunio-player-windows.zip** - Windows application
+          - **tunio-spot-macos.tar.gz** - macOS application
+          - **tunio-spot-windows.zip** - Windows application
           
           ### Installation instructions:
           
@@ -234,7 +234,7 @@ jobs:
           - Extract archive and move application to Applications folder
           
           #### Windows:
-          - Extract ZIP archive and run tunio_player.exe
+          - Extract ZIP archive and run tunio_spot.exe
           
           ---
           
@@ -242,8 +242,8 @@ jobs:
         files: |
           ./android-builds/bundle/release/app-release.aab
           ./android-builds/flutter-apk/app-release.apk
-          ./macos-builds/tunio-player-macos.tar.gz
-          ./windows-builds/tunio-player-windows.zip
+          ./macos-builds/tunio-spot-macos.tar.gz
+          ./windows-builds/tunio-spot-windows.zip
         draft: false
         prerelease: false
       env:
