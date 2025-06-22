@@ -626,17 +626,19 @@ class RadioController {
           _titleController.add(newConfig.title);
           await _storageService.saveLastVolume(newConfig.volume);
 
-          // CONTROLLED RESTART: Only restart if actively playing/buffering
-          if (_audioService.currentState == AudioState.playing ||
-              _audioService.currentState == AudioState.buffering) {
-            Logger.info(
-                'RadioController: Controlled restart with new stream URL');
-            _lastStreamStart = DateTime.now();
+          // Always stop and restart with new stream URL
+          Logger.info(
+              'RadioController: Stopping current stream and starting with new URL');
+          await _audioService.stop();
+          _lastStreamStart = DateTime.now();
 
-            // Use debounced reconnection instead of direct playStream call
-            _triggerReconnection('Stream URL changed during playback');
-          } else {
-            _statusMessageController.add('Stream URL updated');
+          try {
+            await _audioService.playStream(newConfig);
+            _statusMessageController.add('Stream restarted with new URL');
+          } catch (e) {
+            Logger.error(
+                'RadioController: Failed to start stream with new URL: $e');
+            _triggerReconnection('Failed to start stream with new URL');
           }
         } else if (_currentConfig != newConfig) {
           // Other config changes (volume, title, etc.)
