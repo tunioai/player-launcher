@@ -7,9 +7,14 @@ class NetworkService {
 
   final StreamController<bool> _connectivityController =
       StreamController<bool>.broadcast();
+  final StreamController<int> _pingController =
+      StreamController<int>.broadcast();
 
   Timer? _connectivityTimer;
+  Timer? _pingTimer;
   bool _lastConnectivityState = false;
+  int _reconnectCount = 0;
+  String? _streamHost;
 
   NetworkService._();
 
@@ -19,8 +24,32 @@ class NetworkService {
   }
 
   Stream<bool> get connectivityStream => _connectivityController.stream;
+  Stream<int> get pingStream => _pingController.stream;
 
   bool get isConnected => _lastConnectivityState;
+  int get reconnectCount => _reconnectCount;
+
+  void setStreamHost(String streamUrl) {
+    try {
+      final uri = Uri.parse(streamUrl);
+      _streamHost = uri.host;
+      Logger.info('NetworkService: Stream host set to: $_streamHost');
+    } catch (e) {
+      Logger.error('NetworkService: Failed to parse stream URL: $e');
+      _streamHost = null;
+    }
+  }
+
+  void incrementReconnectCount() {
+    _reconnectCount++;
+    Logger.info(
+        'NetworkService: Reconnect count increased to: $_reconnectCount');
+  }
+
+  void resetReconnectCount() {
+    _reconnectCount = 0;
+    Logger.info('NetworkService: Reconnect count reset');
+  }
 
   void startMonitoring() {
     _connectivityTimer?.cancel();
@@ -28,12 +57,18 @@ class NetworkService {
       _checkConnectivity();
     });
 
-    // Check immediately
+    _pingTimer?.cancel();
+    _pingTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      _measurePing();
+    });
+
     _checkConnectivity();
+    _measurePing();
   }
 
   void stopMonitoring() {
     _connectivityTimer?.cancel();
+    _pingTimer?.cancel();
   }
 
   Future<void> _checkConnectivity() async {
@@ -52,6 +87,30 @@ class NetworkService {
         _connectivityController.add(false);
         Logger.info('NetworkService: No internet connection');
       }
+    }
+  }
+
+  Future<void> _measurePing() async {
+    if (_streamHost == null || !_lastConnectivityState) {
+      return;
+    }
+
+    try {
+      final stopwatch = Stopwatch()..start();
+      final result = await InternetAddress.lookup(_streamHost!);
+
+      if (result.isNotEmpty) {
+        final socket = await Socket.connect(result.first, 80,
+            timeout: const Duration(seconds: 5));
+        await socket.close();
+        stopwatch.stop();
+
+        final pingMs = stopwatch.elapsedMilliseconds;
+        _pingController.add(pingMs);
+        Logger.debug('NetworkService: Ping to $_streamHost: ${pingMs}ms');
+      }
+    } catch (e) {
+      Logger.debug('NetworkService: Ping measurement failed: $e');
     }
   }
 
@@ -100,5 +159,7 @@ class NetworkService {
   void dispose() {
     _connectivityTimer?.cancel();
     _connectivityController.close();
+    _pingTimer?.cancel();
+    _pingController.close();
   }
 }

@@ -6,6 +6,7 @@ import '../controllers/radio_controller.dart';
 import '../services/audio_service.dart';
 import '../services/autostart_service.dart';
 import '../widgets/code_input_widget.dart';
+import '../widgets/status_indicator.dart';
 import '../utils/logger.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -43,6 +44,9 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isRetrying = false;
   double _volume = 1.0;
   String _connectionQuality = "Good";
+  int? _currentPing;
+  Duration _bufferSize = Duration.zero;
+  bool _isNetworkAvailable = true;
 
   @override
   void initState() {
@@ -170,6 +174,34 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     });
 
+    _controller.pingStream.listen((ping) {
+      Logger.debug('🏠 HomeScreen: Ping: ${ping}ms', 'HomeScreen');
+      if (mounted) {
+        setState(() {
+          _currentPing = ping;
+        });
+      }
+    });
+
+    _controller.bufferStream.listen((buffer) {
+      Logger.debug('🏠 HomeScreen: Buffer: ${buffer.inSeconds}s', 'HomeScreen');
+      if (mounted) {
+        setState(() {
+          _bufferSize = buffer;
+        });
+      }
+    });
+
+    _controller.networkService.connectivityStream.listen((isConnected) {
+      Logger.debug(
+          '🏠 HomeScreen: Network available: $isConnected', 'HomeScreen');
+      if (mounted) {
+        setState(() {
+          _isNetworkAvailable = isConnected;
+        });
+      }
+    });
+
     // Now trigger the startup logic after ALL listeners are set up
     final isAutoStarted = await AutoStartService.isAutoStarted();
     if (isAutoStarted) {
@@ -248,38 +280,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Color _getStatusColor() {
-    if (_isRetrying) {
-      return Colors.orange;
-    }
-    if (_isConnected) {
-      switch (_audioState) {
-        case AudioState.playing:
-          return Colors.green;
-        case AudioState.loading:
-        case AudioState.buffering:
-          return Colors.orange;
-        case AudioState.paused:
-          return Colors.blue;
-        case AudioState.error:
-          return Colors.red;
-        case AudioState.idle:
-          return Colors.grey;
-      }
-    }
-    return Colors.grey;
-  }
-
-  IconData _getConnectionIcon() {
-    if (_isRetrying) {
-      return Icons.wifi_protected_setup;
-    }
-    if (_isConnected) {
-      return Icons.radio;
-    }
-    return Icons.radio;
-  }
-
   IconData _getThemeIcon() {
     switch (widget.themeMode) {
       case ThemeMode.system:
@@ -299,32 +299,6 @@ class _HomeScreenState extends State<HomeScreen> {
         return 'Light theme (tap for dark)';
       case ThemeMode.dark:
         return 'Dark theme (tap for auto)';
-    }
-  }
-
-  Color _getConnectionQualityColor() {
-    switch (_connectionQuality) {
-      case "Poor":
-        return Colors.red;
-      case "Fair":
-        return Colors.orange;
-      case "Good":
-        return Colors.green;
-      default:
-        return Colors.grey;
-    }
-  }
-
-  IconData _getConnectionQualityIcon() {
-    switch (_connectionQuality) {
-      case "Poor":
-        return Icons.warning;
-      case "Fair":
-        return Icons.wifi;
-      case "Good":
-        return Icons.wifi_tethering;
-      default:
-        return Icons.wifi_off;
     }
   }
 
@@ -717,127 +691,20 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
                   const SizedBox(height: 16),
-                  Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(16.0),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          Row(
-                            children: [
-                              Icon(
-                                _getConnectionIcon(),
-                                color: _getStatusColor(),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  _statusMessage,
-                                  style: TextStyle(
-                                    color: _getStatusColor(),
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                              ),
-                              if (_isRetrying) ...[
-                                const SizedBox(width: 8),
-                                SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: _getStatusColor(),
-                                  ),
-                                ),
-                              ],
-                              // Connection quality indicator (replaces buffer counter)
-                              if (_isConnected &&
-                                  (_audioState == AudioState.playing ||
-                                      _audioState == AudioState.buffering ||
-                                      _audioState == AudioState.loading)) ...[
-                                const SizedBox(width: 8),
-                                Tooltip(
-                                  message:
-                                      'Connection Quality: $_connectionQuality',
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 6, vertical: 2),
-                                    decoration: BoxDecoration(
-                                      color: _getConnectionQualityColor()
-                                          .withValues(alpha: 0.2),
-                                      borderRadius: BorderRadius.circular(10),
-                                      border: Border.all(
-                                        color: _getConnectionQualityColor(),
-                                        width: 1,
-                                      ),
-                                    ),
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Icon(
-                                          _getConnectionQualityIcon(),
-                                          size: 10,
-                                          color: _getConnectionQualityColor(),
-                                        ),
-                                        const SizedBox(width: 2),
-                                        Text(
-                                          _connectionQuality,
-                                          style: TextStyle(
-                                            fontSize: 10,
-                                            color: _getConnectionQualityColor(),
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ],
-                              if (_statusMessage.contains('error') &&
-                                  !_statusMessage.contains('retrying') &&
-                                  !_isConnecting) ...[
-                                const SizedBox(width: 8),
-                                Focus(
-                                  focusNode: _refreshButtonFocusNode,
-                                  child: Container(
-                                    decoration: BoxDecoration(
-                                      border: Border.all(
-                                        color: _refreshButtonFocusNode.hasFocus
-                                            ? Colors.blue
-                                            : Colors.transparent,
-                                        width: 2,
-                                      ),
-                                      borderRadius: BorderRadius.circular(8),
-                                    ),
-                                    child: IconButton(
-                                      onPressed: () async {
-                                        await _controller.reconnect();
-                                      },
-                                      icon: const Icon(Icons.refresh),
-                                      iconSize: 20,
-                                      tooltip: 'Reconnect',
-                                      color: Colors.blue,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ],
-                          ),
-                          // if (_currentTitle != null &&
-                          //     _currentTitle!.isNotEmpty) ...[
-                          //   const SizedBox(height: 8),
-                          //   Text(
-                          //     _currentTitle!,
-                          //     style: const TextStyle(
-                          //       fontSize: 16,
-                          //       fontWeight: FontWeight.bold,
-                          //     ),
-                          //     textAlign: TextAlign.center,
-                          //   ),
-                          // ],
-                        ],
-                      ),
-                    ),
+                  StreamNetworkIndicator(
+                    audioState: _audioState,
+                    isConnected: _isConnected,
+                    connectionQuality: _connectionQuality,
+                    bufferSize: _bufferSize,
+                    pingMs: _currentPing,
+                    reconnectCount: _controller.reconnectCount,
+                    isNetworkAvailable: _isNetworkAvailable,
+                    statusMessage: _statusMessage,
+                    isRetrying: _isRetrying,
+                    onReconnect: () async {
+                      await _controller.reconnect();
+                    },
+                    refreshButtonFocusNode: _refreshButtonFocusNode,
                   ),
                 ],
               ),

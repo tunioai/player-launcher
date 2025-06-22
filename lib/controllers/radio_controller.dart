@@ -72,6 +72,9 @@ class RadioController {
   Stream<Duration> get bufferStream => _bufferController.stream;
   Stream<String> get connectionQualityStream =>
       _audioService.connectionQualityStream;
+  Stream<int> get pingStream => _networkService.pingStream;
+  int get reconnectCount => _networkService.reconnectCount;
+  NetworkService get networkService => _networkService;
 
   String? get currentToken => _currentToken;
   bool get isConnected => _currentToken != null && _currentConfig != null;
@@ -304,6 +307,9 @@ class RadioController {
         await _storageService.saveToken(token);
         await _storageService.saveLastVolume(config.volume);
 
+        _networkService.setStreamHost(config.streamUrl);
+        _networkService.resetReconnectCount();
+
         _tokenController.add(_currentToken);
         Logger.info('RadioController: Broadcasting connection status: true');
         _connectionStatusController.add(true);
@@ -517,6 +523,7 @@ class RadioController {
 
     _setRetryState(true);
     _retryAttempts++;
+    _networkService.incrementReconnectCount();
 
     Logger.info('RadioController: Connection attempt #$_retryAttempts');
 
