@@ -457,6 +457,8 @@ class RadioController {
             'RadioController: Broadcasting status message: Connected successfully');
         _statusMessageController.add('Connected successfully');
 
+        _startConfigPolling();
+
         try {
           await _audioService.playStream(config);
           _lastStreamStart = DateTime.now();
@@ -469,7 +471,6 @@ class RadioController {
 
         // Enable auto-reconnection and start config polling after successful connection
         _autoConnectEnabled = true;
-        _startConfigPolling();
 
         // Reset retry state on success
         _retryAttempts = 0;
@@ -570,18 +571,50 @@ class RadioController {
   }
 
   void _startConfigPolling() {
+    Logger.info('🔄 POLLING_DEBUG: Starting config polling (every 30 seconds)',
+        'RadioController');
     _configCheckTimer?.cancel();
     _configCheckTimer = Timer.periodic(const Duration(seconds: 30), (_) async {
+      Logger.info(
+          '🔄 POLLING_DEBUG: Config polling timer triggered - refreshing config',
+          'RadioController');
       await _refreshConfig();
     });
   }
 
   Future<void> _refreshConfig() async {
-    if (_currentToken == null) return;
+    Logger.info(
+        '🔄 POLLING_DEBUG: _refreshConfig() called - starting API request',
+        'RadioController');
+
+    if (_currentToken == null) {
+      Logger.warning(
+          '🔄 POLLING_DEBUG: No token available, skipping config refresh',
+          'RadioController');
+      return;
+    }
 
     try {
+      Logger.info(
+          '🔄 POLLING_DEBUG: Making API call to getStreamConfig with token: ${_currentToken!.substring(0, 2)}****',
+          'RadioController');
+      final requestStartTime = DateTime.now();
+
       final newConfig = await _apiService.getStreamConfig(_currentToken!);
+
+      final requestDuration = DateTime.now().difference(requestStartTime);
+      Logger.info(
+          '🔄 POLLING_DEBUG: API request completed in ${requestDuration.inMilliseconds}ms',
+          'RadioController');
+
       if (newConfig != null) {
+        Logger.info(
+            '🔄 POLLING_DEBUG: Received config from API - URL: ${newConfig.streamUrl}',
+            'RadioController');
+        Logger.info(
+            '🔄 POLLING_DEBUG: Current config URL: ${_currentConfig?.streamUrl}',
+            'RadioController');
+
         // Check if stream URL has changed
         final streamUrlChanged = _currentConfig == null ||
             _currentConfig!.streamUrl != newConfig.streamUrl;
@@ -612,9 +645,17 @@ class RadioController {
           _titleController.add(newConfig.title);
           await _storageService.saveLastVolume(newConfig.volume);
           _statusMessageController.add('Stream config updated');
+        } else {
+          Logger.info('🔄 POLLING_DEBUG: Config unchanged - no updates needed',
+              'RadioController');
         }
+      } else {
+        Logger.warning(
+            '🔄 POLLING_DEBUG: API returned null config', 'RadioController');
       }
     } catch (e) {
+      Logger.error(
+          '🔄 POLLING_DEBUG: API request failed: $e', 'RadioController');
       Logger.error('RadioController: Failed to refresh config: $e');
       _consecutiveFailures++;
       if (_currentToken != null && _currentToken!.isNotEmpty) {

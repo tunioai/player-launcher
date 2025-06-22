@@ -16,6 +16,9 @@ class ApiService {
     try {
       final uri = Uri.parse('$baseUrl/v1/spot?pin=$pin');
 
+      Logger.info(
+          '🔄 PERIODIC_API: Making periodic API request to get stream config',
+          'ApiService');
       Logger.debug('🔄 API_DEBUG: Starting API request to: $uri', 'ApiService');
       Logger.debug(
           '🔄 API_DEBUG: Current timestamp: ${DateTime.now().toIso8601String()}',
