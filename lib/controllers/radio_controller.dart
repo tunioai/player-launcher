@@ -574,7 +574,7 @@ class RadioController {
     Logger.info('🔄 POLLING_DEBUG: Starting config polling (every 30 seconds)',
         'RadioController');
     _configCheckTimer?.cancel();
-    _configCheckTimer = Timer.periodic(const Duration(seconds: 30), (_) async {
+    _configCheckTimer = Timer.periodic(const Duration(seconds: 60), (_) async {
       Logger.info(
           '🔄 POLLING_DEBUG: Config polling timer triggered - refreshing config',
           'RadioController');
