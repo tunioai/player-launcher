@@ -2,7 +2,7 @@
 
 # Debug script for Tunio Radio App - helps diagnose hanging issues
 
-echo "🚀 Tunio Radio Debug Log Viewer"
+echo "🚀 Tunio Log Debug Log Viewer"
 echo "================================"
 
 # Check if adb is available

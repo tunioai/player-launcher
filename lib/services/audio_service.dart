@@ -330,7 +330,7 @@ class AudioService {
         // PROPER CLEANUP: Ensure complete cleanup before new connection
         if (_currentStreamUrl != null) {
           Logger.info(
-              '🔧 AUDIO_DEBUG: Stream URL changed from ${_currentStreamUrl} to ${config.streamUrl}, performing full cleanup',
+              '🔧 AUDIO_DEBUG: Stream URL changed from $_currentStreamUrl to $config.streamUrl, performing full cleanup',
               'AudioService');
           await _performFullCleanup();
         } else {

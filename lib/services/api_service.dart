@@ -10,11 +10,11 @@ class ApiService {
   static const String baseUrl = 'https://api.tunio.ai';
   static const Duration timeout = Duration(seconds: 30);
 
-  Future<StreamConfig?> getStreamConfig(String token) async {
-    if (token.isEmpty) return null;
+  Future<StreamConfig?> getStreamConfig(String pin) async {
+    if (pin.isEmpty) return null;
 
     try {
-      final uri = Uri.parse('$baseUrl/v1/stream-params?token=$token');
+      final uri = Uri.parse('$baseUrl/v1/spot?pin=$pin');
 
       Logger.debug('🔄 API_DEBUG: Starting API request to: $uri', 'ApiService');
       Logger.debug(
@@ -161,20 +161,6 @@ class ApiService {
       Logger.error('🔄 API_DEBUG: Unexpected error details: ${e.toString()}',
           'ApiService');
       throw ApiError(message: 'Failed to fetch stream config: $e');
-    }
-  }
-
-  Future<bool> validateToken(String token) async {
-    Logger.debug(
-        'Validating token: ${token.length >= 6 ? "${token.substring(0, 3)}***" : token}',
-        'ApiService');
-    try {
-      await getStreamConfig(token);
-      Logger.info('Token validation successful', 'ApiService');
-      return true;
-    } catch (e) {
-      Logger.warning('Token validation failed: $e', 'ApiService');
-      return false;
     }
   }
 
