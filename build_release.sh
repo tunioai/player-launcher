@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# Tunio Player - Release Build Script
+# Tunio Spot - Release Build Script
 # This script automates the process of building a release version
 
 set -e # Stop execution on error
 
-echo "🚀 Starting Tunio Player build for Google Play"
+echo "🚀 Starting Tunio Spot build for Google Play"
 
 # Check and ensure Java 17 is configured for Flutter
 echo "☕ Checking Flutter Java configuration..."

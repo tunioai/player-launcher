@@ -15,7 +15,7 @@ void main() {
     await tester.pumpWidget(const TunioRadioApp());
 
     // Verify that the app loads with the title
-    expect(find.text('Tunio Player'), findsOneWidget);
+    expect(find.text('Tunio Spot'), findsOneWidget);
 
     // Wait for initialization
     await tester.pumpAndSettle();

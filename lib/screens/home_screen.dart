@@ -460,7 +460,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Tunio Player'),
+        title: const Text('Tunio Spot'),
         actions: [
           Focus(
             focusNode: _themeButtonFocusNode,

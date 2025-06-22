@@ -63,7 +63,7 @@ class _TunioRadioAppState extends State<TunioRadioApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Tunio Player',
+      title: 'Tunio Spot',
       themeMode: _themeMode,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(

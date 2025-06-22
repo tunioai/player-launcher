@@ -90,12 +90,12 @@ BEGIN
         BLOCK "040904e4"
         BEGIN
             VALUE "CompanyName", "Tunio AI" "\0"
-            VALUE "FileDescription", "Tunio Player - Radio streaming application" "\0"
+            VALUE "FileDescription", "Tunio Spot - Radio streaming application" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
             VALUE "InternalName", "tunio_player" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2025 Tunio AI. All rights reserved." "\0"
             VALUE "OriginalFilename", "tunio_player.exe" "\0"
-            VALUE "ProductName", "Tunio Player" "\0"
+            VALUE "ProductName", "Tunio Spot" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

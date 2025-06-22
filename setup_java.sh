@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# Java 17 Setup Script for Tunio Player Local Development
+# Java 17 Setup Script for Tunio Spot Local Development
 # This script helps install and configure Java 17 for Android builds
 
 set -e
 
-echo "☕ Java 17 Setup for Tunio Player"
+echo "☕ Java 17 Setup for Tunio Spot"
 echo "=================================="
 
 # Check current Java version

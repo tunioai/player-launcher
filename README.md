@@ -1,4 +1,4 @@
-# Tunio Player
+# Tunio Spot
 
 A Flutter application for Android and macOS that automatically plays online radio streams with auto-start functionality and network resilience.
 
