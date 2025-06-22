@@ -6,6 +6,7 @@ import '../services/storage_service.dart';
 import '../services/audio_service.dart';
 import '../services/network_service.dart';
 import '../utils/logger.dart';
+import '../utils/connection_monitor.dart';
 
 class RadioController {
   static RadioController? _instance;
@@ -27,6 +28,12 @@ class RadioController {
   int _retryAttempts = 0;
   int _consecutiveFailures = 0;
   DateTime? _lastStreamStart;
+
+  // DEBOUNCING: Prevent rapid reconnection attempts
+  Timer? _reconnectionDebounceTimer;
+  DateTime? _lastReconnectionRequest;
+  String? _pendingReconnectionReason;
+  static const Duration _reconnectionDebounceDelay = Duration(seconds: 5);
 
   final StreamController<String?> _tokenController =
       StreamController<String?>.broadcast();
@@ -111,8 +118,9 @@ class RadioController {
       _isStreamHealthy = false;
       _consecutiveFailures++;
 
+      // DEBOUNCED RECONNECTION: Use debounced reconnection for audio errors
       if (_currentToken != null && _currentConfig != null && !_isRetrying) {
-        _triggerReconnection('Audio error occurred');
+        _triggerReconnection('Audio error: $error');
       }
     });
   }
@@ -205,6 +213,8 @@ class RadioController {
     _streamHealthTimer?.cancel();
     _streamHealthTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       _checkStreamHealth();
+      // MONITOR CONNECTIONS: Log active connections every 30 seconds
+      ConnectionMonitor.logActiveConnections();
     });
   }
 
@@ -237,11 +247,33 @@ class RadioController {
   }
 
   void _triggerReconnection(String reason) {
-    if (_isRetrying) return;
+    if (_isRetrying) {
+      Logger.debug(
+          'RadioController: Reconnection already in progress, ignoring: $reason');
+      return;
+    }
+
+    // DEBOUNCING: Prevent rapid reconnection requests
+    final now = DateTime.now();
+    if (_lastReconnectionRequest != null &&
+        now.difference(_lastReconnectionRequest!) <
+            _reconnectionDebounceDelay) {
+      Logger.warning(
+          'RadioController: Reconnection debounced (${now.difference(_lastReconnectionRequest!).inSeconds}s ago), reason: $reason');
+      _pendingReconnectionReason = reason;
+      return;
+    }
+
+    _lastReconnectionRequest = now;
+    _pendingReconnectionReason = null;
 
     Logger.info('RadioController: Triggering reconnection - $reason');
     _autoConnectEnabled = true;
     _retryAttempts = 0;
+
+    // Cancel existing debounce timer if any
+    _reconnectionDebounceTimer?.cancel();
+
     _attemptConnection();
   }
 
@@ -359,8 +391,11 @@ class RadioController {
         _audioService.currentState == AudioState.idle) {
       if (_currentConfig != null) {
         _lastStreamStart = DateTime.now();
+        // SAFE PLAYSTREAM: Use mutex-protected playStream method
         await _audioService.playStream(_currentConfig!);
       } else {
+        Logger.info(
+            'RadioController: No config available for playPause, refreshing...');
         await _refreshConfig();
       }
     }
@@ -380,21 +415,11 @@ class RadioController {
       Logger.info('RadioController: Manual reconnect triggered');
       _statusMessageController.add('Reconnecting...');
 
-      if (_currentConfig != null) {
-        try {
-          await _audioService.stop();
-          _lastStreamStart = DateTime.now();
-          await _audioService.playStream(_currentConfig!);
-          return;
-        } catch (e) {
-          Logger.error('RadioController: Direct stream restart failed: $e');
-        }
-      }
-
-      final success = await connectWithToken(_currentToken!);
-      if (!success) {
-        _triggerReconnection('Manual reconnect failed');
-      }
+      // CENTRALIZED RECONNECTION: Use the debounced reconnection system
+      _triggerReconnection('Manual reconnect requested');
+    } else {
+      Logger.warning('RadioController: Cannot reconnect - no token available');
+      _statusMessageController.add('No connection token available');
     }
   }
 
@@ -422,14 +447,15 @@ class RadioController {
           _titleController.add(newConfig.title);
           await _storageService.saveLastVolume(newConfig.volume);
 
-          // Restart playback with new stream URL if currently playing/buffering
+          // CONTROLLED RESTART: Only restart if actively playing/buffering
           if (_audioService.currentState == AudioState.playing ||
               _audioService.currentState == AudioState.buffering) {
             Logger.info(
-                'RadioController: Restarting playback with new stream URL');
+                'RadioController: Controlled restart with new stream URL');
             _lastStreamStart = DateTime.now();
-            await _audioService.playStream(newConfig);
-            // Let audio state handler set the proper status message
+
+            // Use debounced reconnection instead of direct playStream call
+            _triggerReconnection('Stream URL changed during playback');
           } else {
             _statusMessageController.add('Stream URL updated');
           }
@@ -513,6 +539,19 @@ class RadioController {
       _setRetryState(false);
       Logger.info(
           'RadioController: Auto-connect successful after $_retryAttempts attempts');
+
+      // PROCESS PENDING RECONNECTIONS: Check if there were any pending reconnection requests
+      if (_pendingReconnectionReason != null) {
+        Logger.info(
+            'RadioController: Processing pending reconnection: $_pendingReconnectionReason');
+        final pendingReason = _pendingReconnectionReason!;
+        _pendingReconnectionReason = null;
+
+        // Schedule pending reconnection with a small delay
+        _reconnectionDebounceTimer = Timer(const Duration(seconds: 2), () {
+          _triggerReconnection(pendingReason);
+        });
+      }
     } else {
       // Connection failed - schedule retry
       Logger.error(
@@ -566,6 +605,7 @@ class RadioController {
     _configCheckTimer?.cancel();
     _retryTimer?.cancel();
     _streamHealthTimer?.cancel();
+    _reconnectionDebounceTimer?.cancel(); // Cancel debounce timer
     _networkService.stopMonitoring();
     await _audioService.dispose();
     await _tokenController.close();

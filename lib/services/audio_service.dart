@@ -5,6 +5,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import '../models/stream_config.dart';
 import '../utils/logger.dart';
 import '../utils/audio_config.dart';
+import '../utils/connection_monitor.dart';
 
 enum AudioState {
   idle,
@@ -28,6 +29,12 @@ class AudioService {
   double _currentVolume = 1.0;
   DateTime? _networkLostTime; // Track when network was lost
   bool _isNetworkConnected = true; // Track network state
+
+  // MUTEX: Prevent concurrent playStream calls
+  bool _isPlayStreamInProgress = false;
+
+  // CONNECTION MONITORING: Track active connections
+  String? _currentConnectionId;
 
   final StreamController<AudioState> _stateController =
       StreamController<AudioState>.broadcast();
@@ -220,6 +227,16 @@ class AudioService {
   }
 
   Future<void> playStream(StreamConfig config) async {
+    // MUTEX: Prevent concurrent playStream calls
+    if (_isPlayStreamInProgress) {
+      Logger.warning(
+          '⚠️ AudioService: playStream already in progress, ignoring duplicate call',
+          'AudioService');
+      return;
+    }
+
+    _isPlayStreamInProgress = true;
+
     try {
       Logger.debug(
           '🎵 AudioService: Starting playStream with URL: ${config.streamUrl}',
@@ -232,7 +249,16 @@ class AudioService {
       _stateController.add(AudioState.loading);
 
       if (_currentStreamUrl != config.streamUrl) {
-        await _audioPlayer.stop();
+        // PROPER CLEANUP: Ensure complete cleanup before new connection
+        if (_currentStreamUrl != null) {
+          Logger.info(
+              '🔧 AudioService: Stream URL changed, performing full cleanup',
+              'AudioService');
+          await _performFullCleanup();
+        } else {
+          Logger.info('🎵 AudioService: First stream setup, no cleanup needed',
+              'AudioService');
+        }
 
         Logger.debug(
             '🎵 AudioService: Creating audio source for URL: ${config.streamUrl}',
@@ -244,10 +270,17 @@ class AudioService {
         Logger.debug('🎵 AudioService: URI host: ${uri.host}', 'AudioService');
         Logger.debug('🎵 AudioService: URI path: ${uri.path}', 'AudioService');
 
+        // SHORT DELAY: Allow network stack to fully close previous connection
+        await Future.delayed(const Duration(milliseconds: 500));
+
         final audioSource = ProgressiveAudioSource(
           uri,
           headers: AudioConfig.getStreamingHeaders(),
         );
+
+        // TRACK CONNECTION: Monitor new connection
+        _currentConnectionId =
+            ConnectionMonitor.trackConnection(config.streamUrl);
 
         Logger.debug(
             '🎵 AudioService: Setting audio source with buffering config...',
@@ -268,7 +301,7 @@ class AudioService {
 
         _currentStreamUrl = config.streamUrl;
         Logger.debug(
-            '🎵 AudioService: Audio source set successfully with enhanced buffering + 3s prebuffer',
+            '🎵 AudioService: Audio source set successfully with enhanced buffering',
             'AudioService');
       }
 
@@ -283,7 +316,37 @@ class AudioService {
       Logger.error(
           '❌ AudioService: Error type: ${e.runtimeType}', 'AudioService');
       _handleError('Failed to play stream: $e');
-      // Note: Automatic reconnection is handled by RadioController
+    } finally {
+      // ALWAYS release mutex
+      _isPlayStreamInProgress = false;
+    }
+  }
+
+  Future<void> _performFullCleanup() async {
+    try {
+      Logger.info('🔧 AudioService: Performing full cleanup', 'AudioService');
+
+      // RELEASE CONNECTION: Track connection closure
+      if (_currentConnectionId != null) {
+        ConnectionMonitor.releaseConnection(_currentConnectionId!);
+        _currentConnectionId = null;
+      }
+
+      // Stop playback
+      await _audioPlayer.stop();
+
+      // Clear audio source to force connection closure
+      // Note: Just stopping is sufficient to close the connection
+
+      // Reset current stream URL
+      _currentStreamUrl = null;
+
+      // Log active connections for debugging
+      ConnectionMonitor.logActiveConnections();
+
+      Logger.info('🔧 AudioService: Full cleanup completed', 'AudioService');
+    } catch (e) {
+      Logger.error('❌ AudioService: Error during cleanup: $e', 'AudioService');
     }
   }
 
@@ -306,10 +369,18 @@ class AudioService {
 
   Future<void> stop() async {
     try {
-      await _audioPlayer.stop();
-      _currentStreamUrl = null;
+      Logger.info(
+          '🛑 AudioService: Stopping playback and cleaning up connections',
+          'AudioService');
+
+      // Perform full cleanup to ensure connection is closed
+      await _performFullCleanup();
+
       _stateController.add(AudioState.idle);
+      Logger.info(
+          '🛑 AudioService: Stop completed successfully', 'AudioService');
     } catch (e) {
+      Logger.error('❌ AudioService: Failed to stop: $e', 'AudioService');
       _handleError('Failed to stop: $e');
     }
   }
