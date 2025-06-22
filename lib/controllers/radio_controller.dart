@@ -130,10 +130,33 @@ class RadioController {
 
   void _setupAudioStateHandling() {
     _audioService.stateStream.listen((state) {
-      Logger.info('RadioController: Audio state changed to $state');
+      Logger.info('🎛️ CONTROLLER_DEBUG: Audio state changed to $state',
+          'RadioController');
+      Logger.debug(
+          '🎛️ CONTROLLER_DEBUG: Timestamp: ${DateTime.now().toIso8601String()}',
+          'RadioController');
+      Logger.debug(
+          '🎛️ CONTROLLER_DEBUG: Current token: ${_currentToken != null ? '[PRESENT]' : '[MISSING]'}',
+          'RadioController');
+      Logger.debug(
+          '🎛️ CONTROLLER_DEBUG: Current config: ${_currentConfig != null ? '[PRESENT]' : '[MISSING]'}',
+          'RadioController');
+      Logger.debug(
+          '🎛️ CONTROLLER_DEBUG: Is retrying: $_isRetrying', 'RadioController');
+      Logger.debug(
+          '🎛️ CONTROLLER_DEBUG: Auto connect enabled: $_autoConnectEnabled',
+          'RadioController');
+      Logger.debug('🎛️ CONTROLLER_DEBUG: Stream healthy: $_isStreamHealthy',
+          'RadioController');
+      Logger.debug(
+          '🎛️ CONTROLLER_DEBUG: Consecutive failures: $_consecutiveFailures',
+          'RadioController');
 
       switch (state) {
         case AudioState.playing:
+          Logger.info(
+              '🎛️ CONTROLLER_DEBUG: Stream PLAYING - updating status and resetting retry state',
+              'RadioController');
           _statusMessageController.add('Playing');
           _setRetryState(false);
           _isStreamHealthy = true;
@@ -145,8 +168,9 @@ class RadioController {
 
         case AudioState.loading:
         case AudioState.buffering:
-          Logger.info(
-              'RadioController: Stream is loading/buffering - setting up timeout monitoring');
+          Logger.warning(
+              '🎛️ CONTROLLER_DEBUG: Stream is ${state == AudioState.loading ? 'LOADING' : 'BUFFERING'} - setting up timeout monitoring',
+              'RadioController');
           if (state == AudioState.buffering) {
             _statusMessageController.add('Buffering...');
           } else {
@@ -156,20 +180,31 @@ class RadioController {
           break;
 
         case AudioState.error:
-          Logger.warning('RadioController: Audio state changed to error');
+          Logger.error(
+              '🎛️ CONTROLLER_DEBUG: Audio state changed to ERROR - triggering reconnection if needed',
+              'RadioController');
           _isStreamHealthy = false;
           if (_currentToken != null && _currentConfig != null && !_isRetrying) {
+            Logger.warning(
+                '🎛️ CONTROLLER_DEBUG: Triggering reconnection due to audio error',
+                'RadioController');
             _triggerReconnection('Stream error');
+          } else {
+            Logger.debug(
+                '🎛️ CONTROLLER_DEBUG: Not triggering reconnection - missing token/config or already retrying',
+                'RadioController');
           }
           break;
 
         case AudioState.idle:
-          Logger.info('RadioController: Audio state changed to idle');
+          Logger.warning('🎛️ CONTROLLER_DEBUG: Audio state changed to IDLE',
+              'RadioController');
           _isStreamHealthy = false;
           break;
 
         case AudioState.paused:
-          Logger.info('RadioController: Audio state changed to paused');
+          Logger.info('🎛️ CONTROLLER_DEBUG: Audio state changed to PAUSED',
+              'RadioController');
           _statusMessageController.add('Paused');
           break;
       }
@@ -200,14 +235,46 @@ class RadioController {
   }
 
   void _handleLoadingBufferingTimeout() {
+    Logger.debug(
+        '🎛️ TIMEOUT_DEBUG: Setting up 60-second timeout for loading/buffering state',
+        'RadioController');
+    Logger.debug(
+        '🎛️ TIMEOUT_DEBUG: Current time: ${DateTime.now().toIso8601String()}',
+        'RadioController');
+
     Timer(const Duration(seconds: 60), () {
+      Logger.debug(
+          '🎛️ TIMEOUT_DEBUG: 60-second timeout triggered, checking current state...',
+          'RadioController');
+      Logger.debug(
+          '🎛️ TIMEOUT_DEBUG: Current audio state: ${_audioService.currentState}',
+          'RadioController');
+      Logger.debug(
+          '🎛️ TIMEOUT_DEBUG: Current config: ${_currentConfig != null ? '[PRESENT]' : '[MISSING]'}',
+          'RadioController');
+      Logger.debug(
+          '🎛️ TIMEOUT_DEBUG: Is retrying: $_isRetrying', 'RadioController');
+
       if ((_audioService.currentState == AudioState.loading ||
               _audioService.currentState == AudioState.buffering) &&
           _currentConfig != null &&
           !_isRetrying) {
-        Logger.warning('RadioController: Stream timeout after 60 seconds');
+        Logger.warning(
+            '🎛️ TIMEOUT_DEBUG: Stream timeout after 60 seconds - triggering reconnection',
+            'RadioController');
         _statusMessageController.add('Stream timeout, reconnecting...');
         _triggerReconnection('Stream loading/buffering timeout');
+      } else {
+        Logger.debug(
+            '🎛️ TIMEOUT_DEBUG: Timeout conditions not met - no action taken',
+            'RadioController');
+        Logger.debug(
+            '🎛️ TIMEOUT_DEBUG: Audio state is loading/buffering: ${(_audioService.currentState == AudioState.loading || _audioService.currentState == AudioState.buffering)}',
+            'RadioController');
+        Logger.debug('🎛️ TIMEOUT_DEBUG: Has config: ${_currentConfig != null}',
+            'RadioController');
+        Logger.debug('🎛️ TIMEOUT_DEBUG: Not retrying: ${!_isRetrying}',
+            'RadioController');
       }
     });
   }
@@ -226,13 +293,35 @@ class RadioController {
 
     final now = DateTime.now();
 
+    // Log comprehensive diagnostic information every health check
+    Logger.logDiagnosticInfo(
+      'HEALTH_CHECK',
+      audioState: _audioService.currentState.toString(),
+      networkState: _networkService.isConnected ? 'CONNECTED' : 'DISCONNECTED',
+      controllerState:
+          'token=${_currentToken != null}, config=${_currentConfig != null}, retrying=$_isRetrying, healthy=$_isStreamHealthy',
+      bufferSeconds: 0, // Will be updated from buffer stream
+      pingMs: null, // Will be updated from ping stream
+      isRetrying: _isRetrying,
+      currentToken: _currentToken,
+      streamUrl: _currentConfig?.streamUrl,
+    );
+
     // Check if stream has been in an unhealthy state for too long
     if (!_isStreamHealthy &&
         _lastStreamStart != null &&
         now.difference(_lastStreamStart!).inMinutes > 5) {
-      Logger.warning('RadioController: Stream unhealthy for over 5 minutes');
+      Logger.warning('🎛️ HEALTH_DEBUG: Stream unhealthy for over 5 minutes',
+          'RadioController');
       if (!_isRetrying) {
+        Logger.warning(
+            '🎛️ HEALTH_DEBUG: Triggering reconnection due to prolonged unhealthy state',
+            'RadioController');
         _triggerReconnection('Stream health check failed');
+      } else {
+        Logger.debug(
+            '🎛️ HEALTH_DEBUG: Already retrying, not triggering new reconnection',
+            'RadioController');
       }
     }
 
@@ -242,17 +331,45 @@ class RadioController {
             audioState == AudioState.buffering) &&
         _lastStreamStart != null &&
         now.difference(_lastStreamStart!).inMinutes > 2) {
-      Logger.warning('RadioController: Stream stuck in loading/buffering');
+      Logger.error(
+          '🎛️ HEALTH_DEBUG: Stream stuck in ${audioState.toString()} for over 2 minutes!',
+          'RadioController');
+      Logger.error(
+          '🎛️ HEALTH_DEBUG: This is likely the hanging issue we are debugging',
+          'RadioController');
       if (!_isRetrying) {
+        Logger.warning(
+            '🎛️ HEALTH_DEBUG: Triggering reconnection due to stuck loading/buffering state',
+            'RadioController');
         _triggerReconnection('Stream stuck in loading state');
+      } else {
+        Logger.debug(
+            '🎛️ HEALTH_DEBUG: Already retrying, not triggering new reconnection',
+            'RadioController');
       }
     }
   }
 
   void _triggerReconnection(String reason) {
+    Logger.info(
+        '🔄 RECONNECT_DEBUG: Reconnection trigger called with reason: $reason',
+        'RadioController');
+    Logger.debug(
+        '🔄 RECONNECT_DEBUG: Current timestamp: ${DateTime.now().toIso8601String()}',
+        'RadioController');
+    Logger.debug(
+        '🔄 RECONNECT_DEBUG: Is retrying: $_isRetrying', 'RadioController');
+    Logger.debug(
+        '🔄 RECONNECT_DEBUG: Last reconnection request: $_lastReconnectionRequest',
+        'RadioController');
+    Logger.debug(
+        '🔄 RECONNECT_DEBUG: Pending reconnection reason: $_pendingReconnectionReason',
+        'RadioController');
+
     if (_isRetrying) {
       Logger.debug(
-          'RadioController: Reconnection already in progress, ignoring: $reason');
+          '🔄 RECONNECT_DEBUG: Reconnection already in progress, ignoring: $reason',
+          'RadioController');
       return;
     }
 
@@ -261,22 +378,45 @@ class RadioController {
     if (_lastReconnectionRequest != null &&
         now.difference(_lastReconnectionRequest!) <
             _reconnectionDebounceDelay) {
+      final timeSinceLastRequest = now.difference(_lastReconnectionRequest!);
       Logger.warning(
-          'RadioController: Reconnection debounced (${now.difference(_lastReconnectionRequest!).inSeconds}s ago), reason: $reason');
+          '🔄 RECONNECT_DEBUG: Reconnection debounced (${timeSinceLastRequest.inSeconds}s ago), reason: $reason',
+          'RadioController');
+      Logger.debug(
+          '🔄 RECONNECT_DEBUG: Debounce delay: ${_reconnectionDebounceDelay.inSeconds}s',
+          'RadioController');
       _pendingReconnectionReason = reason;
+      Logger.debug(
+          '🔄 RECONNECT_DEBUG: Set pending reconnection reason: $reason',
+          'RadioController');
       return;
     }
 
     _lastReconnectionRequest = now;
     _pendingReconnectionReason = null;
+    Logger.debug('🔄 RECONNECT_DEBUG: Updated last reconnection request time',
+        'RadioController');
+    Logger.debug('🔄 RECONNECT_DEBUG: Cleared pending reconnection reason',
+        'RadioController');
 
-    Logger.info('RadioController: Triggering reconnection - $reason');
+    Logger.info('🔄 RECONNECT_DEBUG: Triggering reconnection - $reason',
+        'RadioController');
     _autoConnectEnabled = true;
     _retryAttempts = 0;
+    Logger.debug('🔄 RECONNECT_DEBUG: Set auto connect enabled: true',
+        'RadioController');
+    Logger.debug(
+        '🔄 RECONNECT_DEBUG: Reset retry attempts to: 0', 'RadioController');
 
     // Cancel existing debounce timer if any
-    _reconnectionDebounceTimer?.cancel();
+    if (_reconnectionDebounceTimer != null) {
+      Logger.debug('🔄 RECONNECT_DEBUG: Cancelling existing debounce timer',
+          'RadioController');
+      _reconnectionDebounceTimer?.cancel();
+    }
 
+    Logger.debug('🔄 RECONNECT_DEBUG: About to call _attemptConnection()',
+        'RadioController');
     _attemptConnection();
   }
 
@@ -515,33 +655,85 @@ class RadioController {
   }
 
   Future<void> _attemptConnection() async {
+    Logger.debug(
+        '🔗 ATTEMPT_DEBUG: _attemptConnection called', 'RadioController');
+    Logger.debug('🔗 ATTEMPT_DEBUG: Auto connect enabled: $_autoConnectEnabled',
+        'RadioController');
+    Logger.debug(
+        '🔗 ATTEMPT_DEBUG: Current token: ${_currentToken != null ? '[PRESENT]' : '[MISSING]'}',
+        'RadioController');
+    Logger.debug(
+        '🔗 ATTEMPT_DEBUG: Token empty: ${_currentToken?.isEmpty ?? 'null'}',
+        'RadioController');
+
     if (!_autoConnectEnabled ||
         _currentToken == null ||
         _currentToken!.isEmpty) {
+      Logger.warning(
+          '🔗 ATTEMPT_DEBUG: Early return - conditions not met for connection attempt',
+          'RadioController');
+      Logger.debug(
+          '🔗 ATTEMPT_DEBUG: Auto connect enabled: $_autoConnectEnabled',
+          'RadioController');
+      Logger.debug('🔗 ATTEMPT_DEBUG: Has token: ${_currentToken != null}',
+          'RadioController');
+      Logger.debug(
+          '🔗 ATTEMPT_DEBUG: Token not empty: ${_currentToken?.isNotEmpty ?? false}',
+          'RadioController');
       return;
     }
 
+    Logger.info(
+        '🔗 ATTEMPT_DEBUG: Starting connection attempt', 'RadioController');
     _setRetryState(true);
     _retryAttempts++;
     _networkService.incrementReconnectCount();
+    Logger.debug(
+        '🔗 ATTEMPT_DEBUG: Retry attempts incremented to: $_retryAttempts',
+        'RadioController');
+    Logger.debug(
+        '🔗 ATTEMPT_DEBUG: Network reconnect count: ${_networkService.reconnectCount}',
+        'RadioController');
 
     Logger.info('RadioController: Connection attempt #$_retryAttempts');
 
+    Logger.debug(
+        '🔗 ATTEMPT_DEBUG: Checking internet connection...', 'RadioController');
     final hasInternet = await _networkService.checkInternetConnection();
+    Logger.debug(
+        '🔗 ATTEMPT_DEBUG: Internet connection check result: $hasInternet',
+        'RadioController');
+
     if (!hasInternet) {
+      Logger.warning(
+          '🔗 ATTEMPT_DEBUG: No internet connection detected - scheduling retry',
+          'RadioController');
       _statusMessageController.add(
           'No internet connection (attempt $_retryAttempts) - retrying...');
       _scheduleRetry();
       return;
     }
 
+    Logger.debug(
+        '🔗 ATTEMPT_DEBUG: Internet connection OK, proceeding with connection',
+        'RadioController');
     _statusMessageController.add('Connecting (attempt $_retryAttempts)...');
 
     // Use the unified connect method with retry flag
+    Logger.debug('🔗 ATTEMPT_DEBUG: Calling connect() with retry flag...',
+        'RadioController');
+    final connectStartTime = DateTime.now();
     final success = await connect(_currentToken!, isRetry: true);
+    final connectDuration = DateTime.now().difference(connectStartTime);
+    Logger.debug(
+        '🔗 ATTEMPT_DEBUG: connect() completed in ${connectDuration.inMilliseconds}ms with result: $success',
+        'RadioController');
 
     if (success) {
       // Connection successful - stop retrying
+      Logger.info(
+          '🔗 ATTEMPT_DEBUG: Connection successful - cleaning up retry state',
+          'RadioController');
       _retryTimer?.cancel();
       _setRetryState(false);
       Logger.info(
@@ -550,17 +742,30 @@ class RadioController {
       // PROCESS PENDING RECONNECTIONS: Check if there were any pending reconnection requests
       if (_pendingReconnectionReason != null) {
         Logger.info(
-            'RadioController: Processing pending reconnection: $_pendingReconnectionReason');
+            '🔗 ATTEMPT_DEBUG: Processing pending reconnection: $_pendingReconnectionReason',
+            'RadioController');
         final pendingReason = _pendingReconnectionReason!;
         _pendingReconnectionReason = null;
 
         // Schedule pending reconnection with a small delay
+        Logger.debug(
+            '🔗 ATTEMPT_DEBUG: Scheduling pending reconnection with 2s delay',
+            'RadioController');
         _reconnectionDebounceTimer = Timer(const Duration(seconds: 2), () {
+          Logger.debug(
+              '🔗 ATTEMPT_DEBUG: Executing delayed pending reconnection',
+              'RadioController');
           _triggerReconnection(pendingReason);
         });
+      } else {
+        Logger.debug('🔗 ATTEMPT_DEBUG: No pending reconnection requests',
+            'RadioController');
       }
     } else {
       // Connection failed - schedule retry
+      Logger.error(
+          '🔗 ATTEMPT_DEBUG: Connection attempt $_retryAttempts failed - scheduling retry',
+          'RadioController');
       Logger.error(
           'RadioController: Connection attempt $_retryAttempts failed');
       _statusMessageController

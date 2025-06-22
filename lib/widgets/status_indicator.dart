@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../services/audio_service.dart';
 import '../main.dart' show TunioColors;
+import '../utils/logger.dart';
 
 class StatusIndicator extends StatelessWidget {
   final AudioState audioState;
@@ -213,8 +214,22 @@ class StreamNetworkIndicator extends StatelessWidget {
     final screenWidth = MediaQuery.of(context).size.width;
     final isMobile = screenWidth < 600; // Mobile breakpoint
 
+    // Debug logging to identify Android issues
+    Logger.debug(
+        '📱 StreamNetworkIndicator: Building widget', 'StatusIndicator');
+    Logger.debug('📱 Screen width: $screenWidth, isMobile: $isMobile',
+        'StatusIndicator');
+    Logger.debug('📱 isConnected: $isConnected, audioState: $audioState',
+        'StatusIndicator');
+    Logger.debug('📱 connectionQuality: $connectionQuality, pingMs: $pingMs',
+        'StatusIndicator');
+    Logger.debug(
+        '📱 bufferSize: ${bufferSize.inSeconds}s, isNetworkAvailable: $isNetworkAvailable',
+        'StatusIndicator');
+
     return Card(
       margin: const EdgeInsets.all(8),
+      color: Theme.of(context).cardColor, // Ensure card has proper color
       child: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(
@@ -308,6 +323,7 @@ class StreamNetworkIndicator extends StatelessWidget {
   Widget _buildMobileMetricsRow() {
     return Row(
       mainAxisAlignment: MainAxisAlignment.end,
+      mainAxisSize: MainAxisSize.min,
       children: [
         _buildQualityBadgeWithTooltip(),
         const SizedBox(width: 6),
@@ -473,8 +489,11 @@ class StreamNetworkIndicator extends StatelessWidget {
       icon = Icons.network_wifi_1_bar;
     }
 
-    return SizedBox(
-      width: 48, // Fixed width for Buffer indicator
+    return ConstrainedBox(
+      constraints: const BoxConstraints(
+        minWidth: 40,
+        maxWidth: 60,
+      ),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
         decoration: BoxDecoration(
@@ -488,12 +507,15 @@ class StreamNetworkIndicator extends StatelessWidget {
           children: [
             Icon(icon, size: 12, color: color),
             const SizedBox(width: 4),
-            Text(
-              '${seconds}s',
-              style: TextStyle(
-                fontSize: 10,
-                fontWeight: FontWeight.bold,
-                color: color,
+            Flexible(
+              child: Text(
+                '${seconds}s',
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                  color: color,
+                ),
+                overflow: TextOverflow.ellipsis,
               ),
             ),
           ],
@@ -518,8 +540,11 @@ class StreamNetworkIndicator extends StatelessWidget {
       icon = Icons.timer_off;
     }
 
-    return SizedBox(
-      width: 70, // Fixed width for Ping indicator (handles 1000ms+)
+    return ConstrainedBox(
+      constraints: const BoxConstraints(
+        minWidth: 50,
+        maxWidth: 80,
+      ),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
         decoration: BoxDecoration(
@@ -533,12 +558,15 @@ class StreamNetworkIndicator extends StatelessWidget {
           children: [
             Icon(icon, size: 12, color: color),
             const SizedBox(width: 4),
-            Text(
-              '${ping}ms',
-              style: TextStyle(
-                fontSize: 10,
-                fontWeight: FontWeight.bold,
-                color: color,
+            Flexible(
+              child: Text(
+                '${ping}ms',
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                  color: color,
+                ),
+                overflow: TextOverflow.ellipsis,
               ),
             ),
           ],
@@ -552,8 +580,11 @@ class StreamNetworkIndicator extends StatelessWidget {
     final icon = isNetworkAvailable ? Icons.wifi : Icons.wifi_off;
     final text = isNetworkAvailable ? 'OK' : 'No Net';
 
-    return SizedBox(
-      width: 60, // Fixed width for Network indicator
+    return ConstrainedBox(
+      constraints: const BoxConstraints(
+        minWidth: 45,
+        maxWidth: 70,
+      ),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
         decoration: BoxDecoration(
@@ -567,12 +598,15 @@ class StreamNetworkIndicator extends StatelessWidget {
           children: [
             Icon(icon, size: 12, color: color),
             const SizedBox(width: 4),
-            Text(
-              text,
-              style: TextStyle(
-                fontSize: 10,
-                fontWeight: FontWeight.bold,
-                color: color,
+            Flexible(
+              child: Text(
+                text,
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                  color: color,
+                ),
+                overflow: TextOverflow.ellipsis,
               ),
             ),
           ],
@@ -597,8 +631,11 @@ class StreamNetworkIndicator extends StatelessWidget {
         color = Colors.grey;
     }
 
-    return SizedBox(
-      width: 50, // Fixed width for Quality badge
+    return ConstrainedBox(
+      constraints: const BoxConstraints(
+        minWidth: 40,
+        maxWidth: 60,
+      ),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
         decoration: BoxDecoration(
@@ -614,6 +651,7 @@ class StreamNetworkIndicator extends StatelessWidget {
               fontWeight: FontWeight.bold,
               color: color,
             ),
+            overflow: TextOverflow.ellipsis,
           ),
         ),
       ),

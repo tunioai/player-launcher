@@ -58,4 +58,55 @@ class Logger {
         break;
     }
   }
+
+  static void logDiagnosticInfo(
+    String context, {
+    String? audioState,
+    String? networkState,
+    String? controllerState,
+    int? bufferSeconds,
+    int? pingMs,
+    bool? isRetrying,
+    String? currentToken,
+    String? streamUrl,
+  }) {
+    info('🩺 DIAGNOSTIC_$context: === SYSTEM STATE DUMP ===');
+    info(
+        '🩺 DIAGNOSTIC_$context: Timestamp: ${DateTime.now().toIso8601String()}');
+
+    if (audioState != null) {
+      info('🩺 DIAGNOSTIC_$context: Audio State: $audioState');
+    }
+
+    if (networkState != null) {
+      info('🩺 DIAGNOSTIC_$context: Network State: $networkState');
+    }
+
+    if (controllerState != null) {
+      info('🩺 DIAGNOSTIC_$context: Controller State: $controllerState');
+    }
+
+    if (bufferSeconds != null) {
+      info('🩺 DIAGNOSTIC_$context: Buffer: ${bufferSeconds}s');
+    }
+
+    if (pingMs != null) {
+      info('🩺 DIAGNOSTIC_$context: Ping: ${pingMs}ms');
+    }
+
+    if (isRetrying != null) {
+      info('🩺 DIAGNOSTIC_$context: Is Retrying: $isRetrying');
+    }
+
+    if (currentToken != null) {
+      info('🩺 DIAGNOSTIC_$context: Has Token: ${currentToken.isNotEmpty}');
+    }
+
+    if (streamUrl != null) {
+      info(
+          '🩺 DIAGNOSTIC_$context: Stream URL: ${streamUrl.isNotEmpty ? '[SET]' : '[EMPTY]'}');
+    }
+
+    info('🩺 DIAGNOSTIC_$context: === END SYSTEM STATE ===');
+  }
 }

@@ -72,17 +72,41 @@ class NetworkService {
   }
 
   Future<void> _checkConnectivity() async {
+    Logger.debug(
+        '🌐 NET_DEBUG: Starting connectivity check...', 'NetworkService');
     try {
+      final lookupStartTime = DateTime.now();
       final result = await InternetAddress.lookup('google.com');
+      final lookupDuration = DateTime.now().difference(lookupStartTime);
+
+      Logger.debug(
+          '🌐 NET_DEBUG: DNS lookup completed in ${lookupDuration.inMilliseconds}ms',
+          'NetworkService');
+      Logger.debug('🌐 NET_DEBUG: DNS lookup result count: ${result.length}',
+          'NetworkService');
+
       final isConnected = result.isNotEmpty && result[0].rawAddress.isNotEmpty;
+      Logger.debug(
+          '🌐 NET_DEBUG: Connectivity result: $isConnected', 'NetworkService');
 
       if (_lastConnectivityState != isConnected) {
+        Logger.info(
+            '🌐 NET_DEBUG: Connectivity state changed from $_lastConnectivityState to $isConnected',
+            'NetworkService');
         _lastConnectivityState = isConnected;
         _connectivityController.add(isConnected);
         Logger.info('NetworkService: Connectivity changed to: $isConnected');
+      } else {
+        Logger.debug('🌐 NET_DEBUG: Connectivity state unchanged: $isConnected',
+            'NetworkService');
       }
     } catch (e) {
+      Logger.debug(
+          '🌐 NET_DEBUG: Connectivity check failed: $e', 'NetworkService');
       if (_lastConnectivityState != false) {
+        Logger.warning(
+            '🌐 NET_DEBUG: Setting connectivity to false due to error',
+            'NetworkService');
         _lastConnectivityState = false;
         _connectivityController.add(false);
         Logger.info('NetworkService: No internet connection');
@@ -91,25 +115,58 @@ class NetworkService {
   }
 
   Future<void> _measurePing() async {
+    Logger.debug(
+        '🌐 PING_DEBUG: Starting ping measurement...', 'NetworkService');
+    Logger.debug('🌐 PING_DEBUG: Stream host: $_streamHost', 'NetworkService');
+    Logger.debug(
+        '🌐 PING_DEBUG: Last connectivity state: $_lastConnectivityState',
+        'NetworkService');
+
     if (_streamHost == null || !_lastConnectivityState) {
+      Logger.debug(
+          '🌐 PING_DEBUG: Skipping ping - no stream host or no connectivity',
+          'NetworkService');
       return;
     }
 
     try {
+      Logger.debug('🌐 PING_DEBUG: Starting DNS lookup for $_streamHost...',
+          'NetworkService');
       final stopwatch = Stopwatch()..start();
       final result = await InternetAddress.lookup(_streamHost!);
 
       if (result.isNotEmpty) {
+        Logger.debug('🌐 PING_DEBUG: DNS resolved to: ${result.first.address}',
+            'NetworkService');
+        Logger.debug(
+            '🌐 PING_DEBUG: Attempting socket connection...', 'NetworkService');
+
         final socket = await Socket.connect(result.first, 80,
             timeout: const Duration(seconds: 5));
         await socket.close();
         stopwatch.stop();
 
         final pingMs = stopwatch.elapsedMilliseconds;
+        Logger.debug(
+            '🌐 PING_DEBUG: Socket connection successful', 'NetworkService');
+        Logger.debug(
+            '🌐 PING_DEBUG: Ping measurement: ${pingMs}ms', 'NetworkService');
+
         _pingController.add(pingMs);
         Logger.debug('NetworkService: Ping to $_streamHost: ${pingMs}ms');
+
+        // Alert on high ping
+        if (pingMs > 500) {
+          Logger.warning('🌐 PING_DEBUG: HIGH PING detected: ${pingMs}ms',
+              'NetworkService');
+        }
+      } else {
+        Logger.error('🌐 PING_DEBUG: DNS lookup returned empty result',
+            'NetworkService');
       }
     } catch (e) {
+      Logger.debug(
+          '🌐 PING_DEBUG: Ping measurement failed: $e', 'NetworkService');
       Logger.debug('NetworkService: Ping measurement failed: $e');
     }
   }
