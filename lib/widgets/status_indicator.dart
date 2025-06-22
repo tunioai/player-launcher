@@ -209,6 +209,9 @@ class StreamNetworkIndicator extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isMobile = screenWidth < 600; // Mobile breakpoint
+
     return Card(
       margin: const EdgeInsets.all(8),
       child: Padding(
@@ -216,84 +219,237 @@ class StreamNetworkIndicator extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Icon(
-                  _getMainIcon(),
-                  color: _getMainColor(),
-                  size: 20,
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    statusMessage,
-                    style: TextStyle(
-                      color: _getMainColor(),
-                      fontWeight: FontWeight.w500,
-                      fontSize: 14,
-                    ),
-                  ),
-                ),
-                if (isRetrying) ...[
-                  const SizedBox(width: 8),
-                  SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: _getMainColor(),
-                    ),
-                  ),
-                ],
-                if (statusMessage.contains('error') &&
-                    !statusMessage.contains('retrying') &&
-                    !isRetrying &&
-                    onReconnect != null) ...[
-                  const SizedBox(width: 8),
-                  Focus(
-                    focusNode: refreshButtonFocusNode,
-                    child: Container(
-                      decoration: BoxDecoration(
-                        border: Border.all(
-                          color: refreshButtonFocusNode?.hasFocus == true
-                              ? Colors.blue
-                              : Colors.transparent,
-                          width: 2,
-                        ),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: IconButton(
-                        onPressed: onReconnect,
-                        icon: const Icon(Icons.refresh),
-                        iconSize: 20,
-                        tooltip: 'Reconnect',
-                        color: Colors.blue,
-                      ),
-                    ),
-                  ),
-                ],
-                _buildQualityBadge(),
+            if (isMobile) ...[
+              // Mobile layout: Two rows
+              _buildMobileStatusRow(),
+              if (isConnected) ...[
+                const SizedBox(height: 8),
+                _buildMobileMetricsRow(),
               ],
-            ),
-            if (isConnected) ...[
+            ] else ...[
+              // Desktop/Tablet layout: Single row
+              _buildDesktopRow(),
+            ],
+            if (isConnected && reconnectCount > 0) ...[
               const SizedBox(height: 8),
-              Row(
-                children: [
-                  Expanded(child: _buildBufferIndicator()),
-                  const SizedBox(width: 8),
-                  if (pingMs != null) Expanded(child: _buildPingIndicator()),
-                  if (pingMs != null) const SizedBox(width: 8),
-                  Expanded(child: _buildNetworkIndicator()),
-                ],
-              ),
-              if (reconnectCount > 0) ...[
-                const SizedBox(height: 4),
-                _buildReconnectInfo(),
-              ],
+              _buildReconnectInfo(),
             ],
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildMobileStatusRow() {
+    return Row(
+      children: [
+        Icon(
+          _getMainIcon(),
+          color: _getMainColor(),
+          size: 20,
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            statusMessage,
+            style: TextStyle(
+              color: _getMainColor(),
+              fontWeight: FontWeight.w500,
+              fontSize: 14,
+            ),
+          ),
+        ),
+        if (isRetrying) ...[
+          const SizedBox(width: 8),
+          Tooltip(
+            message: 'Trying to reconnect...',
+            child: SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: _getMainColor(),
+              ),
+            ),
+          ),
+        ],
+        if (statusMessage.contains('error') &&
+            !statusMessage.contains('retrying') &&
+            !isRetrying &&
+            onReconnect != null) ...[
+          const SizedBox(width: 8),
+          Focus(
+            focusNode: refreshButtonFocusNode,
+            child: Container(
+              decoration: BoxDecoration(
+                border: Border.all(
+                  color: refreshButtonFocusNode?.hasFocus == true
+                      ? Colors.blue
+                      : Colors.transparent,
+                  width: 2,
+                ),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: IconButton(
+                onPressed: onReconnect,
+                icon: const Icon(Icons.refresh),
+                iconSize: 20,
+                tooltip: 'Reconnect to stream',
+                color: Colors.blue,
+              ),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildMobileMetricsRow() {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.end,
+      children: [
+        _buildQualityBadgeWithTooltip(),
+        const SizedBox(width: 6),
+        _buildBufferIndicatorWithTooltip(),
+        const SizedBox(width: 6),
+        if (pingMs != null) ...[
+          _buildPingIndicatorWithTooltip(),
+          const SizedBox(width: 6),
+        ],
+        _buildNetworkIndicatorWithTooltip(),
+      ],
+    );
+  }
+
+  Widget _buildDesktopRow() {
+    return Row(
+      children: [
+        Icon(
+          _getMainIcon(),
+          color: _getMainColor(),
+          size: 20,
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            statusMessage,
+            style: TextStyle(
+              color: _getMainColor(),
+              fontWeight: FontWeight.w500,
+              fontSize: 14,
+            ),
+          ),
+        ),
+        const Spacer(),
+        if (isConnected) ...[
+          _buildQualityBadgeWithTooltip(),
+          const SizedBox(width: 6),
+          _buildBufferIndicatorWithTooltip(),
+          const SizedBox(width: 6),
+          if (pingMs != null) ...[
+            _buildPingIndicatorWithTooltip(),
+            const SizedBox(width: 6),
+          ],
+          _buildNetworkIndicatorWithTooltip(),
+          const SizedBox(width: 6),
+        ],
+        if (isRetrying) ...[
+          Tooltip(
+            message: 'Trying to reconnect...',
+            child: SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: _getMainColor(),
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+        ],
+        if (statusMessage.contains('error') &&
+            !statusMessage.contains('retrying') &&
+            !isRetrying &&
+            onReconnect != null) ...[
+          Focus(
+            focusNode: refreshButtonFocusNode,
+            child: Container(
+              decoration: BoxDecoration(
+                border: Border.all(
+                  color: refreshButtonFocusNode?.hasFocus == true
+                      ? Colors.blue
+                      : Colors.transparent,
+                  width: 2,
+                ),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: IconButton(
+                onPressed: onReconnect,
+                icon: const Icon(Icons.refresh),
+                iconSize: 20,
+                tooltip: 'Reconnect to stream',
+                color: Colors.blue,
+              ),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildQualityBadgeWithTooltip() {
+    return Tooltip(
+      message:
+          'Connection Quality: $connectionQuality\n• Good: Stable streaming\n• Fair: Minor interruptions\n• Poor: Frequent buffering',
+      child: _buildQualityBadge(),
+    );
+  }
+
+  Widget _buildBufferIndicatorWithTooltip() {
+    final seconds = bufferSize.inSeconds;
+    String description;
+    if (seconds >= 8) {
+      description = 'Excellent buffer (${seconds}s)\nNo interruptions expected';
+    } else if (seconds >= 5) {
+      description = 'Good buffer (${seconds}s)\nStable playback';
+    } else if (seconds >= 2) {
+      description = 'Low buffer (${seconds}s)\nPossible interruptions';
+    } else {
+      description = 'Critical buffer (${seconds}s)\nBuffering likely';
+    }
+
+    return Tooltip(
+      message: 'Stream Buffer: $description',
+      child: _buildBufferIndicator(),
+    );
+  }
+
+  Widget _buildPingIndicatorWithTooltip() {
+    final ping = pingMs!;
+    String description;
+    if (ping <= 50) {
+      description = 'Excellent (${ping}ms)\nVery fast response';
+    } else if (ping <= 150) {
+      description = 'Good (${ping}ms)\nNormal response time';
+    } else {
+      description = 'Slow (${ping}ms)\nHigh latency detected';
+    }
+
+    return Tooltip(
+      message: 'Server Ping: $description',
+      child: _buildPingIndicator(),
+    );
+  }
+
+  Widget _buildNetworkIndicatorWithTooltip() {
+    final status = isNetworkAvailable ? 'Connected' : 'Disconnected';
+    final description = isNetworkAvailable
+        ? 'Internet connection is available'
+        : 'No internet connection detected';
+
+    return Tooltip(
+      message: 'Network Status: $status\n$description',
+      child: _buildNetworkIndicator(),
     );
   }
 
@@ -316,27 +472,31 @@ class StreamNetworkIndicator extends StatelessWidget {
       icon = Icons.network_wifi_1_bar;
     }
 
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: color.withValues(alpha: 0.3)),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(icon, size: 12, color: color),
-          const SizedBox(width: 4),
-          Text(
-            '${seconds}s',
-            style: TextStyle(
-              fontSize: 10,
-              fontWeight: FontWeight.bold,
-              color: color,
+    return SizedBox(
+      width: 48, // Fixed width for Buffer indicator
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: color.withValues(alpha: 0.3)),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 12, color: color),
+            const SizedBox(width: 4),
+            Text(
+              '${seconds}s',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.bold,
+                color: color,
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -357,27 +517,31 @@ class StreamNetworkIndicator extends StatelessWidget {
       icon = Icons.timer_off;
     }
 
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: color.withValues(alpha: 0.3)),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(icon, size: 12, color: color),
-          const SizedBox(width: 4),
-          Text(
-            '${ping}ms',
-            style: TextStyle(
-              fontSize: 10,
-              fontWeight: FontWeight.bold,
-              color: color,
+    return SizedBox(
+      width: 70, // Fixed width for Ping indicator (handles 1000ms+)
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: color.withValues(alpha: 0.3)),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 12, color: color),
+            const SizedBox(width: 4),
+            Text(
+              '${ping}ms',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.bold,
+                color: color,
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -387,27 +551,31 @@ class StreamNetworkIndicator extends StatelessWidget {
     final icon = isNetworkAvailable ? Icons.wifi : Icons.wifi_off;
     final text = isNetworkAvailable ? 'OK' : 'No Net';
 
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: color.withValues(alpha: 0.3)),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(icon, size: 12, color: color),
-          const SizedBox(width: 4),
-          Text(
-            text,
-            style: TextStyle(
-              fontSize: 10,
-              fontWeight: FontWeight.bold,
-              color: color,
+    return SizedBox(
+      width: 60, // Fixed width for Network indicator
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: color.withValues(alpha: 0.3)),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 12, color: color),
+            const SizedBox(width: 4),
+            Text(
+              text,
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.bold,
+                color: color,
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -428,19 +596,24 @@ class StreamNetworkIndicator extends StatelessWidget {
         color = Colors.grey;
     }
 
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.2),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color),
-      ),
-      child: Text(
-        connectionQuality,
-        style: TextStyle(
-          fontSize: 10,
-          fontWeight: FontWeight.bold,
-          color: color,
+    return SizedBox(
+      width: 50, // Fixed width for Quality badge
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.2),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: color),
+        ),
+        child: Center(
+          child: Text(
+            connectionQuality,
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.bold,
+              color: color,
+            ),
+          ),
         ),
       ),
     );
