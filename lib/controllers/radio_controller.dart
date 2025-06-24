@@ -28,6 +28,8 @@ class RadioController {
   int _retryAttempts = 0;
   int _consecutiveFailures = 0;
   DateTime? _lastStreamStart;
+  Duration _currentBufferSize = Duration.zero;
+  DateTime? _zeroBufferStartTime;
 
   // DEBOUNCING: Prevent rapid reconnection attempts
   Timer? _reconnectionDebounceTimer;
@@ -216,6 +218,15 @@ class RadioController {
       // Forward buffer info to UI
       _bufferController.add(bufferAhead);
 
+      _currentBufferSize = bufferAhead;
+
+      // Track zero buffer time for hang detection
+      if (bufferAhead.inSeconds == 0) {
+        _zeroBufferStartTime ??= DateTime.now();
+      } else {
+        _zeroBufferStartTime = null; // Reset if buffer is not zero
+      }
+
       Logger.debug('RadioController: Buffer ahead: ${bufferAhead.inSeconds}s',
           'RadioController');
     });
@@ -236,18 +247,18 @@ class RadioController {
 
   void _handleLoadingBufferingTimeout() {
     Logger.debug(
-        '🎛️ TIMEOUT_DEBUG: Setting up 60-second timeout for loading/buffering state',
+        '🎛️ TIMEOUT_DEBUG: Setting up 20-second timeout for loading/buffering state',
         'RadioController');
     Logger.debug(
         '🎛️ TIMEOUT_DEBUG: Current time: ${DateTime.now().toIso8601String()}',
         'RadioController');
 
-    Timer(const Duration(seconds: 60), () {
+    Timer(const Duration(seconds: 20), () {
+      final currentAudioState = _audioService.currentState;
       Logger.debug(
-          '🎛️ TIMEOUT_DEBUG: 60-second timeout triggered, checking current state...',
+          '🎛️ TIMEOUT_DEBUG: 20-second timeout triggered, checking current state...',
           'RadioController');
-      Logger.debug(
-          '🎛️ TIMEOUT_DEBUG: Current audio state: ${_audioService.currentState}',
+      Logger.debug('🎛️ TIMEOUT_DEBUG: Current audio state: $currentAudioState',
           'RadioController');
       Logger.debug(
           '🎛️ TIMEOUT_DEBUG: Current config: ${_currentConfig != null ? '[PRESENT]' : '[MISSING]'}',
@@ -255,21 +266,24 @@ class RadioController {
       Logger.debug(
           '🎛️ TIMEOUT_DEBUG: Is retrying: $_isRetrying', 'RadioController');
 
-      if ((_audioService.currentState == AudioState.loading ||
-              _audioService.currentState == AudioState.buffering) &&
+      if ((currentAudioState == AudioState.loading ||
+              currentAudioState == AudioState.buffering) &&
           _currentConfig != null &&
           !_isRetrying) {
         Logger.warning(
-            '🎛️ TIMEOUT_DEBUG: Stream timeout after 60 seconds - triggering reconnection',
+            '🎛️ TIMEOUT_DEBUG: Stream timeout after 20 seconds - triggering aggressive reconnection',
             'RadioController');
-        _statusMessageController.add('Stream timeout, reconnecting...');
-        _triggerReconnection('Stream loading/buffering timeout');
+        Logger.warning(
+            '🎛️ TIMEOUT_DEBUG: This rapid timeout helps catch hanging streams early',
+            'RadioController');
+        _triggerReconnection(
+            'Stream ${currentAudioState.toString()} timeout after 20s');
       } else {
         Logger.debug(
             '🎛️ TIMEOUT_DEBUG: Timeout conditions not met - no action taken',
             'RadioController');
         Logger.debug(
-            '🎛️ TIMEOUT_DEBUG: Audio state is loading/buffering: ${(_audioService.currentState == AudioState.loading || _audioService.currentState == AudioState.buffering)}',
+            '🎛️ TIMEOUT_DEBUG: Audio state is loading/buffering: ${(currentAudioState == AudioState.loading || currentAudioState == AudioState.buffering)}',
             'RadioController');
         Logger.debug('🎛️ TIMEOUT_DEBUG: Has config: ${_currentConfig != null}',
             'RadioController');
@@ -281,26 +295,27 @@ class RadioController {
 
   void _startStreamHealthMonitoring() {
     _streamHealthTimer?.cancel();
-    _streamHealthTimer = Timer.periodic(const Duration(seconds: 30), (_) {
-      _checkStreamHealth();
-      // MONITOR CONNECTIONS: Log active connections every 30 seconds
+    _streamHealthTimer = Timer.periodic(const Duration(seconds: 15), (_) async {
+      await _checkStreamHealth();
+      // MONITOR CONNECTIONS: Log active connections every 15 seconds
       ConnectionMonitor.logActiveConnections();
     });
   }
 
-  void _checkStreamHealth() {
+  Future<void> _checkStreamHealth() async {
     if (_currentToken == null || _currentConfig == null) return;
 
     final now = DateTime.now();
+    final audioState = _audioService.currentState;
 
     // Log comprehensive diagnostic information every health check
     Logger.logDiagnosticInfo(
       'HEALTH_CHECK',
-      audioState: _audioService.currentState.toString(),
+      audioState: audioState.toString(),
       networkState: _networkService.isConnected ? 'CONNECTED' : 'DISCONNECTED',
       controllerState:
           'token=${_currentToken != null}, config=${_currentConfig != null}, retrying=$_isRetrying, healthy=$_isStreamHealthy',
-      bufferSeconds: 0, // Will be updated from buffer stream
+      bufferSeconds: _currentBufferSize.inSeconds,
       pingMs: null, // Will be updated from ping stream
       isRetrying: _isRetrying,
       currentToken: _currentToken,
@@ -310,42 +325,86 @@ class RadioController {
     // Check if stream has been in an unhealthy state for too long
     if (!_isStreamHealthy &&
         _lastStreamStart != null &&
-        now.difference(_lastStreamStart!).inMinutes > 5) {
-      Logger.warning('🎛️ HEALTH_DEBUG: Stream unhealthy for over 5 minutes',
+        now.difference(_lastStreamStart!).inMinutes > 3) {
+      Logger.warning('🎛️ HEALTH_DEBUG: Stream unhealthy for over 3 minutes',
           'RadioController');
       if (!_isRetrying) {
         Logger.warning(
-            '🎛️ HEALTH_DEBUG: Triggering reconnection due to prolonged unhealthy state',
+            '🎛️ HEALTH_DEBUG: Triggering force reconnection due to prolonged unhealthy state',
             'RadioController');
-        _triggerReconnection('Stream health check failed');
-      } else {
-        Logger.debug(
-            '🎛️ HEALTH_DEBUG: Already retrying, not triggering new reconnection',
-            'RadioController');
+        await forceReconnect();
+        return;
       }
     }
 
-    // Check if we're stuck in loading/buffering for too long
-    final audioState = _audioService.currentState;
+    // Check if we're stuck in loading/buffering states - this is the main issue
     if ((audioState == AudioState.loading ||
             audioState == AudioState.buffering) &&
-        _lastStreamStart != null &&
-        now.difference(_lastStreamStart!).inMinutes > 2) {
-      Logger.error(
-          '🎛️ HEALTH_DEBUG: Stream stuck in ${audioState.toString()} for over 2 minutes!',
+        _lastStreamStart != null) {
+      final timeSinceStart = now.difference(_lastStreamStart!);
+
+      if (timeSinceStart.inMinutes > 2) {
+        Logger.error(
+            '🎛️ HEALTH_DEBUG: Stream stuck in ${audioState.toString()} for over 2 minutes!',
+            'RadioController');
+        Logger.error(
+            '🎛️ HEALTH_DEBUG: This is the main hanging issue - using aggressive reconnection',
+            'RadioController');
+        Logger.error(
+            '🎛️ HEALTH_DEBUG: Stream URL: ${_currentConfig?.streamUrl}',
+            'RadioController');
+        Logger.error(
+            '🎛️ HEALTH_DEBUG: Network state: ${_networkService.isConnected ? 'CONNECTED' : 'DISCONNECTED'}',
+            'RadioController');
+
+        // Use aggressive reconnection for stuck streams over 2 minutes
+        await forceReconnect();
+        return;
+      } else if (timeSinceStart.inSeconds > 45) {
+        Logger.warning(
+            '🎛️ HEALTH_DEBUG: Stream stuck in ${audioState.toString()} for over 45 seconds',
+            'RadioController');
+        Logger.warning(
+            '🎛️ HEALTH_DEBUG: This indicates potential hanging - triggering standard reconnection',
+            'RadioController');
+        if (!_isRetrying) {
+          _triggerReconnection(
+              'Stream stuck in ${audioState.toString()} for over 45 seconds');
+        }
+      }
+    }
+
+    // Check for idle state when we should be playing
+    if (audioState == AudioState.idle &&
+        _currentConfig != null &&
+        _autoConnectEnabled &&
+        !_isRetrying) {
+      Logger.warning(
+          '🎛️ HEALTH_DEBUG: Stream is idle but should be playing - triggering reconnection',
           'RadioController');
+      _triggerReconnection('Stream unexpectedly idle');
+    }
+
+    // Check for error state
+    if (audioState == AudioState.error && !_isRetrying) {
       Logger.error(
-          '🎛️ HEALTH_DEBUG: This is likely the hanging issue we are debugging',
+          '🎛️ HEALTH_DEBUG: Stream in error state - triggering reconnection',
+          'RadioController');
+      _triggerReconnection('Stream in error state');
+    }
+
+    // Check for zero buffer for too long - indicates potential hang
+    if (_zeroBufferStartTime != null &&
+        audioState == AudioState.playing &&
+        now.difference(_zeroBufferStartTime!).inSeconds > 30) {
+      Logger.warning(
+          '🎛️ HEALTH_DEBUG: Zero buffer for over 30 seconds while playing - potential hang',
+          'RadioController');
+      Logger.warning(
+          '🎛️ HEALTH_DEBUG: This indicates stream data flow has stopped',
           'RadioController');
       if (!_isRetrying) {
-        Logger.warning(
-            '🎛️ HEALTH_DEBUG: Triggering reconnection due to stuck loading/buffering state',
-            'RadioController');
-        _triggerReconnection('Stream stuck in loading state');
-      } else {
-        Logger.debug(
-            '🎛️ HEALTH_DEBUG: Already retrying, not triggering new reconnection',
-            'RadioController');
+        _triggerReconnection('Zero buffer detected for over 30 seconds');
       }
     }
   }
@@ -453,17 +512,23 @@ class RadioController {
         _tokenController.add(_currentToken);
         Logger.info('RadioController: Broadcasting connection status: true');
         _connectionStatusController.add(true);
-        Logger.info(
-            'RadioController: Broadcasting status message: Connected successfully');
-        _statusMessageController.add('Connected successfully');
+
+        // Don't set "Connected successfully" yet - wait for audio to start
+        _statusMessageController.add('Starting audio stream...');
 
         _startConfigPolling();
 
         try {
           await _audioService.playStream(config);
           _lastStreamStart = DateTime.now();
+
+          // Don't set status here - let audio state handling manage the status
+          // The _setupAudioStateHandling will set "Playing" when audio actually starts
+          Logger.info(
+              'RadioController: playStream call completed, waiting for audio state change');
         } catch (e) {
           Logger.error('RadioController: Failed to start audio stream: $e');
+          _statusMessageController.add('Audio stream failed to start');
           _triggerReconnection(
               'Failed to start audio after successful API connection');
           return true; // API connection was successful
@@ -566,6 +631,41 @@ class RadioController {
       _triggerReconnection('Manual reconnect requested');
     } else {
       Logger.warning('RadioController: Cannot reconnect - no token available');
+      _statusMessageController.add('No connection token available');
+    }
+  }
+
+  /// Force reconnect with aggressive cleanup - use when stream is stuck
+  Future<void> forceReconnect() async {
+    if (_currentToken != null && _currentToken!.isNotEmpty) {
+      Logger.warning(
+          'RadioController: Force reconnect triggered - aggressive cleanup');
+      _statusMessageController.add('Force reconnecting...');
+
+      // Stop all timers and reset state
+      _configCheckTimer?.cancel();
+      _retryTimer?.cancel();
+      _reconnectionDebounceTimer?.cancel();
+
+      // Force stop audio service
+      await _audioService.stop();
+
+      // Reset all state
+      _isRetrying = false;
+      _isStreamHealthy = false;
+      _retryAttempts = 0;
+      _lastReconnectionRequest = null;
+      _pendingReconnectionReason = null;
+
+      // Wait a bit for cleanup
+      await Future.delayed(const Duration(milliseconds: 1000));
+
+      // Trigger immediate reconnection
+      _autoConnectEnabled = true;
+      _attemptConnection();
+    } else {
+      Logger.warning(
+          'RadioController: Cannot force reconnect - no token available');
       _statusMessageController.add('No connection token available');
     }
   }

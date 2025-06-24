@@ -433,6 +433,32 @@ class AudioService {
           '🎵 AUDIO_DEBUG: Player playing after play(): ${_audioPlayer.playing}',
           'AudioService');
 
+      // Add a timeout check to detect if stream gets stuck after play() call
+      Timer(const Duration(seconds: 10), () {
+        final audioState = currentState;
+        if (audioState == AudioState.loading ||
+            audioState == AudioState.buffering) {
+          Logger.warning(
+              '⚠️ AUDIO_DEBUG: Stream still in $audioState 10 seconds after play() - likely hanging',
+              'AudioService');
+          Logger.warning('⚠️ AUDIO_DEBUG: Stream URL: ${config.streamUrl}',
+              'AudioService');
+          Logger.warning(
+              '⚠️ AUDIO_DEBUG: Player position: ${_audioPlayer.position.inSeconds}s',
+              'AudioService');
+          Logger.warning(
+              '⚠️ AUDIO_DEBUG: Player buffer: ${_audioPlayer.bufferedPosition.inSeconds}s',
+              'AudioService');
+          Logger.warning(
+              '⚠️ AUDIO_DEBUG: Player processing state: ${_audioPlayer.processingState}',
+              'AudioService');
+
+          // This will trigger error handling in the controller
+          _handleError(
+              'Stream timeout after play() - not transitioning to playing state');
+        }
+      });
+
       Logger.debug(
           '🎵 AUDIO_DEBUG: Playback started successfully', 'AudioService');
     } catch (e) {

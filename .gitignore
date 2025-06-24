@@ -111,6 +111,26 @@ coverage/
 *.keystore
 key.properties
 
+# RuStore signing files (NEVER commit these!)
+**/android/rustore-keystore.jks
+**/android/rustore-keystore.p12
+**/android/rustore-upload-key.jks
+**/android/rustore-encrypted-key.zip
+**/android/rustore-private-key.pem
+**/android/rustore-private-key.zip
+**/android/rustore-keystore.zip
+**/android/rustore-upload-certificate.pem
+**/android/pepk.jar
+pepk.jar
+
+# Any keystore or private key files
+**/*.jks
+**/*.p12
+**/*.keystore
+**/*private-key*.pem
+**/*encrypted-key*.zip
+**/*upload-certificate*.pem
+
 # Gradle files
 .gradle/
 **/android/.gradle/

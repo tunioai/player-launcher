@@ -1,6 +1,7 @@
 # Example key.properties file for Android app signing
 # Copy this file to key.properties and fill in your data
 
+# Primary key configuration (for GitHub/Google Play)
 # Password for keystore file
 storePassword=your_keystore_password
 
@@ -15,6 +16,13 @@ keyAlias=upload
 storeFile=./upload-keystore.jks
 # Example for Windows:
 # storeFile=C:\\Users\\username\\upload-keystore.jks
+
+# RuStore key configuration (optional)
+# If you want to use different signing key for RuStore
+rustoreStorePassword=your_rustore_keystore_password
+rustoreKeyPassword=your_rustore_key_password
+rustoreKeyAlias=rustore-upload
+rustoreStoreFile=./rustore-keystore.jks
 
 # IMPORTANT:
 # 1. Never commit this file to git!

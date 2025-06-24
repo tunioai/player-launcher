@@ -53,6 +53,14 @@ android {
                 storePassword keystoreProperties['storePassword']
             }
         }
+        rustore {
+            if (keystorePropertiesFile.exists() && keystoreProperties['rustoreKeyAlias']) {
+                keyAlias keystoreProperties['rustoreKeyAlias']
+                keyPassword keystoreProperties['rustoreKeyPassword']
+                storeFile keystoreProperties['rustoreStoreFile'] ? file(keystoreProperties['rustoreStoreFile']) : null
+                storePassword keystoreProperties['rustoreStorePassword']
+            }
+        }
     }
 
     defaultConfig {
@@ -65,7 +73,15 @@ android {
 
     buildTypes {
         release {
-            if (keystorePropertiesFile.exists()) {
+            signingConfig = signingConfigs.release
+            minifyEnabled = true
+            shrinkResources = false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+        rustore {
+            if (keystorePropertiesFile.exists() && keystoreProperties['rustoreKeyAlias']) {
+                signingConfig = signingConfigs.rustore
+            } else {
                 signingConfig = signingConfigs.release
             }
             minifyEnabled = true
