@@ -1,4 +1,5 @@
 import 'dart:developer' as developer;
+import 'package:flutter/foundation.dart';
 
 enum LogLevel {
   debug,
@@ -43,18 +44,23 @@ class Logger {
     final tagStr = tag != null ? '[$tag] ' : '';
     final formattedMessage = '$timestamp $levelStr $tagStr$message';
 
+    // Output to both developer.log and print for Flutter debug console
     switch (level) {
       case LogLevel.debug:
         developer.log(formattedMessage, name: 'DEBUG');
+        if (kDebugMode) print('🔍 DEBUG: $tagStr$message');
         break;
       case LogLevel.info:
         developer.log(formattedMessage, name: 'INFO');
+        if (kDebugMode) print('ℹ️ INFO: $tagStr$message');
         break;
       case LogLevel.warning:
         developer.log(formattedMessage, name: 'WARNING', level: 900);
+        if (kDebugMode) print('⚠️ WARNING: $tagStr$message');
         break;
       case LogLevel.error:
         developer.log(formattedMessage, name: 'ERROR', level: 1000);
+        if (kDebugMode) print('❌ ERROR: $tagStr$message');
         break;
     }
   }

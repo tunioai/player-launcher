@@ -12,10 +12,10 @@ import 'package:tunio_radio_player/main.dart';
 void main() {
   testWidgets('App launches without error', (WidgetTester tester) async {
     // Build our app and trigger a frame.
-    await tester.pumpWidget(const TunioRadioApp());
+    await tester.pumpWidget(const TunioApp());
 
     // Verify that the app loads with the title
-    expect(find.text('Tunio Spot'), findsOneWidget);
+    expect(find.text('Tunio Radio'), findsOneWidget);
 
     // Wait for initialization
     await tester.pumpAndSettle();

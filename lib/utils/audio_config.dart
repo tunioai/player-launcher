@@ -85,12 +85,7 @@ class AudioConfig {
   static Map<String, String> getStreamingHeaders() {
     return {
       'User-Agent': userAgent,
-      'Icy-MetaData': '1',
-      'Connection': 'keep-alive',
-      'Cache-Control': 'no-cache',
-      'Accept': 'audio/*,*/*;q=0.8',
-      'Range': 'bytes=0-',
-      'Accept-Encoding': 'identity', // Prefer no compression for streaming
+      // Minimal headers - only User-Agent to avoid conflicts
     };
   }
 
