@@ -37,17 +37,18 @@ class _HomeScreenState extends State<HomeScreen> {
   final FocusNode _playButtonFocusNode = FocusNode();
   final FocusNode _volumeFocusNode = FocusNode();
   final FocusNode _themeButtonFocusNode = FocusNode();
-  final FocusNode _refreshButtonFocusNode = FocusNode();
 
   // State
   String _currentCode = '';
   RadioState _radioState = const RadioStateDisconnected();
   NetworkState _networkState = const NetworkState();
+  int? _currentPing;
   double _volume = 1.0;
 
   // Subscriptions
   StreamSubscription<RadioState>? _radioStateSubscription;
   StreamSubscription<NetworkState>? _networkStateSubscription;
+  StreamSubscription<int?>? _pingSubscription;
 
   @override
   void initState() {
@@ -60,12 +61,12 @@ class _HomeScreenState extends State<HomeScreen> {
   void dispose() {
     _radioStateSubscription?.cancel();
     _networkStateSubscription?.cancel();
+    _pingSubscription?.cancel();
     _codeFocusNode.dispose();
     _connectButtonFocusNode.dispose();
     _playButtonFocusNode.dispose();
     _volumeFocusNode.dispose();
     _themeButtonFocusNode.dispose();
-    _refreshButtonFocusNode.dispose();
     super.dispose();
   }
 
@@ -75,7 +76,6 @@ class _HomeScreenState extends State<HomeScreen> {
     _playButtonFocusNode.addListener(() => setState(() {}));
     _volumeFocusNode.addListener(() => setState(() {}));
     _themeButtonFocusNode.addListener(() => setState(() {}));
-    _refreshButtonFocusNode.addListener(() => setState(() {}));
   }
 
   void _initializeService() {
@@ -97,6 +97,7 @@ class _HomeScreenState extends State<HomeScreen> {
       final currentRadioState = _radioService.currentState;
       setState(() {
         _radioState = currentRadioState;
+        _currentPing = _radioService.currentPing;
 
         // Update code from current state if available
         final token = currentRadioState.token;
@@ -124,6 +125,14 @@ class _HomeScreenState extends State<HomeScreen> {
         if (mounted) {
           setState(() {
             _networkState = state;
+          });
+        }
+      });
+
+      _pingSubscription = _radioService.pingStream.listen((ping) {
+        if (mounted) {
+          setState(() {
+            _currentPing = ping;
           });
         }
       });
@@ -182,17 +191,6 @@ class _HomeScreenState extends State<HomeScreen> {
       (_) => Logger.info('HomeScreen: Play/pause successful'),
       (error) {
         Logger.error('HomeScreen: Play/pause failed: $error');
-        _showError(error);
-      },
-    );
-  }
-
-  Future<void> _reconnect() async {
-    final result = await _radioService.reconnect();
-    result.fold(
-      (_) => Logger.info('HomeScreen: Reconnect successful'),
-      (error) {
-        Logger.error('HomeScreen: Reconnect failed: $error');
         _showError(error);
       },
     );
@@ -273,6 +271,39 @@ class _HomeScreenState extends State<HomeScreen> {
     };
   }
 
+  // Status chip widget with icon and color
+  Widget _buildStatusChip({
+    required IconData icon,
+    required String label,
+    required String value,
+    required Color color,
+    Color? backgroundColor,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: backgroundColor ?? color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withValues(alpha: 0.3)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 16, color: color),
+          const SizedBox(width: 6),
+          Text(
+            '$label: $value',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: color,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (!_serviceInitialized) {
@@ -316,7 +347,7 @@ class _HomeScreenState extends State<HomeScreen> {
             children: [
               // TIP Card
               Card(
-                color: Theme.of(context).colorScheme.secondaryContainer,
+                color: Colors.grey[300],
                 child: InkWell(
                   onTap: _launchPersonalCabinet,
                   borderRadius: BorderRadius.circular(12),
@@ -326,17 +357,15 @@ class _HomeScreenState extends State<HomeScreen> {
                       children: [
                         Icon(
                           Icons.lightbulb_outline,
-                          color: Theme.of(context).colorScheme.primary,
+                          color: TunioColors.primary,
                           size: 20,
                         ),
                         const SizedBox(width: 8),
                         Expanded(
                           child: RichText(
                             text: TextSpan(
-                              style: TextStyle(
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onSecondaryContainer,
+                              style: const TextStyle(
+                                color: Colors.black87,
                                 fontSize: 14,
                               ),
                               children: [
@@ -351,8 +380,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                 TextSpan(
                                   text: 'cp.tunio.ai/spot-links',
                                   style: TextStyle(
-                                    color:
-                                        Theme.of(context).colorScheme.primary,
+                                    color: TunioColors.primary,
                                     fontWeight: FontWeight.w600,
                                     decoration: TextDecoration.underline,
                                   ),
@@ -363,7 +391,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                         Icon(
                           Icons.open_in_new,
-                          color: Theme.of(context).colorScheme.primary,
+                          color: TunioColors.primary,
                           size: 16,
                         ),
                       ],
@@ -380,14 +408,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      const Text(
-                        'Connection',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 16),
                       CodeInputWidget(
                         value: _currentCode,
                         onChanged: (code) {
@@ -543,58 +563,56 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               const SizedBox(height: 16),
 
-              // Status indicator with stats (compact layout like old version)
+              // Status indicator and metrics
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(16.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          StatusIndicator(
-                            audioState: _radioState is RadioStateConnected
-                                ? (_radioState as RadioStateConnected)
-                                    .audioState
-                                : const AudioStateIdle(),
-                            isConnected: _radioState.isConnected,
-                            statusMessage: _getStatusText(),
-                          ),
-                          const Spacer(),
-                          Focus(
-                            focusNode: _refreshButtonFocusNode,
-                            child: ElevatedButton.icon(
-                              onPressed: _reconnect,
-                              icon: const Icon(Icons.refresh, size: 16),
-                              label: const Text('Reconnect'),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.blue,
-                                foregroundColor: Colors.white,
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 12, vertical: 8),
-                                side: _refreshButtonFocusNode.hasFocus
-                                    ? BorderSide(
-                                        color: TunioColors.primary, width: 2)
-                                    : null,
-                              ),
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final isMobile = constraints.maxWidth < 600;
+
+                      if (isMobile) {
+                        // Mobile layout: Column (status above, metrics below)
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            // Status indicator
+                            StatusIndicator(
+                              audioState: _radioState is RadioStateConnected
+                                  ? (_radioState as RadioStateConnected)
+                                      .audioState
+                                  : const AudioStateIdle(),
+                              isConnected: _radioState.isConnected,
+                              statusMessage: _getStatusText(),
                             ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      // Connection stats in compact form
-                      _buildStatsRow(
-                          'Network',
-                          _networkState.isConnected
-                              ? 'Connected'
-                              : 'Disconnected'),
-                      _buildStatsRow('Type', _networkState.type.displayName),
-                      if (_networkState.pingMs != null)
-                        _buildStatsRow('Ping', '${_networkState.pingMs}ms'),
-                      // Audio stats if playing
-                      if (_radioState is RadioStateConnected)
-                        ..._buildAudioStats(),
-                    ],
+                            const SizedBox(height: 16),
+
+                            // Metrics chips in wrapped layout
+                            _buildMetricsChips(),
+                          ],
+                        );
+                      } else {
+                        // Tablet/Desktop layout: Row (status left, metrics right)
+                        return Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            // Status indicator (left side) - takes only needed space
+                            StatusIndicator(
+                              audioState: _radioState is RadioStateConnected
+                                  ? (_radioState as RadioStateConnected)
+                                      .audioState
+                                  : const AudioStateIdle(),
+                              isConnected: _radioState.isConnected,
+                              statusMessage: _getStatusText(),
+                            ),
+
+                            // Metrics chips (right side) - aligned to right
+                            _buildMetricsChips(),
+                          ],
+                        );
+                      }
+                    },
                   ),
                 ),
               ),
@@ -605,37 +623,68 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildStatsRow(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(
-            label,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
+  Widget _buildMetricsChips() {
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: [
+        // Network status
+        _buildStatusChip(
+          icon: _networkState.isConnected ? Icons.wifi : Icons.wifi_off,
+          label: 'Network',
+          value: _networkState.isConnected ? 'Connected' : 'Disconnected',
+          color: _networkState.isConnected ? Colors.green : Colors.red,
+        ),
+
+        // Stream ping if available
+        if (_currentPing != null)
+          _buildStatusChip(
+            icon: Icons.speed,
+            label: 'Ping',
+            value: '${_currentPing}ms',
+            color: _currentPing! < 100
+                ? Colors.green
+                : _currentPing! < 300
+                    ? Colors.orange
+                    : Colors.red,
           ),
-          Text(
-            value,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  fontWeight: FontWeight.w500,
-                ),
-          ),
-        ],
-      ),
+
+        // Buffer status if playing
+        if (_radioState is RadioStateConnected) ..._buildAudioMetricChips(),
+      ],
     );
   }
 
-  List<Widget> _buildAudioStats() {
+  List<Widget> _buildAudioMetricChips() {
     final audioState = _getAudioState();
     if (audioState is! AudioStatePlaying) return [];
 
     return [
-      _buildStatsRow('Buffer', '${audioState.bufferSize.inSeconds}s'),
-      _buildStatsRow('Quality', audioState.quality.displayName),
-      _buildStatsRow('Position', '${audioState.position.inSeconds}s'),
+      // Buffer size
+      _buildStatusChip(
+        icon: Icons.memory,
+        label: 'Buffer',
+        value: '${audioState.bufferSize.inSeconds}s',
+        color: audioState.bufferSize.inSeconds >= 3
+            ? Colors.green
+            : audioState.bufferSize.inSeconds >= 1
+                ? Colors.orange
+                : Colors.red,
+      ),
+
+      // Quality
+      _buildStatusChip(
+        icon: Icons.high_quality,
+        label: 'Quality',
+        value: audioState.quality.displayName,
+        color: audioState.quality == ConnectionQuality.excellent
+            ? Colors.green
+            : audioState.quality == ConnectionQuality.good
+                ? Colors.lightGreen
+                : audioState.quality == ConnectionQuality.fair
+                    ? Colors.orange
+                    : Colors.red,
+      ),
     ];
   }
 }

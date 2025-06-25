@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math';
 
 import '../core/result.dart';
@@ -15,6 +16,7 @@ import 'audio_service.dart';
 abstract interface class IRadioService implements Disposable {
   Stream<RadioState> get stateStream;
   Stream<NetworkState> get networkStream;
+  Stream<int?> get pingStream;
   RadioState get currentState;
 
   Future<Result<void>> initialize();
@@ -26,6 +28,7 @@ abstract interface class IRadioService implements Disposable {
 
   bool get isConnected;
   double get volume;
+  int? get currentPing;
 }
 
 /// Enhanced RadioService with proper error handling and state management
@@ -38,6 +41,12 @@ final class EnhancedRadioService implements IRadioService {
   final StreamController<RadioState> _stateController =
       StreamController<RadioState>.broadcast();
   RadioState _currentState = const RadioStateDisconnected();
+
+  // Ping management
+  final StreamController<int?> _pingController =
+      StreamController<int?>.broadcast();
+  int? _currentPing;
+  Timer? _pingTimer;
 
   // Subscriptions
   StreamSubscription<AudioState>? _audioStateSubscription;
@@ -74,6 +83,9 @@ final class EnhancedRadioService implements IRadioService {
   Stream<NetworkState> get networkStream => _audioService.networkStream;
 
   @override
+  Stream<int?> get pingStream => _pingController.stream;
+
+  @override
   RadioState get currentState => _currentState;
 
   @override
@@ -81,6 +93,9 @@ final class EnhancedRadioService implements IRadioService {
 
   @override
   double get volume => _audioService.volume;
+
+  @override
+  int? get currentPing => _currentPing;
 
   @override
   Future<Result<void>> initialize() async {
@@ -150,6 +165,7 @@ final class EnhancedRadioService implements IRadioService {
             ));
             _retryManager.reset();
             _startConfigPolling();
+            _startPinging(config.streamUrl);
           }
         }
 
@@ -246,6 +262,7 @@ final class EnhancedRadioService implements IRadioService {
       _autoReconnectEnabled = false;
       _retryTimer?.cancel();
       _configPollingTimer?.cancel();
+      _stopPinging();
 
       await _audioService.stop();
       await _storageService.clearToken();
@@ -373,6 +390,53 @@ final class EnhancedRadioService implements IRadioService {
     }
   }
 
+  void _startPinging(String streamUrl) {
+    _pingTimer?.cancel();
+
+    // Extract domain from stream URL
+    final uri = Uri.tryParse(streamUrl);
+    if (uri == null || uri.host.isEmpty) return;
+
+    final host = uri.host;
+
+    // Initial ping
+    _performPing(host);
+
+    // Schedule periodic pings every 30 seconds
+    _pingTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      _performPing(host);
+    });
+  }
+
+  Future<void> _performPing(String host) async {
+    try {
+      final stopwatch = Stopwatch()..start();
+
+      final socket =
+          await Socket.connect(host, 80, timeout: const Duration(seconds: 10));
+      await socket.close();
+
+      stopwatch.stop();
+      final pingMs = stopwatch.elapsedMilliseconds;
+
+      _currentPing = pingMs;
+      _pingController.add(pingMs);
+
+      Logger.info('Ping to $host: ${pingMs}ms');
+    } catch (e) {
+      Logger.warning('Ping to $host failed: $e');
+      _currentPing = null;
+      _pingController.add(null);
+    }
+  }
+
+  void _stopPinging() {
+    _pingTimer?.cancel();
+    _pingTimer = null;
+    _currentPing = null;
+    _pingController.add(null);
+  }
+
   @override
   Future<void> dispose() async {
     if (_isDisposed) return;
@@ -383,12 +447,14 @@ final class EnhancedRadioService implements IRadioService {
     _autoReconnectEnabled = false;
     _retryTimer?.cancel();
     _configPollingTimer?.cancel();
+    _stopPinging();
 
     await _audioStateSubscription?.cancel();
     await _networkStateSubscription?.cancel();
 
     await _audioService.dispose();
     await _stateController.close();
+    await _pingController.close();
 
     Logger.info('RadioService disposed');
   }
