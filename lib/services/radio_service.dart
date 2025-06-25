@@ -343,6 +343,10 @@ final class EnhancedRadioService implements IRadioService {
         if (newConfig != null && newConfig != connected.config) {
           Logger.info('Configuration updated');
 
+          // Update state with new configuration immediately
+          final updatedState = connected.copyWith(config: newConfig);
+          _updateState(updatedState);
+
           // Restart stream with new configuration
           await _audioService.stop();
           final playResult = await _audioService.playStream(newConfig);

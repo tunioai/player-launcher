@@ -29,6 +29,10 @@ class ServiceLocator {
           storageService: di.get<StorageService>(),
         ));
 
+    // Initialize radio service to enable auto-reconnect
+    final radioService = di.get<IRadioService>();
+    await radioService.initialize();
+
     _isInitialized = true;
   }
 

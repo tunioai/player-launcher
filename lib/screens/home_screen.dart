@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../core/dependency_injection.dart';
 import '../core/service_locator.dart';
@@ -82,7 +83,29 @@ class _HomeScreenState extends State<HomeScreen> {
       _radioService = di.radioService;
       _volume = _radioService.volume;
 
-      // Set up streams
+      // Load saved PIN code immediately for UI display
+      final storageService = di.storageService;
+      final savedToken = storageService.getToken();
+      if (savedToken != null && savedToken.isNotEmpty) {
+        setState(() {
+          _currentCode = savedToken;
+        });
+        Logger.info('HomeScreen: Loaded saved PIN code for display');
+      }
+
+      // Get current state immediately
+      final currentRadioState = _radioService.currentState;
+      setState(() {
+        _radioState = currentRadioState;
+
+        // Update code from current state if available
+        final token = currentRadioState.token;
+        if (token != null && token != _currentCode) {
+          _currentCode = token;
+        }
+      });
+
+      // Set up streams for future changes
       _radioStateSubscription = _radioService.stateStream.listen((state) {
         if (mounted) {
           setState(() {
@@ -129,7 +152,6 @@ class _HomeScreenState extends State<HomeScreen> {
     result.fold(
       (_) {
         Logger.info('HomeScreen: Connection successful');
-        _showSuccess('Connected successfully!');
       },
       (error) {
         Logger.error('HomeScreen: Connection failed: $error');
@@ -208,16 +230,47 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _showSuccess(String message) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: Colors.green.withValues(alpha: 0.9),
-        behavior: SnackBarBehavior.floating,
-        duration: const Duration(seconds: 2),
-      ),
-    );
+  Future<void> _launchPersonalCabinet() async {
+    const url = 'https://cp.tunio.ai/spot-links';
+    if (await canLaunchUrl(Uri.parse(url))) {
+      await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+    }
+  }
+
+  IconData _getThemeIcon() {
+    return widget.themeMode == ThemeMode.dark
+        ? Icons.light_mode
+        : Icons.dark_mode;
+  }
+
+  String _getThemeTooltip() {
+    return widget.themeMode == ThemeMode.dark
+        ? 'Switch to light theme'
+        : 'Switch to dark theme';
+  }
+
+  IconData _getPlayPauseIcon() {
+    final audioState = _getAudioState();
+    if (audioState?.isPlaying ?? false) {
+      return Icons.pause;
+    }
+    return Icons.play_arrow;
+  }
+
+  AudioState? _getAudioState() {
+    return switch (_radioState) {
+      RadioStateConnected(:final audioState) => audioState,
+      _ => null,
+    };
+  }
+
+  String _getStatusText() {
+    return switch (_radioState) {
+      RadioStateDisconnected(:final message) => message,
+      RadioStateConnecting(:final message) => message,
+      RadioStateConnected(:final audioState) => audioState.displayMessage,
+      RadioStateError(:final message) => 'Error: $message',
+    };
   }
 
   @override
@@ -231,334 +284,342 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     return Scaffold(
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(24.0),
+      appBar: AppBar(
+        title: const Text('Tunio Spot'),
+        actions: [
+          Focus(
+            focusNode: _themeButtonFocusNode,
+            child: Container(
+              decoration: BoxDecoration(
+                border: Border.all(
+                  color: _themeButtonFocusNode.hasFocus
+                      ? TunioColors.primary
+                      : Colors.transparent,
+                  width: 2,
+                ),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: IconButton(
+                onPressed: widget.onThemeToggle,
+                icon: Icon(_getThemeIcon()),
+                tooltip: _getThemeTooltip(),
+              ),
+            ),
+          ),
+        ],
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: SingleChildScrollView(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              _buildHeader(),
-              const SizedBox(height: 32),
-              _buildConnectionCard(),
-              const SizedBox(height: 24),
-              if (_radioState.isConnected) ...[
-                _buildPlayerCard(),
-                const SizedBox(height: 24),
-                _buildStatsCard(),
-              ],
-              const Spacer(),
-              _buildBottomActions(),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildHeader() {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Tunio Radio',
-              style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                    fontWeight: FontWeight.bold,
-                    color: TunioColors.primary,
-                  ),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              _getStatusText(),
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-            ),
-          ],
-        ),
-        IconButton(
-          focusNode: _themeButtonFocusNode,
-          onPressed: widget.onThemeToggle,
-          icon: Icon(
-            widget.themeMode == ThemeMode.dark
-                ? Icons.light_mode
-                : Icons.dark_mode,
-          ),
-          style: IconButton.styleFrom(
-            backgroundColor: _themeButtonFocusNode.hasFocus
-                ? TunioColors.primary.withValues(alpha: 0.2)
-                : null,
-          ),
-        ),
-      ],
-    );
-  }
-
-  String _getStatusText() {
-    return switch (_radioState) {
-      RadioStateDisconnected(:final message) => message,
-      RadioStateConnecting(:final message) => message,
-      RadioStateConnected(:final audioState) => audioState.displayMessage,
-      RadioStateError(:final message) => 'Error: $message',
-    };
-  }
-
-  Widget _buildConnectionCard() {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(
-              'Connection',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
-            ),
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                Expanded(
-                  child: CodeInputWidget(
-                    focusNode: _codeFocusNode,
-                    value: _currentCode,
-                    onChanged: (code) {
-                      setState(() {
-                        _currentCode = code;
-                      });
-                    },
-                    enabled:
-                        !_radioState.isConnecting && !_radioState.isConnected,
+              // TIP Card
+              Card(
+                color: Theme.of(context).colorScheme.secondaryContainer,
+                child: InkWell(
+                  onTap: _launchPersonalCabinet,
+                  borderRadius: BorderRadius.circular(12),
+                  child: Padding(
+                    padding: const EdgeInsets.all(12.0),
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.lightbulb_outline,
+                          color: Theme.of(context).colorScheme.primary,
+                          size: 20,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: RichText(
+                            text: TextSpan(
+                              style: TextStyle(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSecondaryContainer,
+                                fontSize: 14,
+                              ),
+                              children: [
+                                const TextSpan(
+                                  text: 'TIP: ',
+                                  style: TextStyle(fontWeight: FontWeight.bold),
+                                ),
+                                const TextSpan(
+                                  text:
+                                      'You can get the broadcast PIN code at ',
+                                ),
+                                TextSpan(
+                                  text: 'cp.tunio.ai/spot-links',
+                                  style: TextStyle(
+                                    color:
+                                        Theme.of(context).colorScheme.primary,
+                                    fontWeight: FontWeight.w600,
+                                    decoration: TextDecoration.underline,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        Icon(
+                          Icons.open_in_new,
+                          color: Theme.of(context).colorScheme.primary,
+                          size: 16,
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-                const SizedBox(width: 12),
-                _buildConnectionButton(),
-              ],
-            ),
-            if (_radioState.isConnected) ...[
-              const SizedBox(height: 16),
-              _buildConnectionInfo(),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildConnectionButton() {
-    if (_radioState.isConnected) {
-      return ElevatedButton(
-        focusNode: _connectButtonFocusNode,
-        onPressed: _disconnect,
-        style: ElevatedButton.styleFrom(
-          backgroundColor: Colors.red,
-          foregroundColor: Colors.white,
-        ),
-        child: const Text('Disconnect'),
-      );
-    }
-
-    return ElevatedButton(
-      focusNode: _connectButtonFocusNode,
-      onPressed: _radioState.isConnecting ? null : _connect,
-      child: _radioState.isConnecting
-          ? const SizedBox(
-              width: 16,
-              height: 16,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )
-          : const Text('Connect'),
-    );
-  }
-
-  Widget _buildConnectionInfo() {
-    final config = _radioState.config;
-    if (config == null) return const SizedBox();
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Icon(
-              Icons.radio,
-              size: 16,
-              color: Theme.of(context).colorScheme.primary,
-            ),
-            const SizedBox(width: 8),
-            Text(
-              config.title ?? 'Unknown Station',
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    fontWeight: FontWeight.w500,
-                  ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        StatusIndicator(
-          audioState: _radioState is RadioStateConnected
-              ? (_radioState as RadioStateConnected).audioState
-              : const AudioStateIdle(),
-          isConnected: _radioState.isConnected,
-          statusMessage: _getStatusText(),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildPlayerCard() {
-    final audioState = _getAudioState();
-    if (audioState == null) return const SizedBox();
-
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(
-              'Player',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
-            ),
-            const SizedBox(height: 16),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                _buildPlayPauseButton(audioState),
-                _buildReconnectButton(),
-              ],
-            ),
-            const SizedBox(height: 20),
-            _buildVolumeControl(),
-          ],
-        ),
-      ),
-    );
-  }
-
-  AudioState? _getAudioState() {
-    return switch (_radioState) {
-      RadioStateConnected(:final audioState) => audioState,
-      _ => null,
-    };
-  }
-
-  Widget _buildPlayPauseButton(AudioState audioState) {
-    final isPlaying = audioState.isPlaying;
-    final canPlay = audioState.canPlay;
-    final canPause = audioState.canPause;
-
-    return ElevatedButton.icon(
-      focusNode: _playButtonFocusNode,
-      onPressed: (canPlay || canPause) ? _playPause : null,
-      icon: Icon(isPlaying ? Icons.pause : Icons.play_arrow),
-      label: Text(isPlaying ? 'Pause' : 'Play'),
-      style: ElevatedButton.styleFrom(
-        backgroundColor: isPlaying ? Colors.orange : TunioColors.primary,
-        foregroundColor: Colors.white,
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-      ),
-    );
-  }
-
-  Widget _buildReconnectButton() {
-    return ElevatedButton.icon(
-      focusNode: _refreshButtonFocusNode,
-      onPressed: _reconnect,
-      icon: const Icon(Icons.refresh),
-      label: const Text('Reconnect'),
-      style: ElevatedButton.styleFrom(
-        backgroundColor: Colors.blue,
-        foregroundColor: Colors.white,
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-      ),
-    );
-  }
-
-  Widget _buildVolumeControl() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          'Volume: ${(_volume * 100).round()}%',
-          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                fontWeight: FontWeight.w500,
               ),
-        ),
-        const SizedBox(height: 8),
-        Focus(
-          focusNode: _volumeFocusNode,
-          child: Slider(
-            value: _volume,
-            onChanged: _setVolume,
-            min: 0.0,
-            max: 1.0,
-            divisions: 20,
+              const SizedBox(height: 16),
+
+              // Connection Card
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const Text(
+                        'Connection',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      CodeInputWidget(
+                        value: _currentCode,
+                        onChanged: (code) {
+                          setState(() {
+                            _currentCode = code;
+                          });
+                        },
+                        onSubmitted: () {
+                          if (!_radioState.isConnecting &&
+                              !_radioState.isConnected) {
+                            _connect();
+                          }
+                        },
+                        enabled: !_radioState.isConnected &&
+                            !_radioState.isConnecting,
+                        focusNode: _codeFocusNode,
+                      ),
+                      const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Focus(
+                              focusNode: _connectButtonFocusNode,
+                              child: ElevatedButton.icon(
+                                onPressed: _radioState.isConnecting
+                                    ? null
+                                    : (_radioState.isConnected
+                                        ? _disconnect
+                                        : _connect),
+                                icon: _radioState.isConnecting
+                                    ? const SizedBox(
+                                        width: 16,
+                                        height: 16,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          valueColor:
+                                              AlwaysStoppedAnimation<Color>(
+                                                  Colors.white),
+                                        ),
+                                      )
+                                    : Icon(_radioState.isConnected
+                                        ? Icons.logout
+                                        : Icons.login),
+                                label: Text(_radioState.isConnecting
+                                    ? 'Connecting...'
+                                    : (_radioState.isConnected
+                                        ? 'Disconnect'
+                                        : 'Connect')),
+                                style: ElevatedButton.styleFrom(
+                                  padding:
+                                      const EdgeInsets.symmetric(vertical: 12),
+                                  backgroundColor: _radioState.isConnecting
+                                      ? TunioColors.primary
+                                          .withValues(alpha: 0.7)
+                                      : (_radioState.isConnected
+                                          ? Colors.red
+                                          : TunioColors.primary),
+                                  foregroundColor: Colors.white,
+                                  disabledBackgroundColor: TunioColors.primary
+                                      .withValues(alpha: 0.7),
+                                  disabledForegroundColor: Colors.white,
+                                  side: _connectButtonFocusNode.hasFocus
+                                      ? BorderSide(
+                                          color: TunioColors.primary, width: 2)
+                                      : null,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              // Player Card (compact layout)
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    children: [
+                      Text(
+                        _radioState.config?.title ?? '',
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          // Circular play/pause button
+                          Focus(
+                            focusNode: _playButtonFocusNode,
+                            child: ElevatedButton(
+                              onPressed:
+                                  _radioState.isConnected ? _playPause : null,
+                              style: ElevatedButton.styleFrom(
+                                shape: const CircleBorder(),
+                                padding: const EdgeInsets.all(16),
+                                side: _playButtonFocusNode.hasFocus
+                                    ? BorderSide(
+                                        color: TunioColors.primary, width: 3)
+                                    : null,
+                              ),
+                              child: Icon(
+                                _getPlayPauseIcon(),
+                                size: 32,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 16),
+
+                          // Volume control in one row
+                          const Icon(Icons.volume_down),
+                          Expanded(
+                            child: Focus(
+                              focusNode: _volumeFocusNode,
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  border: Border.all(
+                                    color: _volumeFocusNode.hasFocus
+                                        ? TunioColors.primary
+                                        : Colors.transparent,
+                                    width: 2,
+                                  ),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Slider(
+                                  value: _volume,
+                                  onChanged: _radioState.isConnected
+                                      ? _setVolume
+                                      : null,
+                                  min: 0.0,
+                                  max: 1.0,
+                                  divisions: 20,
+                                  label: '${(_volume * 100).round()}%',
+                                  activeColor: _volumeFocusNode.hasFocus
+                                      ? TunioColors.primary
+                                      : null,
+                                ),
+                              ),
+                            ),
+                          ),
+                          const Icon(Icons.volume_up),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              // Status indicator with stats (compact layout like old version)
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          StatusIndicator(
+                            audioState: _radioState is RadioStateConnected
+                                ? (_radioState as RadioStateConnected)
+                                    .audioState
+                                : const AudioStateIdle(),
+                            isConnected: _radioState.isConnected,
+                            statusMessage: _getStatusText(),
+                          ),
+                          const Spacer(),
+                          Focus(
+                            focusNode: _refreshButtonFocusNode,
+                            child: ElevatedButton.icon(
+                              onPressed: _reconnect,
+                              icon: const Icon(Icons.refresh, size: 16),
+                              label: const Text('Reconnect'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.blue,
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 12, vertical: 8),
+                                side: _refreshButtonFocusNode.hasFocus
+                                    ? BorderSide(
+                                        color: TunioColors.primary, width: 2)
+                                    : null,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      // Connection stats in compact form
+                      _buildStatsRow(
+                          'Network',
+                          _networkState.isConnected
+                              ? 'Connected'
+                              : 'Disconnected'),
+                      _buildStatsRow('Type', _networkState.type.displayName),
+                      if (_networkState.pingMs != null)
+                        _buildStatsRow('Ping', '${_networkState.pingMs}ms'),
+                      // Audio stats if playing
+                      if (_radioState is RadioStateConnected)
+                        ..._buildAudioStats(),
+                    ],
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
-      ],
-    );
-  }
-
-  Widget _buildStatsCard() {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Connection Stats',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
-            ),
-            const SizedBox(height: 16),
-            _buildStatRow('Network',
-                _networkState.isConnected ? 'Connected' : 'Disconnected'),
-            _buildStatRow('Connection Type', _networkState.type.displayName),
-            if (_networkState.pingMs != null)
-              _buildStatRow('Ping', '${_networkState.pingMs}ms'),
-            _buildAudioStats(),
-          ],
-        ),
       ),
     );
   }
 
-  Widget _buildAudioStats() {
-    final audioState = _getAudioState();
-    if (audioState is! AudioStatePlaying) return const SizedBox();
-
-    return Column(
-      children: [
-        _buildStatRow('Buffer', '${audioState.bufferSize.inSeconds}s'),
-        _buildStatRow('Quality', audioState.quality.displayName),
-        _buildStatRow('Position', '${audioState.position.inSeconds}s'),
-      ],
-    );
-  }
-
-  Widget _buildStatRow(String label, String value) {
+  Widget _buildStatsRow(String label, String value) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.symmetric(vertical: 2),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           Text(
             label,
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
           ),
           Text(
             value,
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   fontWeight: FontWeight.w500,
                 ),
           ),
@@ -567,16 +628,14 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildBottomActions() {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        TextButton.icon(
-          onPressed: () => SystemNavigator.pop(),
-          icon: const Icon(Icons.exit_to_app),
-          label: const Text('Exit'),
-        ),
-      ],
-    );
+  List<Widget> _buildAudioStats() {
+    final audioState = _getAudioState();
+    if (audioState is! AudioStatePlaying) return [];
+
+    return [
+      _buildStatsRow('Buffer', '${audioState.bufferSize.inSeconds}s'),
+      _buildStatsRow('Quality', audioState.quality.displayName),
+      _buildStatsRow('Position', '${audioState.position.inSeconds}s'),
+    ];
   }
 }
