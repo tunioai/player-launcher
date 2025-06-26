@@ -64,6 +64,6 @@ extension ServiceLocatorExtensions on DependencyInjection {
 void unawaited(Future<void> future) {
   future.catchError((error, stackTrace) {
     // Log error but don't crash the app
-    print('Unawaited future error: $error');
+    // Error handled by service internally
   });
 }

@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'core/service_locator.dart';
-import 'core/dependency_injection.dart';
+
 import 'screens/home_screen.dart';
 import 'utils/logger.dart';
 
