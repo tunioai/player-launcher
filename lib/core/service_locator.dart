@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import '../core/dependency_injection.dart';
 import '../services/api_service.dart';
 import '../services/storage_service.dart';
@@ -30,8 +32,9 @@ class ServiceLocator {
         ));
 
     // Initialize radio service to enable auto-reconnect
+    // Don't await to prevent blocking app startup if network unavailable
     final radioService = di.get<IRadioService>();
-    await radioService.initialize();
+    unawaited(radioService.initialize());
 
     _isInitialized = true;
   }
@@ -55,4 +58,12 @@ extension ServiceLocatorExtensions on DependencyInjection {
   IAudioService get audioService => get<IAudioService>();
   ApiService get apiService => get<ApiService>();
   StorageService get storageService => get<StorageService>();
+}
+
+/// Helper to fire and forget async operations
+void unawaited(Future<void> future) {
+  future.catchError((error, stackTrace) {
+    // Log error but don't crash the app
+    print('Unawaited future error: $error');
+  });
 }

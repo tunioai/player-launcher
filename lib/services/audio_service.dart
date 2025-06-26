@@ -39,7 +39,8 @@ final class EnhancedAudioService implements IAudioService {
       StreamController<NetworkState>.broadcast();
 
   AudioState _currentState = const AudioStateIdle();
-  NetworkState _networkState = const NetworkState();
+  NetworkState _networkState =
+      const NetworkState(isConnected: false, type: ConnectionType.unknown);
 
   // Subscriptions
   StreamSubscription<PlayerState>? _playerStateSubscription;
@@ -174,6 +175,24 @@ final class EnhancedAudioService implements IAudioService {
       onError: (error) =>
           Logger.error('Audio player error stream error: $error'),
     );
+
+    // Check initial network state
+    _checkInitialNetworkState();
+  }
+
+  Future<void> _checkInitialNetworkState() async {
+    try {
+      final results = await Connectivity().checkConnectivity();
+      _handleConnectivityChange(results);
+    } catch (e) {
+      Logger.error('Failed to check initial network state: $e');
+      // Fallback to disconnected state
+      _networkState = _networkState.copyWith(
+        isConnected: false,
+        type: ConnectionType.unknown,
+      );
+      _networkController.add(_networkState);
+    }
   }
 
   void _handlePlayerStateChange(PlayerState playerState) {

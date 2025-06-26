@@ -357,7 +357,7 @@ final class NetworkState {
   final Duration totalOfflineTime;
 
   const NetworkState({
-    this.isConnected = true,
+    this.isConnected = false,
     this.pingMs,
     this.type = ConnectionType.unknown,
     this.lastDisconnection,

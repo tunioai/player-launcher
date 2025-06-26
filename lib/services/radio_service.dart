@@ -181,10 +181,14 @@ final class EnhancedRadioService implements IRadioService {
     if (networkState.isConnected && _autoReconnectEnabled) {
       // Network restored, attempt reconnection if needed
       if (_currentState is RadioStateError ||
-          _currentState is RadioStateDisconnected) {
+          _currentState is RadioStateDisconnected ||
+          (_currentState is RadioStateConnecting && _wasStuckInConnecting())) {
         final token = _getStoredToken();
         if (token != null) {
           Logger.info('Network restored, attempting auto-reconnection');
+          // Cancel any existing retry timer before starting new attempt
+          _retryTimer?.cancel();
+          _retryManager.reset();
           unawaited(_attemptConnect(token, isRetry: true));
         }
       }
@@ -196,8 +200,13 @@ final class EnhancedRadioService implements IRadioService {
     if (token != null) {
       Logger.info('Restoring connection with stored token');
       _autoReconnectEnabled = true;
-      // Don't await here to avoid blocking initialization
-      unawaited(_attemptConnect(token, isRetry: false));
+      // Attempt connection with proper error handling instead of unawaited
+      final result = await _attemptConnect(token, isRetry: false);
+      if (result.isFailure) {
+        Logger.warning('Auto-reconnect failed: ${result.error}');
+        // Schedule retry instead of giving up
+        _scheduleRetry('Auto-reconnect failed on startup');
+      }
     } else {
       Logger.info('No stored token found');
       _updateState(const RadioStateDisconnected(message: 'Ready'));
@@ -231,27 +240,41 @@ final class EnhancedRadioService implements IRadioService {
     Logger.info('Attempting connection (attempt $attempt)');
 
     return tryResultAsync(() async {
-      // Fetch stream configuration
-      final config = await _apiService.getStreamConfig(token);
-      if (config == null) {
-        throw ApiError(
-            message: 'Invalid token or server error', isFromBackend: true);
-      }
-
-      // Save token and configuration
-      await _storageService.saveToken(token);
-      await _storageService.saveLastVolume(config.volume);
-
-      // Start audio playback
-      final playResult = await _audioService.playStream(config);
-      if (playResult.isFailure) {
-        throw Exception('Failed to start audio: ${playResult.error}');
-      }
-
-      Logger.info('Connection successful');
-
-      // State will be updated when audio starts playing via _handleAudioStateChange
+      // Add timeout for the entire connection attempt
+      await Future.any([
+        _performConnection(token),
+        Future.delayed(const Duration(seconds: 30), () {
+          throw TimeoutException(
+              'Connection attempt timed out after 30 seconds');
+        })
+      ]);
     });
+  }
+
+  Future<void> _performConnection(String token) async {
+    // Fetch stream configuration with timeout
+    final config = await _apiService.getStreamConfig(token).timeout(
+          const Duration(seconds: 15),
+          onTimeout: () => throw TimeoutException('API request timed out'),
+        );
+
+    if (config == null) {
+      throw ApiError(
+          message: 'Invalid token or server error', isFromBackend: true);
+    }
+
+    // Save token and configuration
+    await _storageService.saveToken(token);
+    await _storageService.saveLastVolume(config.volume);
+
+    // Start audio playback
+    final playResult = await _audioService.playStream(config);
+    if (playResult.isFailure) {
+      throw Exception('Failed to start audio: ${playResult.error}');
+    }
+
+    Logger.info('Connection successful');
+    // State will be updated when audio starts playing via _handleAudioStateChange
   }
 
   @override
@@ -324,6 +347,19 @@ final class EnhancedRadioService implements IRadioService {
     final token = _getStoredToken();
     if (token == null) {
       Logger.warning('Cannot retry: no stored token');
+      _updateState(const RadioStateDisconnected(message: 'No token stored'));
+      return;
+    }
+
+    // Check retry limits
+    if (!_retryManager.canRetry) {
+      Logger.warning('Maximum retry attempts reached');
+      _updateState(RadioStateError(
+        message:
+            'Maximum retry attempts reached. Please check your connection.',
+        canRetry: false,
+        attemptCount: _retryManager.currentAttempt,
+      ));
       return;
     }
 
@@ -341,6 +377,8 @@ final class EnhancedRadioService implements IRadioService {
     _retryTimer?.cancel();
     _retryTimer = Timer(delay, () {
       if (_autoReconnectEnabled && !_isDisposed) {
+        Logger.info(
+            'Executing scheduled retry attempt ${_retryManager.currentAttempt + 1}');
         unawaited(_attemptConnect(token, isRetry: true));
       }
     });
@@ -435,6 +473,12 @@ final class EnhancedRadioService implements IRadioService {
     _pingTimer = null;
     _currentPing = null;
     _pingController.add(null);
+  }
+
+  // Helper method to detect if we're stuck in connecting state too long
+  bool _wasStuckInConnecting() {
+    // If we've been in connecting state and made several attempts, we're likely stuck
+    return _retryManager.currentAttempt > 2;
   }
 
   @override
