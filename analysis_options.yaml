@@ -1,1 +1,6 @@
 include: package:flutter_lints/flutter.yaml
+
+linter:
+  rules:
+    annotate_overrides: false
+    null_check_on_nullable_type_parameter: false

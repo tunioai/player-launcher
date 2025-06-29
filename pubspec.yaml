@@ -2,7 +2,7 @@ name: tunio_radio_player
 description: "A Flutter radio streaming application with auto-start functionality"
 publish_to: 'none'
 
-version: 1.0.0+6
+version: 1.0.0+10
 
 environment:
   sdk: '>=3.5.0 <4.0.0'
@@ -11,7 +11,8 @@ dependencies:
   flutter:
     sdk: flutter
   cupertino_icons: ^1.0.8
-  just_audio: ^0.10.4
+  # Аудио библиотеки - совместимы с 16KB страницами памяти
+  just_audio: ^0.10.4  # Последняя стабильная версия
   shared_preferences: ^2.3.3
   http: ^1.2.2
   connectivity_plus: ^6.1.0

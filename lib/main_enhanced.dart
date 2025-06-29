@@ -87,16 +87,9 @@ class _TunioAppState extends State<TunioApp> with WidgetsBindingObserver {
       ),
       scaffoldBackgroundColor: Colors.grey[50],
       appBarTheme: const AppBarTheme(
-        backgroundColor: TunioColors.primary,
+        backgroundColor: Colors.transparent,
         elevation: 0,
-        foregroundColor: Colors.white,
-        titleTextStyle: TextStyle(
-          color: Colors.white,
-          fontSize: 20,
-          fontWeight: FontWeight.w600,
-        ),
-        iconTheme: IconThemeData(color: Colors.white),
-        systemOverlayStyle: SystemUiOverlayStyle.light,
+        systemOverlayStyle: SystemUiOverlayStyle.dark,
       ),
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ElevatedButton.styleFrom(
@@ -135,15 +128,8 @@ class _TunioAppState extends State<TunioApp> with WidgetsBindingObserver {
       ),
       scaffoldBackgroundColor: const Color(0xFF121212),
       appBarTheme: const AppBarTheme(
-        backgroundColor: TunioColors.primary,
+        backgroundColor: Colors.transparent,
         elevation: 0,
-        foregroundColor: Colors.white,
-        titleTextStyle: TextStyle(
-          color: Colors.white,
-          fontSize: 20,
-          fontWeight: FontWeight.w600,
-        ),
-        iconTheme: IconThemeData(color: Colors.white),
         systemOverlayStyle: SystemUiOverlayStyle.light,
       ),
       elevatedButtonTheme: ElevatedButtonThemeData(
@@ -175,7 +161,6 @@ class _TunioAppState extends State<TunioApp> with WidgetsBindingObserver {
 /// App color constants
 class TunioColors {
   static const Color primary = Color(0xFF48525C);
-  static const Color primaryDark = Color(0xFF3A444E);
   static const Color secondary = Color(0xFF5A6670);
   static const Color accent = Color(0xFF06B6D4);
   static const Color success = Color(0xFF10B981);

@@ -66,12 +66,6 @@
                 <category android:name="android.intent.category.HOME"/>
                 <category android:name="android.intent.category.DEFAULT"/>
             </intent-filter>
-            
-            <!-- Car launcher support -->
-            <intent-filter android:priority="1000">
-                <action android:name="android.intent.action.MAIN"/>
-                <category android:name="android.intent.category.CAR_LAUNCHER"/>
-            </intent-filter>
         </activity>
         
         <!-- Boot receiver for auto-start -->
