@@ -9,6 +9,11 @@ import android.os.Handler
 import android.os.Looper
 
 class BootReceiver : BroadcastReceiver() {
+    companion object {
+        @Volatile
+        private var isStarting = false
+    }
+    
     override fun onReceive(context: Context, intent: Intent) {
         Log.d("BootReceiver", "Received broadcast: ${intent.action}")
         
@@ -27,7 +32,14 @@ class BootReceiver : BroadcastReceiver() {
                 Log.d("BootReceiver", "API Key exists: ${!apiKey.isNullOrEmpty()}, Auto-start enabled: $autoStartEnabled")
                 
                 if (!apiKey.isNullOrEmpty() && autoStartEnabled) {
-                    startAppWithMultipleMethods(context)
+                    synchronized(this) {
+                        if (!isStarting) {
+                            isStarting = true
+                            startAppWithMultipleMethods(context)
+                        } else {
+                            Log.d("BootReceiver", "App start already in progress, skipping")
+                        }
+                    }
                 } else {
                     Log.d("BootReceiver", "Auto-start conditions not met")
                 }
@@ -59,6 +71,11 @@ class BootReceiver : BroadcastReceiver() {
             // Method 3: Fallback option with additional flags
             Handler(Looper.getMainLooper()).postDelayed({
                 tryFallbackStart(context)
+                // Reset flag after all attempts complete
+                Handler(Looper.getMainLooper()).postDelayed({
+                    isStarting = false
+                    Log.d("BootReceiver", "App start process completed")
+                }, 2000L)
             }, 5000L)
             
         }, delay)

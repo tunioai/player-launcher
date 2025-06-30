@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:just_audio/just_audio.dart';
 import 'package:audio_session/audio_session.dart';
@@ -182,16 +183,53 @@ final class EnhancedAudioService implements IAudioService {
 
   Future<void> _checkInitialNetworkState() async {
     try {
+      // Wait a bit to let the connectivity plugin initialize properly
+      await Future.delayed(const Duration(milliseconds: 500));
       final results = await Connectivity().checkConnectivity();
-      _handleConnectivityChange(results);
+
+      // Double-check with actual internet connectivity test
+      final hasInternet = await _testInternetConnectivity();
+
+      final hasConnection = results.any((result) =>
+              result == ConnectivityResult.mobile ||
+              result == ConnectivityResult.wifi ||
+              result == ConnectivityResult.ethernet) &&
+          hasInternet;
+
+      final connectionType = switch (results.firstOrNull) {
+        ConnectivityResult.wifi => ConnectionType.wifi,
+        ConnectivityResult.mobile => ConnectionType.mobile,
+        ConnectivityResult.ethernet => ConnectionType.ethernet,
+        _ => ConnectionType.unknown,
+      };
+
+      _networkState = _networkState.copyWith(
+        isConnected: hasConnection,
+        type: connectionType,
+      );
+      _networkController.add(_networkState);
+
+      Logger.info(
+          'Initial network state: ${hasConnection ? 'Connected' : 'Disconnected'} (${connectionType.displayName})');
     } catch (e) {
       Logger.error('Failed to check initial network state: $e');
-      // Fallback to disconnected state
+      // Start with unknown state instead of disconnected
       _networkState = _networkState.copyWith(
-        isConnected: false,
+        isConnected: true, // Assume connected to avoid false negatives
         type: ConnectionType.unknown,
       );
       _networkController.add(_networkState);
+    }
+  }
+
+  Future<bool> _testInternetConnectivity() async {
+    try {
+      final result = await InternetAddress.lookup('google.com')
+          .timeout(const Duration(seconds: 3));
+      return result.isNotEmpty && result[0].rawAddress.isNotEmpty;
+    } catch (e) {
+      Logger.warning('Internet connectivity test failed: $e');
+      return true; // Assume connected to avoid false negatives
     }
   }
 
@@ -222,6 +260,14 @@ final class EnhancedAudioService implements IAudioService {
               '🎵 STATE_DEBUG: Canceling timeouts and updating stats...');
           _cancelTimeouts();
           _updatePlaybackStats();
+
+          // If we're playing, we must have network connectivity
+          if (!_networkState.isConnected) {
+            Logger.info(
+                '🎵 STATE_DEBUG: Correcting network state - we are playing, so we must be connected');
+            _networkState = _networkState.copyWith(isConnected: true);
+            _networkController.add(_networkState);
+          }
 
         case AudioStateError():
           Logger.info('🎵 STATE_DEBUG: Canceling timeouts due to error...');
@@ -336,16 +382,28 @@ final class EnhancedAudioService implements IAudioService {
       _ => ConnectionType.unknown,
     };
 
-    _networkState = _networkState.copyWith(
-      isConnected: hasConnection,
-      type: connectionType,
-      lastDisconnection: hasConnection ? null : DateTime.now(),
-    );
+    // Smart network detection: if we're playing audio successfully, we must be connected
+    final isActuallyConnected = hasConnection || _currentState.isPlaying;
 
-    _networkController.add(_networkState);
+    // Only update network state if it actually changed to avoid false positives
+    final previouslyConnected = _networkState.isConnected;
+    if (isActuallyConnected != previouslyConnected) {
+      _networkState = _networkState.copyWith(
+        isConnected: isActuallyConnected,
+        type: connectionType,
+        lastDisconnection: isActuallyConnected ? null : DateTime.now(),
+      );
 
-    Logger.info(
-        'Network state: ${hasConnection ? 'Connected' : 'Disconnected'} (${connectionType.displayName})');
+      _networkController.add(_networkState);
+
+      Logger.info(
+          'Network state CHANGED: ${isActuallyConnected ? 'Connected' : 'Disconnected'} (${connectionType.displayName})${_currentState.isPlaying ? ' [inferred from playing audio]' : ''}');
+    } else {
+      // Update only connection type without triggering state change
+      _networkState = _networkState.copyWith(type: connectionType);
+      Logger.debug(
+          'Network type updated: ${connectionType.displayName} (still ${isActuallyConnected ? 'connected' : 'disconnected'})');
+    }
   }
 
   void _handlePlayerError(dynamic error) {
@@ -463,13 +521,16 @@ final class EnhancedAudioService implements IAudioService {
       }
     }
 
-    // Check for buffer update hangs
+    // Check for buffer update hangs - but only if we're not actively playing
+    // Live streams may not update buffer position regularly while playing normally
     if (_lastBufferUpdate != null &&
         _currentState.isPlaying &&
-        now.difference(_lastBufferUpdate!) > Duration(seconds: 30)) {
-      Logger.error('Buffer update hang detected');
+        now.difference(_lastBufferUpdate!) > Duration(minutes: 2) &&
+        _audioPlayer.position.inSeconds == 0) {
+      // Only trigger hang detection if position is also stuck at 0
+      Logger.error('Buffer update hang detected (position also stuck)');
       _handlePlayerError(
-          TimeoutException('Buffer update hang', Duration(seconds: 30)));
+          TimeoutException('Buffer update hang', Duration(minutes: 2)));
     }
   }
 

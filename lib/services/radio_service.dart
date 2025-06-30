@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:math';
 
 import '../core/result.dart';
 import '../core/dependency_injection.dart';
@@ -146,9 +145,25 @@ final class EnhancedRadioService implements IRadioService {
         final newState = connected.copyWith(audioState: audioState);
         _updateState(newState);
 
-        // Handle error states
+        // Handle error states - faster detection for stream loss
         if (audioState is AudioStateError && audioState.isRetryable) {
-          _scheduleRetry('Audio error: ${audioState.message}');
+          Logger.warning('Audio error detected: ${audioState.message}');
+
+          // Faster detection - wait only 3 seconds for stream loss
+          Timer(const Duration(seconds: 3), () {
+            // Check if we're still in error state after delay
+            if (_currentState is RadioStateConnected) {
+              final currentAudioState =
+                  (_currentState as RadioStateConnected).audioState;
+              if (currentAudioState is AudioStateError &&
+                  currentAudioState.isRetryable) {
+                Logger.error('Stream lost - immediate retry');
+                _scheduleRetry('Stream lost: ${currentAudioState.message}');
+              } else {
+                Logger.info('Audio error resolved automatically');
+              }
+            }
+          });
         }
 
       case RadioStateConnecting _:
@@ -200,13 +215,24 @@ final class EnhancedRadioService implements IRadioService {
     if (token != null) {
       Logger.info('Restoring connection with stored token');
       _autoReconnectEnabled = true;
-      // Attempt connection with proper error handling instead of unawaited
-      final result = await _attemptConnect(token, isRetry: false);
-      if (result.isFailure) {
-        Logger.warning('Auto-reconnect failed: ${result.error}');
-        // Schedule retry instead of giving up
-        _scheduleRetry('Auto-reconnect failed on startup');
-      }
+
+      // Use unawaited for startup connection - let the state machine handle success/failure
+      // This prevents false "Auto-reconnect failed" messages when audio takes time to start
+      Logger.info('Starting background connection attempt...');
+      unawaited(_attemptConnect(token, isRetry: false).then((result) {
+        if (result.isFailure) {
+          Logger.warning('Auto-reconnect failed: ${result.error}');
+          // Only schedule retry if we're not already connected
+          if (!_currentState.isConnected) {
+            _scheduleRetry('Auto-reconnect failed on startup');
+          } else {
+            Logger.info(
+                'Auto-reconnect reported failure but we are connected - ignoring');
+          }
+        } else {
+          Logger.info('Auto-reconnect completed successfully');
+        }
+      }));
     } else {
       Logger.info('No stored token found');
       _updateState(const RadioStateDisconnected(message: 'Ready'));
@@ -239,42 +265,67 @@ final class EnhancedRadioService implements IRadioService {
 
     Logger.info('Attempting connection (attempt $attempt)');
 
-    return tryResultAsync(() async {
-      // Add timeout for the entire connection attempt
-      await Future.any([
-        _performConnection(token),
-        Future.delayed(const Duration(seconds: 30), () {
-          throw TimeoutException(
-              'Connection attempt timed out after 30 seconds');
-        })
-      ]);
+    // Add timeout for connecting state to prevent infinite "Reconnecting"
+    final connectingTimeout = Timer(const Duration(seconds: 45), () {
+      if (_currentState is RadioStateConnecting) {
+        Logger.error('Connection attempt timed out after 45 seconds');
+        _scheduleRetry('Connection timeout - retrying');
+      }
     });
+
+    try {
+      final result = await tryResultAsync(() async {
+        await _performConnection(token);
+      });
+
+      connectingTimeout.cancel();
+      return result;
+    } catch (e) {
+      connectingTimeout.cancel();
+      rethrow;
+    }
   }
 
   Future<void> _performConnection(String token) async {
-    // Fetch stream configuration with timeout
-    final config = await _apiService.getStreamConfig(token).timeout(
-          const Duration(seconds: 15),
-          onTimeout: () => throw TimeoutException('API request timed out'),
-        );
+    Logger.info('Starting connection process...');
 
-    if (config == null) {
-      throw ApiError(
-          message: 'Invalid token or server error', isFromBackend: true);
+    try {
+      // Fetch stream configuration with timeout
+      Logger.info('Fetching stream configuration...');
+      final config = await _apiService.getStreamConfig(token).timeout(
+            const Duration(seconds: 15),
+            onTimeout: () => throw TimeoutException('API request timed out'),
+          );
+
+      if (config == null) {
+        throw ApiError(
+            message: 'Invalid token or server error', isFromBackend: true);
+      }
+
+      Logger.info('Configuration received, saving...');
+      // Save token and configuration
+      await _storageService.saveToken(token);
+      await _storageService.saveLastVolume(config.volume);
+
+      // Start audio playbook - let AudioService handle its own timeouts
+      Logger.info('Starting audio playback...');
+      final playResult = await _audioService.playStream(config);
+
+      if (playResult.isFailure) {
+        throw Exception('Failed to start audio: ${playResult.error}');
+      }
+
+      Logger.info('Audio playback started, waiting for state confirmation...');
+      // Wait a bit for audio to actually start playing
+      // This gives time for the state machine to update
+      await Future.delayed(const Duration(milliseconds: 500));
+
+      Logger.info('Connection process completed successfully');
+      // State will be updated when audio starts playing via _handleAudioStateChange
+    } catch (e) {
+      Logger.error('Connection process failed: $e');
+      rethrow;
     }
-
-    // Save token and configuration
-    await _storageService.saveToken(token);
-    await _storageService.saveLastVolume(config.volume);
-
-    // Start audio playback
-    final playResult = await _audioService.playStream(config);
-    if (playResult.isFailure) {
-      throw Exception('Failed to start audio: ${playResult.error}');
-    }
-
-    Logger.info('Connection successful');
-    // State will be updated when audio starts playing via _handleAudioStateChange
   }
 
   @override
@@ -351,22 +402,11 @@ final class EnhancedRadioService implements IRadioService {
       return;
     }
 
-    // Check retry limits
-    if (!_retryManager.canRetry) {
-      Logger.warning('Maximum retry attempts reached');
-      _updateState(RadioStateError(
-        message:
-            'Maximum retry attempts reached. Please check your connection.',
-        canRetry: false,
-        attemptCount: _retryManager.currentAttempt,
-      ));
-      return;
-    }
-
     final delay = _retryManager.getNextDelay();
     _retryManager.recordAttempt();
 
-    Logger.info('Scheduling retry in ${delay.inSeconds}s (reason: $reason)');
+    Logger.info(
+        'Scheduling retry in ${delay.inSeconds}s (attempt ${_retryManager.currentAttempt}, reason: $reason)');
 
     _updateState(RadioStateError(
       message: reason,
@@ -379,6 +419,13 @@ final class EnhancedRadioService implements IRadioService {
       if (_autoReconnectEnabled && !_isDisposed) {
         Logger.info(
             'Executing scheduled retry attempt ${_retryManager.currentAttempt + 1}');
+
+        // Force reset any stuck connecting state before retry
+        if (_currentState is RadioStateConnecting) {
+          Logger.warning(
+              'Forcing reset of stuck connecting state before retry');
+        }
+
         unawaited(_attemptConnect(token, isRetry: true));
       }
     });
@@ -396,25 +443,47 @@ final class EnhancedRadioService implements IRadioService {
       try {
         final newConfig = await _apiService.getStreamConfig(connected.token);
         if (newConfig != null && newConfig != connected.config) {
-          Logger.info('Configuration updated');
+          Logger.info('Configuration updated - stream URL or settings changed');
 
-          // Update state with new configuration immediately
-          final updatedState = connected.copyWith(config: newConfig);
-          _updateState(updatedState);
+          // Only restart stream if critical parameters changed (URL, not just metadata)
+          final needsRestart =
+              newConfig.streamUrl != connected.config.streamUrl ||
+                  newConfig.volume != connected.config.volume;
 
-          // Restart stream with new configuration
-          await _audioService.stop();
-          final playResult = await _audioService.playStream(newConfig);
+          if (needsRestart) {
+            Logger.info('Stream restart required due to URL or volume change');
 
-          if (playResult.isFailure) {
-            Logger.error(
-                'Failed to restart with new config: ${playResult.error}');
-            _scheduleRetry('Failed to apply config update');
+            // Update state with new configuration immediately
+            final updatedState = connected.copyWith(config: newConfig);
+            _updateState(updatedState);
+
+            // Restart stream with new configuration
+            await _audioService.stop();
+            final playResult = await _audioService.playStream(newConfig);
+
+            if (playResult.isFailure) {
+              Logger.error(
+                  'Failed to restart with new config: ${playResult.error}');
+              _scheduleRetry('Failed to apply config update');
+            }
+          } else {
+            Logger.info(
+                'Configuration updated - metadata only, no restart needed');
+            // Just update the state without restarting stream
+            final updatedState = connected.copyWith(config: newConfig);
+            _updateState(updatedState);
           }
+        } else {
+          Logger.debug('Config refresh: no changes detected');
         }
       } catch (e) {
         Logger.error('Config refresh failed: $e');
-        // Don't trigger retry for config refresh failures
+        // Don't trigger retry for config refresh failures unless audio is actually broken
+        if (!_audioService.currentState.isPlaying) {
+          Logger.warning(
+              'Config refresh failed and audio not playing - may need retry');
+          _scheduleRetry('Config refresh failed with broken audio');
+        }
       }
     }
   }
@@ -478,7 +547,7 @@ final class EnhancedRadioService implements IRadioService {
   // Helper method to detect if we're stuck in connecting state too long
   bool _wasStuckInConnecting() {
     // If we've been in connecting state and made several attempts, we're likely stuck
-    return _retryManager.currentAttempt > 2;
+    return _retryManager.currentAttempt > 3;
   }
 
   @override
@@ -504,16 +573,15 @@ final class EnhancedRadioService implements IRadioService {
   }
 }
 
-/// Retry management with exponential backoff
+/// Retry management with fixed delay
 final class RetryManager {
   int _currentAttempt = 0;
-  static const int _maxAttempts = 10;
-  static const Duration _baseDelay = Duration(seconds: 5);
-  static const Duration _maxDelay = Duration(minutes: 5);
+  static const Duration _fixedDelay = Duration(seconds: 5);
 
   int get currentAttempt => _currentAttempt;
 
-  bool get canRetry => _currentAttempt < _maxAttempts;
+  // Always allow retry - no maximum attempts
+  bool get canRetry => true;
 
   void recordAttempt() {
     _currentAttempt++;
@@ -524,16 +592,8 @@ final class RetryManager {
   }
 
   Duration getNextDelay() {
-    if (_currentAttempt == 0) return _baseDelay;
-
-    // Exponential backoff with jitter
-    final baseDelayMs = _baseDelay.inMilliseconds;
-    final exponentialDelay = baseDelayMs * pow(2, min(_currentAttempt - 1, 5));
-    final jitter = Random().nextDouble() * 0.3; // 30% jitter
-    final delayMs = (exponentialDelay * (1 + jitter)).round();
-
-    final delay = Duration(milliseconds: delayMs);
-    return delay > _maxDelay ? _maxDelay : delay;
+    // Always return fixed 5 second delay
+    return _fixedDelay;
   }
 }
 
