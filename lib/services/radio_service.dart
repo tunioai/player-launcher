@@ -59,6 +59,13 @@ final class EnhancedRadioService implements IRadioService {
   final RetryManager _retryManager = RetryManager();
   Timer? _retryTimer;
 
+  // State monitoring for hung connections - CRITICAL for device reliability
+  Timer? _stateMonitorTimer;
+  DateTime? _connectingStateStartTime;
+  Timer? _forceRecoveryTimer;
+  String?
+      _currentConnectionStage; // Track which stage we're in for better diagnostics
+
   // Auto-start and reconnection
   bool _autoReconnectEnabled = false;
 
@@ -134,6 +141,9 @@ final class EnhancedRadioService implements IRadioService {
       _handleNetworkStateChange,
       onError: (error) => Logger.error('Network state stream error: $error'),
     );
+
+    // Start state monitoring for hung connections
+    _startStateMonitoring();
   }
 
   void _handleAudioStateChange(AudioState audioState) {
@@ -195,19 +205,35 @@ final class EnhancedRadioService implements IRadioService {
 
     if (networkState.isConnected && _autoReconnectEnabled) {
       // Network restored, attempt reconnection if needed
-      if (_currentState is RadioStateError ||
+      final shouldReconnect = _currentState is RadioStateError ||
           _currentState is RadioStateDisconnected ||
-          (_currentState is RadioStateConnecting && _wasStuckInConnecting())) {
+          (_currentState is RadioStateConnecting && _isConnectingTooLong());
+
+      if (shouldReconnect) {
         final token = _getStoredToken();
         if (token != null) {
-          Logger.info('Network restored, attempting auto-reconnection');
+          Logger.info(
+              'Network restored, attempting auto-reconnection (current state: ${_currentState.runtimeType})');
           // Cancel any existing retry timer before starting new attempt
           _retryTimer?.cancel();
           _retryManager.reset();
+
+          // Reset hung state tracking for fresh start
+          _connectingStateStartTime = null;
+
           unawaited(_attemptConnect(token, isRetry: true));
         }
       }
     }
+  }
+
+  bool _isConnectingTooLong() {
+    if (_connectingStateStartTime == null) return false;
+
+    final timeInConnecting =
+        DateTime.now().difference(_connectingStateStartTime!);
+    // Consider connecting "too long" if more than 15 seconds
+    return timeInConnecting.inSeconds > 15;
   }
 
   Future<void> _restoreState() async {
@@ -266,9 +292,10 @@ final class EnhancedRadioService implements IRadioService {
     Logger.info('Attempting connection (attempt $attempt)');
 
     // Add timeout for connecting state to prevent infinite "Reconnecting"
-    final connectingTimeout = Timer(const Duration(seconds: 45), () {
+    // Reduced from 45s to 20s for faster hung detection in autonomous devices
+    final connectingTimeout = Timer(const Duration(seconds: 20), () {
       if (_currentState is RadioStateConnecting) {
-        Logger.error('Connection attempt timed out after 45 seconds');
+        Logger.error('Connection attempt timed out after 20 seconds');
         _scheduleRetry('Connection timeout - retrying');
       }
     });
@@ -287,43 +314,83 @@ final class EnhancedRadioService implements IRadioService {
   }
 
   Future<void> _performConnection(String token) async {
-    Logger.info('Starting connection process...');
+    Logger.info('🔄 CONNECTION: ===== STARTING CONNECTION PROCESS =====');
+    final connectionStartTime = DateTime.now();
 
     try {
-      // Fetch stream configuration with timeout
-      Logger.info('Fetching stream configuration...');
+      // STAGE 1: Fetch stream configuration with timeout
+      _currentConnectionStage = 'API_REQUEST';
+      Logger.info('🔄 CONNECTION: STAGE 1 - Fetching stream configuration...');
+      final apiStartTime = DateTime.now();
+
       final config = await _apiService.getStreamConfig(token).timeout(
-            const Duration(seconds: 15),
-            onTimeout: () => throw TimeoutException('API request timed out'),
-          );
+        const Duration(seconds: 15),
+        onTimeout: () {
+          final elapsed = DateTime.now().difference(apiStartTime);
+          Logger.error(
+              '🔄 CONNECTION: API request timed out after ${elapsed.inSeconds}s');
+          throw TimeoutException('API request timed out');
+        },
+      );
 
       if (config == null) {
         throw ApiError(
             message: 'Invalid token or server error', isFromBackend: true);
       }
 
-      Logger.info('Configuration received, saving...');
-      // Save token and configuration
+      final apiDuration = DateTime.now().difference(apiStartTime);
+      Logger.info(
+          '🔄 CONNECTION: STAGE 1 COMPLETED - API response received in ${apiDuration.inMilliseconds}ms');
+      Logger.info('🔄 CONNECTION: Stream URL: ${config.streamUrl}');
+
+      // STAGE 2: Save configuration
+      _currentConnectionStage = 'SAVING_CONFIG';
+      Logger.info('🔄 CONNECTION: STAGE 2 - Saving configuration...');
       await _storageService.saveToken(token);
       await _storageService.saveLastVolume(config.volume);
+      Logger.info('🔄 CONNECTION: STAGE 2 COMPLETED - Configuration saved');
 
-      // Start audio playbook - let AudioService handle its own timeouts
-      Logger.info('Starting audio playback...');
-      final playResult = await _audioService.playStream(config);
+      // STAGE 3: Start audio playback with detailed monitoring
+      _currentConnectionStage = 'AUDIO_LOADING';
+      Logger.info('🔄 CONNECTION: STAGE 3 - Starting audio playback...');
+      final audioStartTime = DateTime.now();
+
+      final playResult = await _audioService.playStream(config).timeout(
+        const Duration(seconds: 25), // Timeout for audio operations
+        onTimeout: () {
+          final elapsed = DateTime.now().difference(audioStartTime);
+          Logger.error(
+              '🔄 CONNECTION: Audio playback timed out after ${elapsed.inSeconds}s');
+          throw TimeoutException('Audio playback timed out');
+        },
+      );
 
       if (playResult.isFailure) {
         throw Exception('Failed to start audio: ${playResult.error}');
       }
 
-      Logger.info('Audio playback started, waiting for state confirmation...');
-      // Wait a bit for audio to actually start playing
-      // This gives time for the state machine to update
+      final audioDuration = DateTime.now().difference(audioStartTime);
+      Logger.info(
+          '🔄 CONNECTION: STAGE 3 COMPLETED - Audio started in ${audioDuration.inMilliseconds}ms');
+
+      // STAGE 4: Wait for state confirmation
+      _currentConnectionStage = 'WAITING_CONFIRMATION';
+      Logger.info(
+          '🔄 CONNECTION: STAGE 4 - Waiting for audio state confirmation...');
       await Future.delayed(const Duration(milliseconds: 500));
 
-      Logger.info('Connection process completed successfully');
+      _currentConnectionStage = null; // Clear stage on success
+      final totalDuration = DateTime.now().difference(connectionStartTime);
+      Logger.info(
+          '🔄 CONNECTION: ===== CONNECTION PROCESS COMPLETED SUCCESSFULLY in ${totalDuration.inMilliseconds}ms =====');
+
       // State will be updated when audio starts playing via _handleAudioStateChange
     } catch (e) {
-      Logger.error('Connection process failed: $e');
+      final totalDuration = DateTime.now().difference(connectionStartTime);
+      final stage = _currentConnectionStage ?? 'UNKNOWN';
+      Logger.error(
+          '🔄 CONNECTION: ===== CONNECTION PROCESS FAILED at stage [$stage] after ${totalDuration.inMilliseconds}ms: $e =====');
+      _currentConnectionStage = null; // Clear stage on failure
       rethrow;
     }
   }
@@ -492,6 +559,17 @@ final class EnhancedRadioService implements IRadioService {
     if (_currentState != newState) {
       Logger.info(
           'Radio state transition: ${_currentState.runtimeType} → ${newState.runtimeType}');
+
+      // Track when we enter connecting state for hung detection
+      if (newState is RadioStateConnecting) {
+        _connectingStateStartTime = DateTime.now();
+        Logger.info(
+            'Entering connecting state - tracking start time for hung detection');
+      } else {
+        // Clear connecting time when leaving connecting state
+        _connectingStateStartTime = null;
+      }
+
       _currentState = newState;
       _stateController.add(_currentState);
     }
@@ -544,10 +622,89 @@ final class EnhancedRadioService implements IRadioService {
     _pingController.add(null);
   }
 
-  // Helper method to detect if we're stuck in connecting state too long
-  bool _wasStuckInConnecting() {
-    // If we've been in connecting state and made several attempts, we're likely stuck
-    return _retryManager.currentAttempt > 3;
+  void _startStateMonitoring() {
+    _stateMonitorTimer?.cancel();
+
+    // Monitor state every 10 seconds for hung connections
+    _stateMonitorTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      _checkForHungState();
+    });
+
+    Logger.info(
+        'State monitoring started - checking every 10s for hung connections');
+  }
+
+  void _checkForHungState() {
+    if (_isDisposed || !_autoReconnectEnabled) return;
+
+    final now = DateTime.now();
+
+    // Check if we're stuck in connecting state
+    if (_currentState is RadioStateConnecting &&
+        _connectingStateStartTime != null) {
+      final timeInConnecting = now.difference(_connectingStateStartTime!);
+      final stage = _currentConnectionStage ?? 'UNKNOWN_STAGE';
+
+      // If stuck in connecting for more than 30 seconds, force recovery
+      if (timeInConnecting.inSeconds > 30) {
+        Logger.error(
+            '🚨 CRITICAL: Detected hung connecting state for ${timeInConnecting.inSeconds}s at stage [$stage] - forcing recovery');
+        _forceConnectionRecovery(
+            'Hung connecting state detected at stage [$stage]');
+        return;
+      }
+
+      // Warn if connecting too long but not yet forcing recovery
+      if (timeInConnecting.inSeconds > 15) {
+        Logger.warning(
+            '⚠️ Connecting state prolonged: ${timeInConnecting.inSeconds}s at stage [$stage]');
+      }
+    }
+
+    // Additional check: if we're in error state for too long without retry
+    if (_currentState is RadioStateError) {
+      final errorState = _currentState as RadioStateError;
+      if (errorState.canRetry && _retryTimer == null) {
+        Logger.warning(
+            'Detected error state without active retry - forcing retry');
+        _forceConnectionRecovery('Error state without retry detected');
+      }
+    }
+  }
+
+  void _forceConnectionRecovery(String reason) {
+    Logger.error(
+        '🔧 FORCE RECOVERY: $reason - initiating immediate reconnection');
+
+    final token = _getStoredToken();
+    if (token == null) {
+      Logger.error('Cannot force recovery: no stored token');
+      _updateState(
+          const RadioStateDisconnected(message: 'No token for recovery'));
+      return;
+    }
+
+    // Cancel all existing timers and operations
+    _retryTimer?.cancel();
+    _forceRecoveryTimer?.cancel();
+
+    // Reset state tracking
+    _connectingStateStartTime = null;
+    _currentConnectionStage = null;
+    _retryManager.reset();
+
+    // Force immediate reconnection attempt
+    Logger.info('Forcing immediate reconnection attempt...');
+    unawaited(_attemptConnect(token, isRetry: true));
+  }
+
+  void _stopStateMonitoring() {
+    _stateMonitorTimer?.cancel();
+    _stateMonitorTimer = null;
+    _forceRecoveryTimer?.cancel();
+    _forceRecoveryTimer = null;
+    _connectingStateStartTime = null;
+    _currentConnectionStage = null;
   }
 
   @override
@@ -558,6 +715,7 @@ final class EnhancedRadioService implements IRadioService {
     Logger.info('Disposing RadioService');
 
     _autoReconnectEnabled = false;
+    _stopStateMonitoring();
     _retryTimer?.cancel();
     _configPollingTimer?.cancel();
     _stopPinging();

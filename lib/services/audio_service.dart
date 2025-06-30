@@ -71,9 +71,9 @@ final class EnhancedAudioService implements IAudioService {
   bool _isPlayingStream = false; // Protection against multiple playStream calls
 
   // Configuration
-  static const Duration _loadingTimeout = Duration(seconds: 30);
+  static const Duration _loadingTimeout = Duration(seconds: 20);
   static const Duration _hangDetectionInterval = Duration(seconds: 10);
-  static const Duration _maxHangTime = Duration(seconds: 45);
+  static const Duration _maxHangTime = Duration(seconds: 30);
 
   @override
   Stream<AudioState> get stateStream => _stateController.stream;
@@ -481,7 +481,8 @@ final class EnhancedAudioService implements IAudioService {
     _cancelTimeouts();
     _loadingTimeoutTimer = Timer(_loadingTimeout, () {
       if (_currentState is AudioStateLoading) {
-        Logger.error('Loading timeout after ${_loadingTimeout.inSeconds}s');
+        Logger.error(
+            'Loading timeout after ${_loadingTimeout.inSeconds}s - forcing retry');
         _currentState = AudioStateError(
           message: 'Loading timeout',
           config: _currentConfig,
@@ -601,13 +602,25 @@ final class EnhancedAudioService implements IAudioService {
         Logger.info(
             '🎵 AUDIO_DEBUG: Audio source created: ${audioSource.runtimeType}');
 
-        // Set audio source without timeout for live streams
+        // Set audio source with timeout to prevent hanging
         Logger.info('🎵 AUDIO_DEBUG: About to call setAudioSource...');
         Logger.info(
             '🎵 AUDIO_DEBUG: Current player state: ${_audioPlayer.playerState}');
         try {
-          final result = await _audioPlayer.setAudioSource(audioSource);
-          Logger.info('🎵 AUDIO_DEBUG: setAudioSource completed successfully');
+          final setSourceStartTime = DateTime.now();
+          final result = await _audioPlayer.setAudioSource(audioSource).timeout(
+            const Duration(seconds: 15), // Timeout for setAudioSource
+            onTimeout: () {
+              final elapsed = DateTime.now().difference(setSourceStartTime);
+              Logger.error(
+                  '🎵 AUDIO_DEBUG: setAudioSource timed out after ${elapsed.inSeconds}s');
+              throw TimeoutException('setAudioSource operation timed out');
+            },
+          );
+          final setSourceDuration =
+              DateTime.now().difference(setSourceStartTime);
+          Logger.info(
+              '🎵 AUDIO_DEBUG: setAudioSource completed successfully in ${setSourceDuration.inMilliseconds}ms');
           Logger.info('🎵 AUDIO_DEBUG: setAudioSource result: $result');
           Logger.info(
               '🎵 AUDIO_DEBUG: Player state after setAudioSource: ${_audioPlayer.playerState}');
@@ -629,7 +642,7 @@ final class EnhancedAudioService implements IAudioService {
           rethrow;
         }
 
-        // Start playback without timeout for live streams
+        // Start playback with timeout to prevent hanging
         Logger.info('🎵 AUDIO_DEBUG: About to call play()...');
         Logger.info(
             '🎵 AUDIO_DEBUG: Player state before play(): ${_audioPlayer.playerState}');
@@ -638,8 +651,19 @@ final class EnhancedAudioService implements IAudioService {
         Logger.info(
             '🎵 AUDIO_DEBUG: Player duration before play(): ${_audioPlayer.duration}');
         try {
-          await _audioPlayer.play();
-          Logger.info('🎵 AUDIO_DEBUG: play() completed successfully');
+          final playStartTime = DateTime.now();
+          await _audioPlayer.play().timeout(
+            const Duration(seconds: 10), // Timeout for play operation
+            onTimeout: () {
+              final elapsed = DateTime.now().difference(playStartTime);
+              Logger.error(
+                  '🎵 AUDIO_DEBUG: play() timed out after ${elapsed.inSeconds}s');
+              throw TimeoutException('play operation timed out');
+            },
+          );
+          final playDuration = DateTime.now().difference(playStartTime);
+          Logger.info(
+              '🎵 AUDIO_DEBUG: play() completed successfully in ${playDuration.inMilliseconds}ms');
           Logger.info(
               '🎵 AUDIO_DEBUG: Player state after play(): ${_audioPlayer.playerState}');
           Logger.info(

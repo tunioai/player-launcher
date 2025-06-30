@@ -8,7 +8,7 @@ import '../utils/logger.dart';
 
 class ApiService {
   static const String baseUrl = 'https://api.tunio.ai';
-  static const Duration timeout = Duration(seconds: 30);
+  static const Duration timeout = Duration(seconds: 15);
 
   Future<StreamConfig?> getStreamConfig(String pin) async {
     if (pin.isEmpty) return null;
