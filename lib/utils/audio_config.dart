@@ -4,7 +4,7 @@ import '../utils/logger.dart';
 class AudioConfig {
   // Two-level buffering strategy (like YouTube)
   // Level 1: Quick start with minimal buffer
-  static const Duration quickStartBuffer = Duration(seconds: 3);
+  static const Duration quickStartBuffer = Duration(seconds: 5);
 
   // Level 2: Target buffer during playback
   static const Duration targetPlaybackBuffer = Duration(seconds: 15);
@@ -51,8 +51,7 @@ class AudioConfig {
       Duration(seconds: 6); // Slow networks
 
   // Simple live stream settings - no complex buffering
-  static const Duration simpleMinBuffer =
-      Duration(seconds: 2); // Minimal buffer
+  static const Duration simpleMinBuffer = Duration(seconds: 5); // Stable buffer
   static const Duration simpleMaxBuffer =
       Duration(seconds: 10); // Reasonable maximum
   static const int simpleTargetBytes =
@@ -64,7 +63,7 @@ class AudioConfig {
         // OPTIMIZED: Android-specific buffering strategy
         minBufferDuration: quickStartBuffer, // Start with 3s minimum
         maxBufferDuration: maxBufferDuration, // Build up to 60s maximum
-        bufferForPlaybackDuration: Duration(seconds: 2), // Quick start (2s)
+        bufferForPlaybackDuration: Duration(seconds: 5), // Stable start (5s)
         bufferForPlaybackAfterRebufferDuration:
             rebufferPlaybackBuffer, // Recovery (8s)
         targetBufferBytes:
@@ -122,7 +121,7 @@ class AudioConfig {
         minBufferDuration: Duration(seconds: 5), // Simple minimum
         maxBufferDuration:
             Duration(seconds: 60), // Increased to 60s to allow more buffer
-        bufferForPlaybackDuration: Duration(seconds: 3), // Quick start
+        bufferForPlaybackDuration: Duration(seconds: 5), // Stable start
         bufferForPlaybackAfterRebufferDuration: Duration(seconds: 5), // Resume
         targetBufferBytes:
             8 * 1024 * 1024, // 8MB - increased to force more buffering
@@ -145,8 +144,7 @@ class AudioConfig {
         // Conservative improvements to simple config
         minBufferDuration: Duration(seconds: 5), // Keep same
         maxBufferDuration: Duration(seconds: 45), // Modest increase 30->45
-        bufferForPlaybackDuration:
-            Duration(seconds: 2), // Slightly faster start
+        bufferForPlaybackDuration: Duration(seconds: 5), // Stable start
         bufferForPlaybackAfterRebufferDuration:
             Duration(seconds: 6), // Slightly more recovery
         targetBufferBytes: 5 * 1024 * 1024, // Modest increase to 5MB
@@ -169,7 +167,7 @@ class AudioConfig {
         // Very aggressive buffering for Android devices with buffer issues
         minBufferDuration: Duration(seconds: 2), // Quick start
         maxBufferDuration: Duration(seconds: 90), // Allow large buffers
-        bufferForPlaybackDuration: Duration(seconds: 1), // Start very fast
+        bufferForPlaybackDuration: Duration(seconds: 5), // Stable start
         bufferForPlaybackAfterRebufferDuration:
             Duration(seconds: 5), // Resume fast
         targetBufferBytes: 16 * 1024 * 1024, // 16MB target
@@ -193,7 +191,7 @@ class AudioConfig {
         // TV-optimized buffering
         minBufferDuration: Duration(seconds: 3), // TV quick start
         maxBufferDuration: Duration(seconds: 45), // TV memory constraints
-        bufferForPlaybackDuration: Duration(seconds: 1), // Start faster on TV
+        bufferForPlaybackDuration: Duration(seconds: 5), // Stable start on TV
         bufferForPlaybackAfterRebufferDuration:
             Duration(seconds: 3), // Resume faster
         targetBufferBytes: tvTargetBufferBytes, // 4MB for TV
@@ -217,7 +215,7 @@ class AudioConfig {
         minBufferDuration: simpleMinBuffer, // 2s minimum
         maxBufferDuration:
             simpleMaxBuffer, // 10s maximum - prevent infinite growth
-        bufferForPlaybackDuration: Duration(seconds: 1), // Quick start
+        bufferForPlaybackDuration: Duration(seconds: 5), // Stable start
         bufferForPlaybackAfterRebufferDuration:
             Duration(seconds: 3), // Quick recovery
         targetBufferBytes: simpleTargetBytes, // 2MB - simple target

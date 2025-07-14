@@ -169,21 +169,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Future<void> _disconnect() async {
-    final result = await _radioService.disconnect();
-    result.fold(
-      (_) {
-        Logger.info('HomeScreen: Disconnected successfully');
-        setState(() {
-          _currentCode = '';
-        });
-      },
-      (error) {
-        Logger.error('HomeScreen: Disconnect failed: $error');
-        _showError(error);
-      },
-    );
-  }
 
   Future<void> _playPause() async {
     final result = await _radioService.playPause();
@@ -376,6 +361,14 @@ class _HomeScreenState extends State<HomeScreen> {
                           _currentCode = code;
                         });
                       },
+                      onTap: () {
+                        if (!_radioState.isConnected &&
+                            !_radioState.isConnecting) {
+                          setState(() {
+                            _currentCode = '';
+                          });
+                        }
+                      },
                       onSubmitted: () {
                         if (!_radioState.isConnecting &&
                             !_radioState.isConnected) {
@@ -387,49 +380,68 @@ class _HomeScreenState extends State<HomeScreen> {
                       focusNode: _codeFocusNode,
                     ),
                     const SizedBox(height: 12),
-                    Focus(
-                      focusNode: _connectButtonFocusNode,
-                      child: ElevatedButton.icon(
-                        onPressed: _radioState.isConnecting
-                            ? null
-                            : (_radioState.isConnected
-                                ? _disconnect
-                                : _connect),
-                        icon: _radioState.isConnecting
-                            ? const SizedBox(
-                                width: 16,
-                                height: 16,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  valueColor: AlwaysStoppedAnimation<Color>(
-                                      Colors.white),
-                                ),
-                              )
-                            : Icon(_radioState.isConnected
-                                ? Icons.logout
-                                : Icons.login),
-                        label: Text(_radioState.isConnecting
-                            ? 'Connecting...'
-                            : (_radioState.isConnected
-                                ? 'Disconnect'
-                                : 'Connect')),
-                        style: ElevatedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 10),
-                          backgroundColor: _radioState.isConnecting
-                              ? TunioColors.primary.withValues(alpha: 0.7)
-                              : (_radioState.isConnected
-                                  ? Colors.red
-                                  : TunioColors.primary),
-                          foregroundColor: Colors.white,
-                          disabledBackgroundColor:
-                              TunioColors.primary.withValues(alpha: 0.7),
-                          disabledForegroundColor: Colors.white,
-                          side: _connectButtonFocusNode.hasFocus
-                              ? BorderSide(color: TunioColors.primary, width: 2)
-                              : null,
+                    // Only show connect button if not connected
+                    if (!_radioState.isConnected)
+                      Focus(
+                        focusNode: _connectButtonFocusNode,
+                        child: ElevatedButton.icon(
+                          onPressed: _radioState.isConnecting ? null : _connect,
+                          icon: _radioState.isConnecting
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    valueColor: AlwaysStoppedAnimation<Color>(
+                                        Colors.white),
+                                  ),
+                                )
+                              : const Icon(Icons.login),
+                          label: Text(_radioState.isConnecting
+                              ? 'Connecting...'
+                              : 'Connect'),
+                          style: ElevatedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 10),
+                            backgroundColor: _radioState.isConnecting
+                                ? TunioColors.primary.withValues(alpha: 0.7)
+                                : TunioColors.primary,
+                            foregroundColor: Colors.white,
+                            disabledBackgroundColor:
+                                TunioColors.primary.withValues(alpha: 0.7),
+                            disabledForegroundColor: Colors.white,
+                            side: _connectButtonFocusNode.hasFocus
+                                ? BorderSide(color: TunioColors.primary, width: 2)
+                                : null,
+                          ),
+                        ),
+                      )
+                    else
+                      // Show connected status instead of disconnect button
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: Colors.green.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                            color: Colors.green.withValues(alpha: 0.3),
+                          ),
+                        ),
+                        child: const Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.check_circle, color: Colors.green),
+                            SizedBox(width: 8),
+                            Text(
+                              'Connected - Running in Background',
+                              style: TextStyle(
+                                color: Colors.green,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                    ),
                   ],
                 ),
               ),

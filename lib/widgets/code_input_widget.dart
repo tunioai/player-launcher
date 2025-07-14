@@ -7,6 +7,7 @@ class CodeInputWidget extends StatefulWidget {
   final String value;
   final ValueChanged<String> onChanged;
   final VoidCallback? onSubmitted;
+  final VoidCallback? onTap;
   final bool enabled;
   final FocusNode? focusNode;
 
@@ -15,6 +16,7 @@ class CodeInputWidget extends StatefulWidget {
     required this.value,
     required this.onChanged,
     this.onSubmitted,
+    this.onTap,
     this.enabled = true,
     this.focusNode,
   });
@@ -192,7 +194,12 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
           ),
         ),
         GestureDetector(
-          onTap: widget.enabled ? () => _focusNode.requestFocus() : null,
+          onTap: widget.enabled
+              ? () {
+                  widget.onTap?.call();
+                  _focusNode.requestFocus();
+                }
+              : null,
           child: Container(
             width: double.infinity,
             padding: const EdgeInsets.symmetric(vertical: 12),
@@ -256,6 +263,7 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
               LengthLimitingTextInputFormatter(_codeLength),
             ],
             onChanged: _onTextChanged,
+            onTap: widget.onTap,
             onSubmitted: (_) {
               if (_digits.join('').length == _codeLength) {
                 widget.onSubmitted?.call();

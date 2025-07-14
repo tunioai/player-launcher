@@ -5,7 +5,7 @@ class BufferConfig {
   /// How long to buffer before starting playback (fast start)
   /// Lower = faster start, but more likely to stutter
   /// Higher = slower start, but more stable
-  static const Duration quickStartBuffer = Duration(seconds: 2);
+  static const Duration quickStartBuffer = Duration(seconds: 5);
 
   /// === TARGET BUFFER SETTINGS ===
   /// Target buffer during normal playback
@@ -53,7 +53,7 @@ class BufferConfig {
 
   /// Preset for fast devices with good network
   static BufferConfig get fastDevice => BufferConfig._(
-        quickStart: Duration(seconds: 1),
+        quickStart: Duration(seconds: 5),
         target: Duration(seconds: 20),
         max: Duration(seconds: 90),
         rebuffer: Duration(seconds: 5),
@@ -61,7 +61,7 @@ class BufferConfig {
 
   /// Preset for slow devices or poor network
   static BufferConfig get slowDevice => BufferConfig._(
-        quickStart: Duration(seconds: 3),
+        quickStart: Duration(seconds: 5),
         target: Duration(seconds: 10),
         max: Duration(seconds: 30),
         rebuffer: Duration(seconds: 10),
@@ -69,7 +69,7 @@ class BufferConfig {
 
   /// Preset for Android TV / Set-top boxes
   static BufferConfig get androidTV => BufferConfig._(
-        quickStart: Duration(seconds: 1),
+        quickStart: Duration(seconds: 5),
         target: Duration(seconds: 8),
         max: Duration(seconds: 25),
         rebuffer: Duration(seconds: 6),

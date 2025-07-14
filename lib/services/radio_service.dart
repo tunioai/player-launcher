@@ -68,6 +68,7 @@ final class EnhancedRadioService implements IRadioService {
 
   // Auto-start and reconnection
   bool _autoReconnectEnabled = false;
+  bool _isConnectionInProgress = false; // Prevent multiple simultaneous connections
 
   // Initialization
   final Completer<void> _initializationCompleter = Completer<void>();
@@ -162,7 +163,7 @@ final class EnhancedRadioService implements IRadioService {
           // Faster detection - wait only 3 seconds for stream loss
           Timer(const Duration(seconds: 3), () {
             // Check if we're still in error state after delay
-            if (_currentState is RadioStateConnected) {
+            if (_currentState is RadioStateConnected && !_isConnectionInProgress) {
               final currentAudioState =
                   (_currentState as RadioStateConnected).audioState;
               if (currentAudioState is AudioStateError &&
@@ -245,6 +246,10 @@ final class EnhancedRadioService implements IRadioService {
       // Use unawaited for startup connection - let the state machine handle success/failure
       // This prevents false "Auto-reconnect failed" messages when audio takes time to start
       Logger.info('Starting background connection attempt...');
+      
+      // Wait a bit to ensure services are fully initialized
+      await Future.delayed(const Duration(milliseconds: 500));
+      
       unawaited(_attemptConnect(token, isRetry: false).then((result) {
         if (result.isFailure) {
           Logger.warning('Auto-reconnect failed: ${result.error}');
@@ -282,6 +287,15 @@ final class EnhancedRadioService implements IRadioService {
 
   Future<Result<void>> _attemptConnect(String token,
       {required bool isRetry}) async {
+    
+    // Prevent multiple simultaneous connection attempts
+    if (_isConnectionInProgress) {
+      Logger.warning('Connection already in progress, skipping duplicate attempt');
+      return const Success(null);
+    }
+    
+    _isConnectionInProgress = true;
+    
     final attempt = isRetry ? _retryManager.currentAttempt + 1 : 1;
 
     _updateState(RadioStateConnecting(
@@ -292,10 +306,11 @@ final class EnhancedRadioService implements IRadioService {
     Logger.info('Attempting connection (attempt $attempt)');
 
     // Add timeout for connecting state to prevent infinite "Reconnecting"
-    // Reduced from 45s to 20s for faster hung detection in autonomous devices
-    final connectingTimeout = Timer(const Duration(seconds: 20), () {
-      if (_currentState is RadioStateConnecting) {
-        Logger.error('Connection attempt timed out after 20 seconds');
+    // Reduced from 45s to 15s for faster hung detection in autonomous devices
+    final connectingTimeout = Timer(const Duration(seconds: 15), () {
+      if (_currentState is RadioStateConnecting && _isConnectionInProgress) {
+        Logger.error('Connection attempt timed out after 15 seconds');
+        _isConnectionInProgress = false; // Reset connection flag
         _scheduleRetry('Connection timeout - retrying');
       }
     });
@@ -310,6 +325,8 @@ final class EnhancedRadioService implements IRadioService {
     } catch (e) {
       connectingTimeout.cancel();
       rethrow;
+    } finally {
+      _isConnectionInProgress = false;
     }
   }
 
@@ -401,6 +418,7 @@ final class EnhancedRadioService implements IRadioService {
       Logger.info('Disconnecting');
 
       _autoReconnectEnabled = false;
+      _isConnectionInProgress = false;
       _retryTimer?.cancel();
       _configPollingTimer?.cancel();
       _stopPinging();
@@ -469,6 +487,15 @@ final class EnhancedRadioService implements IRadioService {
       return;
     }
 
+    // Don't schedule if connection is in progress
+    if (_isConnectionInProgress) {
+      Logger.warning('Connection in progress, skipping retry scheduling');
+      return;
+    }
+
+    // Always allow retry for autonomous background operation
+    // No maximum attempts - device must keep trying indefinitely
+
     final delay = _retryManager.getNextDelay();
     _retryManager.recordAttempt();
 
@@ -483,7 +510,7 @@ final class EnhancedRadioService implements IRadioService {
 
     _retryTimer?.cancel();
     _retryTimer = Timer(delay, () {
-      if (_autoReconnectEnabled && !_isDisposed) {
+      if (_autoReconnectEnabled && !_isDisposed && !_isConnectionInProgress) {
         Logger.info(
             'Executing scheduled retry attempt ${_retryManager.currentAttempt + 1}');
 
@@ -684,6 +711,12 @@ final class EnhancedRadioService implements IRadioService {
       return;
     }
 
+    // Don't force recovery if connection is in progress
+    if (_isConnectionInProgress) {
+      Logger.warning('Connection in progress, skipping force recovery');
+      return;
+    }
+
     // Cancel all existing timers and operations
     _retryTimer?.cancel();
     _forceRecoveryTimer?.cancel();
@@ -692,6 +725,7 @@ final class EnhancedRadioService implements IRadioService {
     _connectingStateStartTime = null;
     _currentConnectionStage = null;
     _retryManager.reset();
+    _isConnectionInProgress = false; // Reset connection flag
 
     // Force immediate reconnection attempt
     Logger.info('Forcing immediate reconnection attempt...');
@@ -715,6 +749,7 @@ final class EnhancedRadioService implements IRadioService {
     Logger.info('Disposing RadioService');
 
     _autoReconnectEnabled = false;
+    _isConnectionInProgress = false; // Reset connection flag
     _stopStateMonitoring();
     _retryTimer?.cancel();
     _configPollingTimer?.cancel();
@@ -738,7 +773,7 @@ final class RetryManager {
 
   int get currentAttempt => _currentAttempt;
 
-  // Always allow retry - no maximum attempts
+  // Always allow retry - no maximum attempts for autonomous background operation
   bool get canRetry => true;
 
   void recordAttempt() {

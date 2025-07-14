@@ -69,6 +69,7 @@ final class EnhancedAudioService implements IAudioService {
   bool _isInitialized = false;
   bool _isDisposed = false;
   bool _isPlayingStream = false; // Protection against multiple playStream calls
+  String? _currentStreamUrl; // Track current stream URL to prevent duplicate connections
 
   // Configuration
   static const Duration _loadingTimeout = Duration(seconds: 20);
@@ -561,15 +562,25 @@ final class EnhancedAudioService implements IAudioService {
       Logger.info('🎵 AUDIO_DEBUG: Volume: ${config.volume}');
       Logger.info(
           '🎵 AUDIO_DEBUG: Current _isPlayingStream: $_isPlayingStream');
+      Logger.info(
+          '🎵 AUDIO_DEBUG: Current stream URL: $_currentStreamUrl');
 
-      // Prevent multiple simultaneous playStream calls
-      if (_isPlayingStream) {
+      // Check if we're already playing the same stream
+      if (_isPlayingStream && _currentStreamUrl == config.streamUrl) {
         Logger.warning(
-            '🎵 AUDIO_DEBUG: ⚠️ playStream already in progress, ignoring duplicate call');
-        return; // Simply ignore duplicate calls instead of interrupting
+            '🎵 AUDIO_DEBUG: ⚠️ Already playing the same stream, ignoring duplicate call');
+        return; // Simply ignore duplicate calls for the same stream
+      }
+
+      // If we're playing a different stream, stop the current one first
+      if (_isPlayingStream && _currentStreamUrl != config.streamUrl) {
+        Logger.info('🎵 AUDIO_DEBUG: Stopping current stream to play new one');
+        await _audioPlayer.stop();
+        _isPlayingStream = false;
       }
 
       _isPlayingStream = true;
+      _currentStreamUrl = config.streamUrl;
       Logger.info('🎵 AUDIO_DEBUG: Set _isPlayingStream = true');
 
       try {
@@ -710,6 +721,7 @@ final class EnhancedAudioService implements IAudioService {
       // Clear stream tracking
       _streamStartTime = null;
       _isPlayingStream = false; // Reset flag on stop
+      _currentStreamUrl = null; // Clear stream URL tracking
 
       _currentState = const AudioStateIdle();
       _stateController.add(_currentState);
