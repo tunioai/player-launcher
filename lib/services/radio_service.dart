@@ -68,7 +68,8 @@ final class EnhancedRadioService implements IRadioService {
 
   // Auto-start and reconnection
   bool _autoReconnectEnabled = false;
-  bool _isConnectionInProgress = false; // Prevent multiple simultaneous connections
+  bool _isConnectionInProgress =
+      false; // Prevent multiple simultaneous connections
 
   // Initialization
   final Completer<void> _initializationCompleter = Completer<void>();
@@ -163,7 +164,8 @@ final class EnhancedRadioService implements IRadioService {
           // Faster detection - wait only 3 seconds for stream loss
           Timer(const Duration(seconds: 3), () {
             // Check if we're still in error state after delay
-            if (_currentState is RadioStateConnected && !_isConnectionInProgress) {
+            if (_currentState is RadioStateConnected &&
+                !_isConnectionInProgress) {
               final currentAudioState =
                   (_currentState as RadioStateConnected).audioState;
               if (currentAudioState is AudioStateError &&
@@ -246,10 +248,10 @@ final class EnhancedRadioService implements IRadioService {
       // Use unawaited for startup connection - let the state machine handle success/failure
       // This prevents false "Auto-reconnect failed" messages when audio takes time to start
       Logger.info('Starting background connection attempt...');
-      
+
       // Wait a bit to ensure services are fully initialized
       await Future.delayed(const Duration(milliseconds: 500));
-      
+
       unawaited(_attemptConnect(token, isRetry: false).then((result) {
         if (result.isFailure) {
           Logger.warning('Auto-reconnect failed: ${result.error}');
@@ -287,15 +289,15 @@ final class EnhancedRadioService implements IRadioService {
 
   Future<Result<void>> _attemptConnect(String token,
       {required bool isRetry}) async {
-    
     // Prevent multiple simultaneous connection attempts
     if (_isConnectionInProgress) {
-      Logger.warning('Connection already in progress, skipping duplicate attempt');
+      Logger.warning(
+          'Connection already in progress, skipping duplicate attempt');
       return const Success(null);
     }
-    
+
     _isConnectionInProgress = true;
-    
+
     final attempt = isRetry ? _retryManager.currentAttempt + 1 : 1;
 
     _updateState(RadioStateConnecting(

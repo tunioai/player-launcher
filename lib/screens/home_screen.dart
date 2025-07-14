@@ -169,7 +169,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-
   Future<void> _playPause() async {
     final result = await _radioService.playPause();
     result.fold(
@@ -410,7 +409,8 @@ class _HomeScreenState extends State<HomeScreen> {
                                 TunioColors.primary.withValues(alpha: 0.7),
                             disabledForegroundColor: Colors.white,
                             side: _connectButtonFocusNode.hasFocus
-                                ? BorderSide(color: TunioColors.primary, width: 2)
+                                ? BorderSide(
+                                    color: TunioColors.primary, width: 2)
                                 : null,
                           ),
                         ),

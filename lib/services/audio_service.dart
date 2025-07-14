@@ -69,7 +69,8 @@ final class EnhancedAudioService implements IAudioService {
   bool _isInitialized = false;
   bool _isDisposed = false;
   bool _isPlayingStream = false; // Protection against multiple playStream calls
-  String? _currentStreamUrl; // Track current stream URL to prevent duplicate connections
+  String?
+      _currentStreamUrl; // Track current stream URL to prevent duplicate connections
 
   // Configuration
   static const Duration _loadingTimeout = Duration(seconds: 20);
@@ -562,8 +563,7 @@ final class EnhancedAudioService implements IAudioService {
       Logger.info('🎵 AUDIO_DEBUG: Volume: ${config.volume}');
       Logger.info(
           '🎵 AUDIO_DEBUG: Current _isPlayingStream: $_isPlayingStream');
-      Logger.info(
-          '🎵 AUDIO_DEBUG: Current stream URL: $_currentStreamUrl');
+      Logger.info('🎵 AUDIO_DEBUG: Current stream URL: $_currentStreamUrl');
 
       // Check if we're already playing the same stream
       if (_isPlayingStream && _currentStreamUrl == config.streamUrl) {

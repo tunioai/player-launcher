@@ -40,16 +40,15 @@ class ConnectionMonitor {
   static void _cleanupStaleConnections() {
     final now = DateTime.now();
     final staleConnections = <String>[];
-    
+
     _activeConnections.forEach((id, startTime) {
       if (now.difference(startTime) > _maxConnectionAge) {
         staleConnections.add(id);
       }
     });
-    
+
     for (final id in staleConnections) {
-      Logger.warning(
-          '📊 ConnectionMonitor: Cleaning up stale connection [$id]',
+      Logger.warning('📊 ConnectionMonitor: Cleaning up stale connection [$id]',
           'ConnectionMonitor');
       _activeConnections.remove(id);
     }
@@ -74,7 +73,7 @@ class ConnectionMonitor {
   }
 
   static int get activeConnectionCount => _activeConnections.length;
-  
+
   static void dispose() {
     _cleanupTimer?.cancel();
     _activeConnections.clear();
