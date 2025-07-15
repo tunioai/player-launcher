@@ -369,73 +369,76 @@ class _HomeScreenState extends State<HomeScreen> {
                         }
                       },
                       onSubmitted: () {
-                        if (!_radioState.isConnecting &&
-                            !_radioState.isConnected) {
+                        if (!_radioState.isConnecting) {
                           _connect();
                         }
                       },
-                      enabled:
-                          !_radioState.isConnected && !_radioState.isConnecting,
+                      enabled: !_radioState.isConnecting,
                       focusNode: _codeFocusNode,
                     ),
                     const SizedBox(height: 12),
-                    // Only show connect button if not connected
-                    if (!_radioState.isConnected)
-                      Focus(
-                        focusNode: _connectButtonFocusNode,
-                        child: ElevatedButton.icon(
-                          onPressed: _radioState.isConnecting ? null : _connect,
-                          icon: _radioState.isConnecting
-                              ? const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    valueColor: AlwaysStoppedAnimation<Color>(
-                                        Colors.white),
-                                  ),
-                                )
-                              : const Icon(Icons.login),
-                          label: Text(_radioState.isConnecting
-                              ? 'Connecting...'
-                              : 'Connect'),
-                          style: ElevatedButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(vertical: 10),
-                            backgroundColor: _radioState.isConnecting
-                                ? TunioColors.primary.withValues(alpha: 0.7)
-                                : TunioColors.primary,
-                            foregroundColor: Colors.white,
-                            disabledBackgroundColor:
-                                TunioColors.primary.withValues(alpha: 0.7),
-                            disabledForegroundColor: Colors.white,
-                            side: _connectButtonFocusNode.hasFocus
-                                ? BorderSide(
-                                    color: TunioColors.primary, width: 2)
-                                : null,
-                          ),
+                    Focus(
+                      focusNode: _connectButtonFocusNode,
+                      child: ElevatedButton.icon(
+                        onPressed: _radioState.isConnecting ? null : _connect,
+                        icon: _radioState.isConnecting
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  valueColor: AlwaysStoppedAnimation<Color>(
+                                      Colors.white),
+                                ),
+                              )
+                            : Icon(_radioState.isConnected
+                                ? Icons.sync
+                                : Icons.login),
+                        label: Text(_radioState.isConnecting
+                            ? 'Connecting...'
+                            : (_radioState.isConnected
+                                ? 'Change PIN & Reconnect'
+                                : 'Connect')),
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 10),
+                          backgroundColor: _radioState.isConnecting
+                              ? TunioColors.primary.withValues(alpha: 0.7)
+                              : TunioColors.primary,
+                          foregroundColor: Colors.white,
+                          disabledBackgroundColor:
+                              TunioColors.primary.withValues(alpha: 0.7),
+                          disabledForegroundColor: Colors.white,
+                          side: _connectButtonFocusNode.hasFocus
+                              ? BorderSide(color: TunioColors.primary, width: 2)
+                              : null,
                         ),
-                      )
-                    else
-                      // Show connected status instead of disconnect button
+                      ),
+                    ),
+
+                    // Show connected status if connected
+                    if (_radioState.isConnected)
                       Container(
+                        margin: const EdgeInsets.only(top: 8),
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 12),
+                            horizontal: 12, vertical: 8),
                         decoration: BoxDecoration(
                           color: Colors.green.withValues(alpha: 0.1),
-                          borderRadius: BorderRadius.circular(8),
+                          borderRadius: BorderRadius.circular(6),
                           border: Border.all(
                             color: Colors.green.withValues(alpha: 0.3),
                           ),
                         ),
-                        child: const Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(Icons.check_circle, color: Colors.green),
-                            SizedBox(width: 8),
+                            const Icon(Icons.check_circle,
+                                color: Colors.green, size: 16),
+                            const SizedBox(width: 6),
                             Text(
                               'Connected - Running in Background',
                               style: TextStyle(
                                 color: Colors.green,
+                                fontSize: 12,
                                 fontWeight: FontWeight.w600,
                               ),
                             ),

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'core/service_locator.dart';
+import 'services/storage_service.dart';
 
 import 'screens/home_screen.dart';
 import 'utils/logger.dart';
@@ -31,12 +32,32 @@ class TunioApp extends StatefulWidget {
 
 class _TunioAppState extends State<TunioApp> with WidgetsBindingObserver {
   ThemeMode _themeMode = ThemeMode.system;
+  late StorageService _storageService;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _setupSystemUI();
+    _loadThemePreference();
+  }
+
+  void _loadThemePreference() async {
+    try {
+      _storageService = await StorageService.getInstance();
+      final isDarkModeEnabled = _storageService.isDarkModeEnabled();
+
+      if (isDarkModeEnabled != null) {
+        setState(() {
+          _themeMode = isDarkModeEnabled ? ThemeMode.dark : ThemeMode.light;
+        });
+        Logger.info('Theme loaded: ${isDarkModeEnabled ? "Dark" : "Light"}');
+      } else {
+        Logger.info('No theme preference found, using system default');
+      }
+    } catch (e) {
+      Logger.error('Failed to load theme preference: $e');
+    }
   }
 
   @override
@@ -53,11 +74,22 @@ class _TunioAppState extends State<TunioApp> with WidgetsBindingObserver {
     ));
   }
 
-  void _toggleTheme() {
+  void _toggleTheme() async {
+    final newThemeMode =
+        _themeMode == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark;
+
     setState(() {
-      _themeMode =
-          _themeMode == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark;
+      _themeMode = newThemeMode;
     });
+
+    // Save theme preference
+    try {
+      await _storageService.setDarkModeEnabled(newThemeMode == ThemeMode.dark);
+      Logger.info(
+          'Theme saved: ${newThemeMode == ThemeMode.dark ? "Dark" : "Light"}');
+    } catch (e) {
+      Logger.error('Failed to save theme preference: $e');
+    }
   }
 
   @override
