@@ -37,7 +37,6 @@ class _HomeScreenState extends State<HomeScreen> {
   final FocusNode _codeFocusNode = FocusNode();
   final FocusNode _connectButtonFocusNode = FocusNode();
   final FocusNode _playButtonFocusNode = FocusNode();
-  final FocusNode _volumeFocusNode = FocusNode();
   final FocusNode _themeButtonFocusNode = FocusNode();
 
   // State
@@ -70,7 +69,6 @@ class _HomeScreenState extends State<HomeScreen> {
     _codeFocusNode.dispose();
     _connectButtonFocusNode.dispose();
     _playButtonFocusNode.dispose();
-    _volumeFocusNode.dispose();
     _themeButtonFocusNode.dispose();
     super.dispose();
   }
@@ -79,7 +77,6 @@ class _HomeScreenState extends State<HomeScreen> {
     _codeFocusNode.addListener(() => setState(() {}));
     _connectButtonFocusNode.addListener(() => setState(() {}));
     _playButtonFocusNode.addListener(() => setState(() {}));
-    _volumeFocusNode.addListener(() => setState(() {}));
     _themeButtonFocusNode.addListener(() => setState(() {}));
   }
 
@@ -87,7 +84,6 @@ class _HomeScreenState extends State<HomeScreen> {
     try {
       _radioService = di.radioService;
       _failoverService = di.failoverService;
-      _volume = _radioService.volume;
 
       // Load saved PIN code immediately for UI display
       final storageService = di.storageService;
@@ -123,6 +119,12 @@ class _HomeScreenState extends State<HomeScreen> {
             final token = state.token;
             if (token != null && token != _currentCode) {
               _currentCode = token;
+            }
+
+            // Update volume from config
+            final config = state.config;
+            if (config != null) {
+              _volume = config.volume;
             }
           });
         }
@@ -195,21 +197,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Future<void> _setVolume(double volume) async {
-    final result = await _radioService.setVolume(volume);
-    result.fold(
-      (_) {
-        setState(() {
-          _volume = volume;
-        });
-      },
-      (error) {
-        Logger.error('HomeScreen: Set volume failed: $error');
-        _showError(error);
-      },
-    );
-  }
-
   void _showError(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -225,6 +212,38 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
     );
+  }
+
+  void _showSuccess(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.green.withValues(alpha: 0.9),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 3),
+        action: SnackBarAction(
+          label: 'OK',
+          textColor: Colors.white,
+          onPressed: () => ScaffoldMessenger.of(context).hideCurrentSnackBar(),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _clearFailoverCache() async {
+    try {
+      Logger.info('HomeScreen: Clearing failover cache...');
+      await _failoverService.clearCache();
+      _showSuccess('Failover tracks cleared and will be re-downloaded');
+    } catch (e) {
+      Logger.error('HomeScreen: Failed to clear failover cache: $e');
+      _showError('Failed to clear failover cache: $e');
+    }
+  }
+
+  void _showVolumeInfo() {
+    _showSuccess('Volume is controlled from Tunio Link in your personal cabinet');
   }
 
   Future<void> _launchPersonalCabinet() async {
@@ -504,39 +523,10 @@ class _HomeScreenState extends State<HomeScreen> {
                             ),
                           ),
                         ),
-                        const SizedBox(width: 16),
+                        const SizedBox(width: 12),
 
-                        // Volume control in one row
-                        const Icon(Icons.volume_down),
-                        Expanded(
-                          child: Focus(
-                            focusNode: _volumeFocusNode,
-                            child: Container(
-                              decoration: BoxDecoration(
-                                border: Border.all(
-                                  color: _volumeFocusNode.hasFocus
-                                      ? TunioColors.primary
-                                      : Colors.transparent,
-                                  width: 2,
-                                ),
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: Slider(
-                                value: _volume,
-                                onChanged:
-                                    _radioState.isConnected ? _setVolume : null,
-                                min: 0.0,
-                                max: 1.0,
-                                divisions: 20,
-                                label: '${(_volume * 100).round()}%',
-                                activeColor: _volumeFocusNode.hasFocus
-                                    ? TunioColors.primary
-                                    : null,
-                              ),
-                            ),
-                          ),
-                        ),
-                        const Icon(Icons.volume_up),
+                        // Compact indicators
+                        ..._buildCompactIndicators(),
                       ],
                     ),
                   ],
@@ -676,6 +666,98 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  List<Widget> _buildCompactIndicators() {
+    return [
+      // Failover cache indicator (clickable to clear cache)
+      GestureDetector(
+        onTap: _clearFailoverCache,
+        child: _buildSimpleLabel(
+          icon: Icons.offline_pin,
+          value: 'Offline: $_cachedTracksCount',
+          color: _cachedTracksCount >= 5
+              ? Colors.green
+              : _cachedTracksCount >= 3
+                  ? Colors.orange
+                  : Colors.red,
+        ),
+      ),
+      const SizedBox(width: 12),
+      
+      // Playback mode indicator
+      if (_radioState.isConnected) ...[
+        _buildSimpleLabel(
+          icon: _radioState.isFailover ? Icons.offline_bolt : Icons.live_tv,
+          value: _radioState.isFailover ? 'Failover' : 'Live',
+          color: _radioState.isFailover ? Colors.orange : Colors.green,
+        ),
+        const SizedBox(width: 12),
+      ],
+      
+      // Volume indicator (clickable with info)
+      if (_radioState.isConnected)
+        GestureDetector(
+          onTap: _showVolumeInfo,
+          child: _buildSimpleLabel(
+            icon: Icons.volume_up,
+            value: '${(_volume * 100).round()}%',
+            color: Colors.blue,
+          ),
+        ),
+    ];
+  }
+
+  Widget _buildCompactChip({
+    required IconData icon,
+    required String value,
+    required Color color,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withValues(alpha: 0.3)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 16, color: color),
+          const SizedBox(width: 6),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: color,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSimpleLabel({
+    required IconData icon,
+    required String value,
+    required Color color,
+  }) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 16, color: color),
+        const SizedBox(width: 4),
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+            color: color,
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildMetricsChips() {
     return Wrap(
       spacing: 8,
@@ -705,30 +787,6 @@ class _HomeScreenState extends State<HomeScreen> {
         // Buffer status if playing
         if (_radioState is RadioStateConnected || _radioState is RadioStateFailover) 
           ..._buildAudioMetricChips(),
-
-        // Failover cache status
-        _buildStatusChip(
-          icon: Icons.download,
-          label: 'Failover',
-          value: '$_cachedTracksCount tracks',
-          color: _cachedTracksCount >= 5
-              ? Colors.green
-              : _cachedTracksCount >= 3
-                  ? Colors.orange
-                  : Colors.red,
-        ),
-
-        // Playback mode indicator
-        if (_radioState.isConnected)
-          _buildStatusChip(
-            icon: _radioState.isFailover ? Icons.offline_bolt : Icons.live_tv,
-            label: 'Mode',
-            value: _radioState.isFailover ? 'FAILOVER' : 'LIVE',
-            color: _radioState.isFailover ? Colors.orange : Colors.green,
-            backgroundColor: _radioState.isFailover 
-                ? Colors.orange.withValues(alpha: 0.2)
-                : Colors.green.withValues(alpha: 0.2),
-          ),
       ],
     );
   }

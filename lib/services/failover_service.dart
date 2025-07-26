@@ -14,6 +14,7 @@ abstract interface class IFailoverService implements Disposable {
   Future<void> downloadTrack(CurrentTrack track);
   Future<List<File>> getAvailableTracks();
   Future<File?> getRandomTrack();
+  Future<void> clearCache();
   int get cachedTracksCount;
   Stream<int> get cachedTracksCountStream;
 }
@@ -220,6 +221,39 @@ class FailoverService implements IFailoverService {
     }
   }
   
+  @override
+  Future<void> clearCache() async {
+    if (!_isInitialized) {
+      throw StateError('FailoverService not initialized');
+    }
+
+    try {
+      Logger.info('FailoverService: Clearing all cached tracks...');
+      
+      final files = await _cacheDirectory.list()
+          .where((entity) => entity is File && entity.path.endsWith('.m4a'))
+          .cast<File>()
+          .toList();
+      
+      int deletedCount = 0;
+      for (final file in files) {
+        try {
+          await file.delete();
+          deletedCount++;
+          Logger.debug('FailoverService: Deleted cached track: ${file.path.split('/').last}');
+        } catch (e) {
+          Logger.error('FailoverService: Failed to delete track ${file.path}: $e');
+        }
+      }
+      
+      _updateCachedCount();
+      Logger.info('FailoverService: Cache cleared successfully, deleted $deletedCount tracks');
+    } catch (e) {
+      Logger.error('FailoverService: Error clearing cache: $e');
+      rethrow;
+    }
+  }
+
   @override
   Future<void> dispose() async {
     _cleanupTimer?.cancel();

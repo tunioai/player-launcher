@@ -385,16 +385,22 @@ final class EnhancedRadioService implements IRadioService {
     ));
 
     Logger.info('Attempting connection (attempt $attempt)');
+    Logger.info('🐛 DEBUG: About to set up connection timeout timer');
 
     // Add timeout for connecting state to prevent infinite "Reconnecting"
-    // Reduced from 45s to 15s for faster hung detection in autonomous devices
-    final connectingTimeout = Timer(const Duration(seconds: 15), () {
+    // Reduced to 8s for faster response on all devices including TV boxes
+    final connectingTimeout = Timer(const Duration(seconds: 8), () {
+      Logger.error('🐛 DEBUG: Connection timeout timer FIRED after 8 seconds');
       if (_currentState is RadioStateConnecting && _isConnectionInProgress) {
-        Logger.error('Connection attempt timed out after 15 seconds');
+        Logger.error('Connection attempt timed out after 8 seconds');
         _isConnectionInProgress = false; // Reset connection flag
         _scheduleRetry('Connection timeout - retrying');
+      } else {
+        Logger.error('🐛 DEBUG: Timeout fired but state changed: ${_currentState.runtimeType}, inProgress: $_isConnectionInProgress');
       }
     });
+    
+    Logger.info('🐛 DEBUG: Connection timeout timer set up, about to call tryResultAsync');
 
     try {
       final result = await tryResultAsync(() async {
@@ -405,7 +411,20 @@ final class EnhancedRadioService implements IRadioService {
       return result;
     } catch (e) {
       connectingTimeout.cancel();
-      rethrow;
+      Logger.error('Connection attempt failed: $e');
+      
+      // Schedule retry on failure
+      if (_autoReconnectEnabled) {
+        _scheduleRetry('Connection failed: $e');
+      } else {
+        _updateState(RadioStateError(
+          message: 'Connection failed',
+          canRetry: true,
+          attemptCount: attempt,
+        ));
+      }
+      
+      return Failure('Connection failed: $e');
     } finally {
       _isConnectionInProgress = false;
     }
@@ -413,28 +432,36 @@ final class EnhancedRadioService implements IRadioService {
 
   Future<void> _performConnection(String token) async {
     Logger.info('🔄 CONNECTION: ===== STARTING CONNECTION PROCESS =====');
+    Logger.info('🐛 DEBUG: _performConnection called with token: ${token.substring(0, 2)}****');
     final connectionStartTime = DateTime.now();
 
     try {
       // STAGE 1: Fetch stream configuration with timeout
       _currentConnectionStage = 'API_REQUEST';
       Logger.info('🔄 CONNECTION: STAGE 1 - Fetching stream configuration...');
+      Logger.info('🐛 DEBUG: About to call _apiService.getStreamConfig()');
       final apiStartTime = DateTime.now();
 
       final config = await _apiService.getStreamConfig(token).timeout(
-        const Duration(seconds: 15),
+        const Duration(seconds: 5),
         onTimeout: () {
           final elapsed = DateTime.now().difference(apiStartTime);
           Logger.error(
               '🔄 CONNECTION: API request timed out after ${elapsed.inSeconds}s');
+          Logger.error('🐛 DEBUG: API timeout exception thrown');
           throw TimeoutException('API request timed out');
         },
       );
 
+      Logger.info('🐛 DEBUG: _apiService.getStreamConfig() completed successfully');
+      
       if (config == null) {
+        Logger.error('🐛 DEBUG: Config is null, throwing ApiError');
         throw ApiError(
             message: 'Invalid token or server error', isFromBackend: true);
       }
+      
+      Logger.info('🐛 DEBUG: Config received: ${config.streamUrl}');
 
       final apiDuration = DateTime.now().difference(apiStartTime);
       Logger.info(
@@ -457,17 +484,21 @@ final class EnhancedRadioService implements IRadioService {
       // STAGE 3: Start audio playback with detailed monitoring
       _currentConnectionStage = 'AUDIO_LOADING';
       Logger.info('🔄 CONNECTION: STAGE 3 - Starting audio playback...');
+      Logger.info('🐛 DEBUG: About to call _audioService.playStream()');
       final audioStartTime = DateTime.now();
 
       final playResult = await _audioService.playStream(config).timeout(
-        const Duration(seconds: 25), // Timeout for audio operations
+        const Duration(seconds: 10), // Timeout for audio operations
         onTimeout: () {
           final elapsed = DateTime.now().difference(audioStartTime);
           Logger.error(
               '🔄 CONNECTION: Audio playback timed out after ${elapsed.inSeconds}s');
+          Logger.error('🐛 DEBUG: Audio playback timeout exception thrown');
           throw TimeoutException('Audio playback timed out');
         },
       );
+      
+      Logger.info('🐛 DEBUG: _audioService.playStream() completed successfully');
 
       if (playResult.isFailure) {
         throw Exception('Failed to start audio: ${playResult.error}');
@@ -635,11 +666,24 @@ final class EnhancedRadioService implements IRadioService {
 
           // Only restart stream if critical parameters changed (URL, not just metadata)
           final needsRestart =
-              newConfig.streamUrl != connected.config.streamUrl ||
-                  newConfig.volume != connected.config.volume;
+              newConfig.streamUrl != connected.config.streamUrl;
+          
+          // Handle volume change separately without restarting stream
+          final volumeChanged = newConfig.volume != connected.config.volume;
+
+          if (volumeChanged) {
+            Logger.info('Volume changed from ${connected.config.volume} to ${newConfig.volume}');
+            // Apply new volume without restarting stream
+            final volumeResult = await _audioService.setVolume(newConfig.volume);
+            if (volumeResult.isSuccess) {
+              Logger.info('Successfully applied new volume: ${(newConfig.volume * 100).round()}%');
+            } else {
+              Logger.error('Failed to apply new volume: ${volumeResult.error}');
+            }
+          }
 
           if (needsRestart) {
-            Logger.info('Stream restart required due to URL or volume change');
+            Logger.info('Stream restart required due to URL change');
 
             // Set flag to prevent failover during planned stream switch
             _isStreamSwitchInProgress = true;
@@ -666,7 +710,7 @@ final class EnhancedRadioService implements IRadioService {
             }
           } else {
             Logger.info(
-                'Configuration updated - metadata only, no restart needed');
+                'Configuration updated - ${volumeChanged ? 'volume and metadata' : 'metadata only'}, no restart needed');
             // Just update the state without restarting stream
             final updatedState = connected.copyWith(config: newConfig);
             _updateState(updatedState);
@@ -880,74 +924,6 @@ final class EnhancedRadioService implements IRadioService {
     });
   }
 
-  void _scheduleConnectionRestore(RadioStateConnected originalState) {
-    if (!_autoReconnectEnabled || _isDisposed) return;
-
-    Logger.info('🔄 FAILOVER: Scheduling connection restore attempts');
-    
-    Timer.periodic(const Duration(seconds: 30), (timer) {
-      if (_isDisposed || !_autoReconnectEnabled) {
-        timer.cancel();
-        return;
-      }
-
-      // Only try to restore if we're still in failover mode
-      if (_currentState is! RadioStateFailover) {
-        timer.cancel();
-        return;
-      }
-
-      Logger.info('🔄 FAILOVER: Attempting to restore live stream connection');
-      
-      unawaited(() async {
-        try {
-          final config = await _apiService.getStreamConfig(originalState.token);
-          if (config != null) {
-            Logger.info('🔄 FAILOVER: Successfully got config, testing connectivity before restore');
-            
-            // Test if we can connect to the stream without interrupting current playback
-            try {
-              final testSocket = await Socket.connect(
-                Uri.parse(config.streamUrl).host, 
-                80, 
-                timeout: const Duration(seconds: 5)
-              );
-              await testSocket.close();
-              
-              Logger.info('🔄 FAILOVER: Stream server is reachable, attempting restore');
-              
-              // Try to play the stream
-              final playResult = await _audioService.playStream(config);
-              if (playResult.isSuccess) {
-                Logger.info('✅ FAILOVER: Successfully restored live stream!');
-                
-                // Restore normal connected state
-                _updateState(RadioStateConnected(
-                  token: originalState.token,
-                  config: config,
-                  audioState: AudioStateLoading(config: StreamConfig(streamUrl: 'restored')),
-                ));
-                
-                // Resume normal operations
-                _startConfigPolling();
-                _startPinging(config.streamUrl);
-                timer.cancel();
-              } else {
-                Logger.warning('🔄 FAILOVER: Stream restore failed: ${playResult.error}');
-              }
-            } catch (e) {
-              Logger.info('🔄 FAILOVER: Stream server not reachable yet: $e');
-            }
-          } else {
-            Logger.warning('🔄 FAILOVER: Failed to get config for restore');
-          }
-        } catch (e) {
-          Logger.warning('🔄 FAILOVER: Connection restore attempt failed: $e');
-        }
-      }());
-    });
-  }
-
   void _updateState(RadioState newState) {
     if (_currentState != newState) {
       Logger.info(
@@ -1018,13 +994,13 @@ final class EnhancedRadioService implements IRadioService {
   void _startStateMonitoring() {
     _stateMonitorTimer?.cancel();
 
-    // Monitor state every 10 seconds for hung connections
-    _stateMonitorTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+    // Monitor state every 3 seconds for hung connections
+    _stateMonitorTimer = Timer.periodic(const Duration(seconds: 3), (_) {
       _checkForHungState();
     });
 
     Logger.info(
-        'State monitoring started - checking every 10s for hung connections');
+        'State monitoring started - checking every 3s for hung connections');
   }
 
   void _checkForHungState() {
@@ -1038,8 +1014,8 @@ final class EnhancedRadioService implements IRadioService {
       final timeInConnecting = now.difference(_connectingStateStartTime!);
       final stage = _currentConnectionStage ?? 'UNKNOWN_STAGE';
 
-      // If stuck in connecting for more than 30 seconds, force recovery
-      if (timeInConnecting.inSeconds > 30) {
+      // If stuck in connecting for more than 10 seconds, force recovery
+      if (timeInConnecting.inSeconds > 10) {
         Logger.error(
             '🚨 CRITICAL: Detected hung connecting state for ${timeInConnecting.inSeconds}s at stage [$stage] - forcing recovery');
         _forceConnectionRecovery(
@@ -1048,7 +1024,7 @@ final class EnhancedRadioService implements IRadioService {
       }
 
       // Warn if connecting too long but not yet forcing recovery
-      if (timeInConnecting.inSeconds > 15) {
+      if (timeInConnecting.inSeconds > 8) {
         Logger.warning(
             '⚠️ Connecting state prolonged: ${timeInConnecting.inSeconds}s at stage [$stage]');
       }
