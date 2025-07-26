@@ -630,7 +630,7 @@ final class EnhancedRadioService implements IRadioService {
       // Create a dummy connected state to use with existing failover logic
       final dummyConfig = StreamConfig(
         streamUrl: 'offline://cached',
-        volume: _storageService.getLastVolume() ?? 0.7,
+        volume: _storageService.getLastVolume(),
       );
       
       final dummyConnectedState = RadioStateConnected(
@@ -1160,7 +1160,7 @@ final class EnhancedRadioService implements IRadioService {
       // Create a dummy connected state to use with existing failover logic
       final dummyConfig = StreamConfig(
         streamUrl: 'offline://recovery',
-        volume: _storageService.getLastVolume() ?? 0.7,
+        volume: _storageService.getLastVolume(),
       );
       
       final dummyConnectedState = RadioStateConnected(
