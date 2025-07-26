@@ -763,12 +763,18 @@ class _HomeScreenState extends State<HomeScreen> {
       spacing: 8,
       runSpacing: 8,
       children: [
-        // Network status
+        // Network status - show "Offline Mode" during failover
         _buildStatusChip(
-          icon: _networkState.isConnected ? Icons.wifi : Icons.wifi_off,
+          icon: _radioState.isFailover 
+              ? Icons.offline_bolt 
+              : (_networkState.isConnected ? Icons.wifi : Icons.wifi_off),
           label: 'Network',
-          value: _networkState.isConnected ? 'Connected' : 'Disconnected',
-          color: _networkState.isConnected ? Colors.green : Colors.red,
+          value: _radioState.isFailover 
+              ? 'Offline Mode' 
+              : (_networkState.isConnected ? 'Connected' : 'Disconnected'),
+          color: _radioState.isFailover 
+              ? Colors.orange 
+              : (_networkState.isConnected ? Colors.green : Colors.red),
         ),
 
         // Stream ping if available

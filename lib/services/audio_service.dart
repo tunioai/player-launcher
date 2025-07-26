@@ -139,7 +139,15 @@ final class EnhancedAudioService implements IAudioService {
     // Minimal configuration to avoid stream conflicts
     _audioPlayer = AudioPlayer(
       userAgent: AudioConfig.userAgent,
-      // Removed audioLoadConfiguration completely
+      audioLoadConfiguration: AudioLoadConfiguration(
+        darwinLoadControl: DarwinLoadControl(
+          preferredForwardBufferDuration: const Duration(seconds: 4),
+        ),
+        androidLoadControl: AndroidLoadControl(
+          bufferForPlaybackDuration: const Duration(seconds: 4),
+          bufferForPlaybackAfterRebufferDuration: const Duration(seconds: 4),
+        ),
+      ),
     );
 
     Logger.info('🎵 INIT_DEBUG: AudioPlayer instance created');

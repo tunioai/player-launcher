@@ -72,8 +72,17 @@ class FailoverService implements IFailoverService {
     
     final file = File('${_cacheDirectory.path}/${track.fileName}');
     if (await file.exists()) {
-      Logger.debug('FailoverService: Track ${track.uuid} already cached');
-      return;
+      // Check if the existing track is still fresh
+      final stat = await file.stat();
+      final age = DateTime.now().difference(stat.modified);
+      
+      if (age < AppConstants.trackCacheTTL) {
+        Logger.debug('FailoverService: Track ${track.uuid} already cached and still fresh (${age.inHours}h old)');
+        return;
+      } else {
+        Logger.info('FailoverService: Track ${track.uuid} is expired (${age.inDays}d old), will replace with fresh copy');
+        // Don't return - continue to download fresh copy
+      }
     }
     
     _downloadingTracks.add(track.uuid);
@@ -95,7 +104,7 @@ class FailoverService implements IFailoverService {
         // Update count after successful download
         _updateCachedCount();
         
-        // Clean up if we have too many tracks
+        // Clean up if we have too many tracks (prioritize removing old tracks)
         await _cleanupExcessTracks();
       } else {
         Logger.error('FailoverService: Failed to download track ${track.uuid}: HTTP ${response.statusCode}');
@@ -187,27 +196,59 @@ class FailoverService implements IFailoverService {
           .cast<File>()
           .toList();
       
-      if (files.length <= AppConstants.maxFailoverTracks) {
-        return; // No cleanup needed
+      final now = DateTime.now();
+      final expiredFiles = <File>[];
+      final validFiles = <File>[];
+      
+      // Separate expired and valid files
+      for (final file in files) {
+        try {
+          final stat = await file.stat();
+          final age = now.difference(stat.modified);
+          
+          if (age >= AppConstants.trackCacheTTL) {
+            expiredFiles.add(file);
+          } else {
+            validFiles.add(file);
+          }
+        } catch (e) {
+          Logger.error('FailoverService: Error checking file ${file.path}: $e');
+          // Treat as expired if we can't read stats
+          expiredFiles.add(file);
+        }
       }
       
-      // Sort by modification time (oldest first)
-      files.sort((a, b) => a.statSync().modified.compareTo(b.statSync().modified));
-      
-      // Delete oldest files beyond the limit
-      final filesToDelete = files.take(files.length - AppConstants.maxFailoverTracks);
-      
-      for (final file in filesToDelete) {
+      // Delete all expired files first
+      for (final file in expiredFiles) {
         try {
           await file.delete();
-          Logger.info('FailoverService: Deleted old cached track: ${file.path.split('/').last}');
+          Logger.info('FailoverService: Deleted expired cached track: ${file.path.split('/').last}');
         } catch (e) {
-          Logger.error('FailoverService: Failed to delete old track ${file.path}: $e');
+          Logger.error('FailoverService: Failed to delete expired track ${file.path}: $e');
+        }
+      }
+      
+      // If we still have too many valid files, delete oldest ones
+      if (validFiles.length > AppConstants.maxFailoverTracks) {
+        // Sort valid files by modification time (oldest first)
+        validFiles.sort((a, b) => a.statSync().modified.compareTo(b.statSync().modified));
+        
+        // Delete oldest valid files beyond the limit
+        final excessFiles = validFiles.take(validFiles.length - AppConstants.maxFailoverTracks);
+        
+        for (final file in excessFiles) {
+          try {
+            await file.delete();
+            Logger.info('FailoverService: Deleted excess cached track: ${file.path.split('/').last}');
+          } catch (e) {
+            Logger.error('FailoverService: Failed to delete excess track ${file.path}: $e');
+          }
         }
       }
       
       _updateCachedCount();
-      Logger.info('FailoverService: Cleanup completed, kept ${AppConstants.maxFailoverTracks} tracks');
+      final remainingCount = _getCachedTracksCountSync();
+      Logger.info('FailoverService: Cleanup completed, ${expiredFiles.length} expired tracks deleted, $remainingCount tracks remaining');
     } catch (e) {
       Logger.error('FailoverService: Error during cleanup: $e');
     }
