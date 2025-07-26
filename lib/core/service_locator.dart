@@ -5,6 +5,7 @@ import '../services/api_service.dart';
 import '../services/storage_service.dart';
 import '../services/audio_service.dart';
 import '../services/radio_service.dart';
+import '../services/failover_service.dart';
 
 /// Service locator for dependency injection setup
 class ServiceLocator {
@@ -21,6 +22,9 @@ class ServiceLocator {
     di.registerInstance<ApiService>(ApiService());
     di.registerInstance<StorageService>(storageService);
 
+    // Failover service
+    di.registerSingleton<IFailoverService>(() => FailoverService());
+
     // Audio service with interface
     di.registerSingleton<IAudioService>(() => EnhancedAudioService());
 
@@ -29,7 +33,12 @@ class ServiceLocator {
           audioService: di.get<IAudioService>(),
           apiService: di.get<ApiService>(),
           storageService: di.get<StorageService>(),
+          failoverService: di.get<IFailoverService>(),
         ));
+
+    // Initialize failover service
+    final failoverService = di.get<IFailoverService>();
+    await failoverService.initialize();
 
     // Initialize radio service to enable auto-reconnect
     // Don't await to prevent blocking app startup if network unavailable
@@ -58,6 +67,7 @@ extension ServiceLocatorExtensions on DependencyInjection {
   IAudioService get audioService => get<IAudioService>();
   ApiService get apiService => get<ApiService>();
   StorageService get storageService => get<StorageService>();
+  IFailoverService get failoverService => get<IFailoverService>();
 }
 
 /// Helper to fire and forget async operations

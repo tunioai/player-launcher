@@ -1,16 +1,19 @@
 import '../utils/logger.dart';
+import 'current_track.dart';
 
 class StreamConfig {
   final String streamUrl;
   final double volume;
   final String? title;
   final String? description;
+  final CurrentTrack? current;
 
-  StreamConfig({
+  const StreamConfig({
     required this.streamUrl,
     this.volume = 1.0,
     this.title,
     this.description,
+    this.current,
   });
 
   factory StreamConfig.fromJson(Map<String, dynamic> json) {
@@ -20,9 +23,14 @@ class StreamConfig {
     final volume = (json['volume'] ?? 1.0).toDouble();
     final title = json['title'];
     final description = json['description'];
+    
+    CurrentTrack? current;
+    if (json['current'] != null) {
+      current = CurrentTrack.fromJson(json['current']);
+    }
 
     Logger.debug(
-        'Parsed values - streamUrl: $streamUrl, volume: $volume, title: $title, description: $description',
+        'Parsed values - streamUrl: $streamUrl, volume: $volume, title: $title, description: $description, current: $current',
         'StreamConfig');
 
     Logger.debug('📝 StreamConfig: Parsing JSON: $json', 'StreamConfig');
@@ -37,6 +45,7 @@ class StreamConfig {
       volume: volume,
       title: title,
       description: description,
+      current: current,
     );
   }
 
@@ -46,6 +55,7 @@ class StreamConfig {
       'volume': volume,
       'title': title,
       'description': description,
+      'current': current?.toJson(),
     };
   }
 

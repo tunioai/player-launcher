@@ -8,6 +8,7 @@ import '../core/service_locator.dart';
 import '../core/audio_state.dart';
 
 import '../services/radio_service.dart';
+import '../services/failover_service.dart';
 import '../widgets/code_input_widget.dart';
 import '../widgets/status_indicator.dart';
 import '../utils/logger.dart';
@@ -29,6 +30,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   late IRadioService _radioService;
+  late IFailoverService _failoverService;
   bool _serviceInitialized = false;
 
   // Focus nodes for TV remote navigation
@@ -44,11 +46,13 @@ class _HomeScreenState extends State<HomeScreen> {
   NetworkState _networkState = const NetworkState();
   int? _currentPing;
   double _volume = 1.0;
+  int _cachedTracksCount = 0;
 
   // Subscriptions
   StreamSubscription<RadioState>? _radioStateSubscription;
   StreamSubscription<NetworkState>? _networkStateSubscription;
   StreamSubscription<int?>? _pingSubscription;
+  StreamSubscription<int>? _cachedTracksCountSubscription;
 
   @override
   void initState() {
@@ -62,6 +66,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _radioStateSubscription?.cancel();
     _networkStateSubscription?.cancel();
     _pingSubscription?.cancel();
+    _cachedTracksCountSubscription?.cancel();
     _codeFocusNode.dispose();
     _connectButtonFocusNode.dispose();
     _playButtonFocusNode.dispose();
@@ -81,6 +86,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void _initializeService() {
     try {
       _radioService = di.radioService;
+      _failoverService = di.failoverService;
       _volume = _radioService.volume;
 
       // Load saved PIN code immediately for UI display
@@ -98,6 +104,7 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() {
         _radioState = currentRadioState;
         _currentPing = _radioService.currentPing;
+        _cachedTracksCount = _failoverService.cachedTracksCount;
 
         // Update code from current state if available
         final token = currentRadioState.token;
@@ -133,6 +140,14 @@ class _HomeScreenState extends State<HomeScreen> {
         if (mounted) {
           setState(() {
             _currentPing = ping;
+          });
+        }
+      });
+
+      _cachedTracksCountSubscription = _failoverService.cachedTracksCountStream.listen((count) {
+        if (mounted) {
+          setState(() {
+            _cachedTracksCount = count;
           });
         }
       });
@@ -242,6 +257,7 @@ class _HomeScreenState extends State<HomeScreen> {
   AudioState? _getAudioState() {
     return switch (_radioState) {
       RadioStateConnected(:final audioState) => audioState,
+      RadioStateFailover(:final audioState) => audioState,
       _ => null,
     };
   }
@@ -252,6 +268,7 @@ class _HomeScreenState extends State<HomeScreen> {
       RadioStateConnecting(:final message, :final attempt) =>
         '$message (attempt $attempt)',
       RadioStateConnected(:final audioState) => audioState.displayMessage,
+      RadioStateFailover(:final audioState) => 'Failover: ${audioState.displayMessage}',
       RadioStateError(:final message, :final attemptCount) =>
         'Error: $message (attempt $attemptCount)',
     };
@@ -543,10 +560,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         children: [
                           // Status indicator
                           StatusIndicator(
-                            audioState: _radioState is RadioStateConnected
-                                ? (_radioState as RadioStateConnected)
-                                    .audioState
-                                : const AudioStateIdle(),
+                            audioState: _getAudioState() ?? const AudioStateIdle(),
                             isConnected: _radioState.isConnected,
                             statusMessage: _getStatusText(),
                           ),
@@ -564,10 +578,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         children: [
                           // Status indicator (left side) - takes only needed space
                           StatusIndicator(
-                            audioState: _radioState is RadioStateConnected
-                                ? (_radioState as RadioStateConnected)
-                                    .audioState
-                                : const AudioStateIdle(),
+                            audioState: _getAudioState() ?? const AudioStateIdle(),
                             isConnected: _radioState.isConnected,
                             statusMessage: _getStatusText(),
                           ),
@@ -692,7 +703,32 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
 
         // Buffer status if playing
-        if (_radioState is RadioStateConnected) ..._buildAudioMetricChips(),
+        if (_radioState is RadioStateConnected || _radioState is RadioStateFailover) 
+          ..._buildAudioMetricChips(),
+
+        // Failover cache status
+        _buildStatusChip(
+          icon: Icons.download,
+          label: 'Failover',
+          value: '$_cachedTracksCount tracks',
+          color: _cachedTracksCount >= 5
+              ? Colors.green
+              : _cachedTracksCount >= 3
+                  ? Colors.orange
+                  : Colors.red,
+        ),
+
+        // Playback mode indicator
+        if (_radioState.isConnected)
+          _buildStatusChip(
+            icon: _radioState.isFailover ? Icons.offline_bolt : Icons.live_tv,
+            label: 'Mode',
+            value: _radioState.isFailover ? 'FAILOVER' : 'LIVE',
+            color: _radioState.isFailover ? Colors.orange : Colors.green,
+            backgroundColor: _radioState.isFailover 
+                ? Colors.orange.withValues(alpha: 0.2)
+                : Colors.green.withValues(alpha: 0.2),
+          ),
       ],
     );
   }

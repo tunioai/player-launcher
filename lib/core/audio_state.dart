@@ -247,17 +247,20 @@ final class PlaybackStats {
 sealed class RadioState {
   const RadioState();
 
-  bool get isConnected => this is RadioStateConnected;
+  bool get isConnected => this is RadioStateConnected || this is RadioStateFailover;
   bool get isConnecting => this is RadioStateConnecting;
   bool get hasError => this is RadioStateError;
+  bool get isFailover => this is RadioStateFailover;
 
   String? get token => switch (this) {
         RadioStateConnected(:final token) => token,
+        RadioStateFailover(:final token) => token,
         _ => null,
       };
 
   StreamConfig? get config => switch (this) {
         RadioStateConnected(:final config) => config,
+        RadioStateFailover(:final originalConfig) => originalConfig,
         _ => null,
       };
 }
@@ -346,6 +349,35 @@ final class RadioStateError extends RadioState {
 
   @override
   int get hashCode => Object.hash(message, exception, canRetry, attemptCount);
+}
+
+final class RadioStateFailover extends RadioState {
+  final String token;
+  final StreamConfig? originalConfig;
+  final AudioState audioState;
+  final String currentTrackPath;
+  final int attemptCount;
+
+  const RadioStateFailover({
+    required this.token,
+    this.originalConfig,
+    required this.audioState,
+    required this.currentTrackPath,
+    this.attemptCount = 0,
+  });
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is RadioStateFailover &&
+          token == other.token &&
+          originalConfig == other.originalConfig &&
+          audioState == other.audioState &&
+          currentTrackPath == other.currentTrackPath &&
+          attemptCount == other.attemptCount;
+
+  @override
+  int get hashCode => Object.hash(token, originalConfig, audioState, currentTrackPath, attemptCount);
 }
 
 /// Network state information

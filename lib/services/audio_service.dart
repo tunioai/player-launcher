@@ -20,6 +20,7 @@ abstract interface class IAudioService implements Disposable {
 
   Future<Result<void>> initialize();
   Future<Result<void>> playStream(StreamConfig config);
+  Future<Result<void>> playLocalFile(String filePath, {StreamConfig? originalConfig});
   Future<Result<void>> pause();
   Future<Result<void>> resume();
   Future<Result<void>> stop();
@@ -691,6 +692,79 @@ final class EnhancedAudioService implements IAudioService {
       } finally {
         _isPlayingStream = false;
         Logger.info('🎵 AUDIO_DEBUG: Set _isPlayingStream = false');
+      }
+    });
+  }
+
+  @override
+  Future<Result<void>> playLocalFile(String filePath, {StreamConfig? originalConfig}) async {
+    if (!_isInitialized) {
+      final initResult = await initialize();  
+      if (initResult.isFailure) return initResult;
+    }
+
+    return tryResultAsync(() async {
+      Logger.info('🎵 FAILOVER: ===== STARTING LOCAL FILE PLAYBACK =====');
+      Logger.info('🎵 FAILOVER: File path: $filePath');
+      Logger.info('🎵 FAILOVER: Original config: ${originalConfig?.title}');
+
+      // Check if file exists
+      final file = File(filePath);
+      if (!await file.exists()) {
+        throw Exception('Local file not found: $filePath');
+      }
+
+      // If we're already playing something, stop it first
+      if (_isPlayingStream) {
+        Logger.info('🎵 FAILOVER: Stopping current stream for failover');
+        await _audioPlayer.stop();
+        _isPlayingStream = false;
+      }
+
+      _isPlayingStream = true;
+      _currentStreamUrl = null; // Clear stream URL since we're playing local file
+
+      try {
+        _streamStartTime = DateTime.now();
+        
+        // Create mock config for local file
+        _currentConfig = originalConfig ?? StreamConfig(
+          streamUrl: filePath,
+          title: 'Failover Track',
+          description: 'Playing from local cache',
+          volume: _currentVolume,
+        );
+
+        Logger.info('🎵 FAILOVER: Creating audio source from local file...');
+        final audioSource = ProgressiveAudioSource(Uri.file(filePath));
+
+        // Set audio source
+        Logger.info('🎵 FAILOVER: Setting audio source...');
+        await _audioPlayer.setAudioSource(audioSource).timeout(
+          const Duration(seconds: 10),
+          onTimeout: () {
+            Logger.error('🎵 FAILOVER: setAudioSource timed out');
+            throw TimeoutException('setAudioSource operation timed out');
+          },
+        );
+
+        // Set volume
+        Logger.info('🎵 FAILOVER: Setting volume...');
+        await _audioPlayer.setVolume(_currentVolume);
+
+        // Start playback
+        Logger.info('🎵 FAILOVER: Starting playback...');
+        await _audioPlayer.play().timeout(
+          const Duration(seconds: 5),
+          onTimeout: () {
+            Logger.error('🎵 FAILOVER: play() timed out');
+            throw TimeoutException('play operation timed out');
+          },
+        );
+
+        Logger.info('🎵 FAILOVER: ===== LOCAL FILE PLAYBACK STARTED SUCCESSFULLY =====');
+      } finally {
+        _isPlayingStream = false;
       }
     });
   }
