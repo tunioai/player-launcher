@@ -20,7 +20,8 @@ abstract interface class IAudioService implements Disposable {
 
   Future<Result<void>> initialize();
   Future<Result<void>> playStream(StreamConfig config);
-  Future<Result<void>> playLocalFile(String filePath, {StreamConfig? originalConfig});
+  Future<Result<void>> playLocalFile(String filePath,
+      {StreamConfig? originalConfig});
   Future<Result<void>> pause();
   Future<Result<void>> resume();
   Future<Result<void>> stop();
@@ -705,9 +706,10 @@ final class EnhancedAudioService implements IAudioService {
   }
 
   @override
-  Future<Result<void>> playLocalFile(String filePath, {StreamConfig? originalConfig}) async {
+  Future<Result<void>> playLocalFile(String filePath,
+      {StreamConfig? originalConfig}) async {
     if (!_isInitialized) {
-      final initResult = await initialize();  
+      final initResult = await initialize();
       if (initResult.isFailure) return initResult;
     }
 
@@ -730,18 +732,20 @@ final class EnhancedAudioService implements IAudioService {
       }
 
       _isPlayingStream = true;
-      _currentStreamUrl = null; // Clear stream URL since we're playing local file
+      _currentStreamUrl =
+          null; // Clear stream URL since we're playing local file
 
       try {
         _streamStartTime = DateTime.now();
-        
+
         // Create mock config for local file
-        _currentConfig = originalConfig ?? StreamConfig(
-          streamUrl: filePath,
-          title: 'Failover Track',
-          description: 'Playing from local cache',
-          volume: _currentVolume,
-        );
+        _currentConfig = originalConfig ??
+            StreamConfig(
+              streamUrl: filePath,
+              title: 'Failover Track',
+              description: 'Playing from local cache',
+              volume: _currentVolume,
+            );
 
         Logger.info('🎵 FAILOVER: Creating audio source from local file...');
         final audioSource = ProgressiveAudioSource(Uri.file(filePath));
@@ -770,7 +774,8 @@ final class EnhancedAudioService implements IAudioService {
           },
         );
 
-        Logger.info('🎵 FAILOVER: ===== LOCAL FILE PLAYBACK STARTED SUCCESSFULLY =====');
+        Logger.info(
+            '🎵 FAILOVER: ===== LOCAL FILE PLAYBACK STARTED SUCCESSFULLY =====');
       } finally {
         _isPlayingStream = false;
       }

@@ -23,7 +23,7 @@ class StreamConfig {
     final volume = (json['volume'] ?? 1.0).toDouble();
     final title = json['title'];
     final description = json['description'];
-    
+
     CurrentTrack? current;
     if (json['current'] != null) {
       current = CurrentTrack.fromJson(json['current']);

@@ -247,7 +247,8 @@ final class PlaybackStats {
 sealed class RadioState {
   const RadioState();
 
-  bool get isConnected => this is RadioStateConnected || this is RadioStateFailover;
+  bool get isConnected =>
+      this is RadioStateConnected || this is RadioStateFailover;
   bool get isConnecting => this is RadioStateConnecting;
   bool get hasError => this is RadioStateError;
   bool get isFailover => this is RadioStateFailover;
@@ -377,7 +378,8 @@ final class RadioStateFailover extends RadioState {
           attemptCount == other.attemptCount;
 
   @override
-  int get hashCode => Object.hash(token, originalConfig, audioState, currentTrackPath, attemptCount);
+  int get hashCode => Object.hash(
+      token, originalConfig, audioState, currentTrackPath, attemptCount);
 }
 
 /// Network state information

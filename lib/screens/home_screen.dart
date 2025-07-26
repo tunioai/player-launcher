@@ -146,7 +146,8 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       });
 
-      _cachedTracksCountSubscription = _failoverService.cachedTracksCountStream.listen((count) {
+      _cachedTracksCountSubscription =
+          _failoverService.cachedTracksCountStream.listen((count) {
         if (mounted) {
           setState(() {
             _cachedTracksCount = count;
@@ -243,7 +244,8 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _showVolumeInfo() {
-    _showSuccess('Volume is controlled from Tunio Link in your personal cabinet');
+    _showSuccess(
+        'Volume is controlled from Tunio Link in your personal cabinet');
   }
 
   Future<void> _launchPersonalCabinet() async {
@@ -287,7 +289,8 @@ class _HomeScreenState extends State<HomeScreen> {
       RadioStateConnecting(:final message, :final attempt) =>
         '$message (attempt $attempt)',
       RadioStateConnected(:final audioState) => audioState.displayMessage,
-      RadioStateFailover(:final audioState) => 'Failover: ${audioState.displayMessage}',
+      RadioStateFailover(:final audioState) =>
+        'Failover: ${audioState.displayMessage}',
       RadioStateError(:final message, :final attemptCount) =>
         'Error: $message (attempt $attemptCount)',
     };
@@ -550,7 +553,8 @@ class _HomeScreenState extends State<HomeScreen> {
                         children: [
                           // Status indicator
                           StatusIndicator(
-                            audioState: _getAudioState() ?? const AudioStateIdle(),
+                            audioState:
+                                _getAudioState() ?? const AudioStateIdle(),
                             isConnected: _radioState.isConnected,
                             statusMessage: _getStatusText(),
                           ),
@@ -568,7 +572,8 @@ class _HomeScreenState extends State<HomeScreen> {
                         children: [
                           // Status indicator (left side) - takes only needed space
                           StatusIndicator(
-                            audioState: _getAudioState() ?? const AudioStateIdle(),
+                            audioState:
+                                _getAudioState() ?? const AudioStateIdle(),
                             isConnected: _radioState.isConnected,
                             statusMessage: _getStatusText(),
                           ),
@@ -682,7 +687,7 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
       const SizedBox(width: 12),
-      
+
       // Playback mode indicator
       if (_radioState.isConnected) ...[
         _buildSimpleLabel(
@@ -692,7 +697,7 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         const SizedBox(width: 12),
       ],
-      
+
       // Volume indicator (clickable with info)
       if (_radioState.isConnected)
         GestureDetector(
@@ -705,7 +710,6 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
     ];
   }
-
 
   Widget _buildSimpleLabel({
     required IconData icon,
@@ -736,15 +740,15 @@ class _HomeScreenState extends State<HomeScreen> {
       children: [
         // Network status - show "Offline Mode" during failover
         _buildStatusChip(
-          icon: _radioState.isFailover 
-              ? Icons.offline_bolt 
+          icon: _radioState.isFailover
+              ? Icons.offline_bolt
               : (_networkState.isConnected ? Icons.wifi : Icons.wifi_off),
           label: 'Network',
-          value: _radioState.isFailover 
-              ? 'Offline Mode' 
+          value: _radioState.isFailover
+              ? 'Offline Mode'
               : (_networkState.isConnected ? 'Connected' : 'Disconnected'),
-          color: _radioState.isFailover 
-              ? Colors.orange 
+          color: _radioState.isFailover
+              ? Colors.orange
               : (_networkState.isConnected ? Colors.green : Colors.red),
         ),
 
@@ -762,7 +766,8 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
 
         // Buffer status if playing
-        if (_radioState is RadioStateConnected || _radioState is RadioStateFailover) 
+        if (_radioState is RadioStateConnected ||
+            _radioState is RadioStateFailover)
           ..._buildAudioMetricChips(),
       ],
     );

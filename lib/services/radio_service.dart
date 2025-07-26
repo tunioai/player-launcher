@@ -73,8 +73,10 @@ final class EnhancedRadioService implements IRadioService {
   bool _autoReconnectEnabled = false;
   bool _isConnectionInProgress =
       false; // Prevent multiple simultaneous connections
-  bool _isFailoverOperationInProgress = false; // Prevent multiple failover operations
-  bool _isStreamSwitchInProgress = false; // Prevent failover during planned stream switches
+  bool _isFailoverOperationInProgress =
+      false; // Prevent multiple failover operations
+  bool _isStreamSwitchInProgress =
+      false; // Prevent failover during planned stream switches
 
   // Initialization
   final Completer<void> _initializationCompleter = Completer<void>();
@@ -157,13 +159,13 @@ final class EnhancedRadioService implements IRadioService {
 
   void _handleAudioStateChange(AudioState audioState) {
     // Only log significant state changes, not position updates
-    final currentType = (_currentState is RadioStateConnected) 
+    final currentType = (_currentState is RadioStateConnected)
         ? (_currentState as RadioStateConnected).audioState.runtimeType
         : null;
     final isSignificantChange = currentType != audioState.runtimeType ||
         (audioState is AudioStateError) ||
         (audioState is AudioStateLoading);
-    
+
     if (isSignificantChange) {
       Logger.info('Audio state changed: ${audioState.runtimeType}');
     }
@@ -172,9 +174,9 @@ final class EnhancedRadioService implements IRadioService {
     switch (_currentState) {
       case RadioStateConnected connected:
         final newState = connected.copyWith(audioState: audioState);
-        
+
         // Only update state if it's a significant change to avoid spam
-        if (isSignificantChange || 
+        if (isSignificantChange ||
             connected.audioState.runtimeType != audioState.runtimeType) {
           _updateState(newState);
         } else {
@@ -184,7 +186,8 @@ final class EnhancedRadioService implements IRadioService {
 
         // Handle error states - faster detection for stream loss
         if (audioState is AudioStateError) {
-          Logger.warning('Audio error detected: ${audioState.message}, isRetryable: ${audioState.isRetryable}');
+          Logger.warning(
+              'Audio error detected: ${audioState.message}, isRetryable: ${audioState.isRetryable}');
 
           // Faster detection - wait only 3 seconds for stream loss
           Timer(const Duration(seconds: 3), () {
@@ -194,8 +197,10 @@ final class EnhancedRadioService implements IRadioService {
               final currentAudioState =
                   (_currentState as RadioStateConnected).audioState;
               if (currentAudioState is AudioStateError) {
-                Logger.error('Stream lost - activating failover immediately (retryable: ${currentAudioState.isRetryable})');
-                _activateFailover(connected, 'Stream lost: ${currentAudioState.message}');
+                Logger.error(
+                    'Stream lost - activating failover immediately (retryable: ${currentAudioState.isRetryable})');
+                _activateFailover(
+                    connected, 'Stream lost: ${currentAudioState.message}');
               } else {
                 Logger.info('Audio error resolved automatically');
               }
@@ -205,11 +210,12 @@ final class EnhancedRadioService implements IRadioService {
 
         // Handle unexpected stream interruption (server stop, icecast failure, etc.)
         // BUT NOT during planned stream switches
-        if ((audioState is AudioStateIdle || audioState is AudioStatePaused) && 
+        if ((audioState is AudioStateIdle || audioState is AudioStatePaused) &&
             connected.audioState is AudioStatePlaying &&
             !_isStreamSwitchInProgress) {
-          Logger.error('🚨 STREAM INTERRUPTION: Stream unexpectedly stopped while we were playing');
-          
+          Logger.error(
+              '🚨 STREAM INTERRUPTION: Stream unexpectedly stopped while we were playing');
+
           // Wait 2 seconds to see if it recovers automatically
           Timer(const Duration(seconds: 2), () {
             if (_currentState is RadioStateConnected &&
@@ -217,8 +223,10 @@ final class EnhancedRadioService implements IRadioService {
                 !_isStreamSwitchInProgress) {
               final currentAudioState =
                   (_currentState as RadioStateConnected).audioState;
-              if (currentAudioState is AudioStateIdle || currentAudioState is AudioStatePaused) {
-                Logger.error('🚨 STREAM INTERRUPTION: Stream still stopped, activating failover');
+              if (currentAudioState is AudioStateIdle ||
+                  currentAudioState is AudioStatePaused) {
+                Logger.error(
+                    '🚨 STREAM INTERRUPTION: Stream still stopped, activating failover');
                 _activateFailover(connected, 'Stream unexpectedly stopped');
               } else {
                 Logger.info('Stream recovered automatically');
@@ -226,7 +234,8 @@ final class EnhancedRadioService implements IRadioService {
             }
           });
         } else if (_isStreamSwitchInProgress) {
-          Logger.info('🔄 STREAM SWITCH: Audio state changed during planned stream switch, not triggering failover');
+          Logger.info(
+              '🔄 STREAM SWITCH: Audio state changed during planned stream switch, not triggering failover');
         }
 
       case RadioStateConnecting _:
@@ -255,9 +264,9 @@ final class EnhancedRadioService implements IRadioService {
           currentTrackPath: failover.currentTrackPath,
           attemptCount: failover.attemptCount,
         );
-        
+
         // Only update state if it's a significant change to avoid spam
-        if (isSignificantChange || 
+        if (isSignificantChange ||
             failover.audioState.runtimeType != audioState.runtimeType) {
           _updateState(newState);
         } else {
@@ -266,12 +275,14 @@ final class EnhancedRadioService implements IRadioService {
         }
 
         // If track ended naturally, try to restore LIVE stream first
-        if (audioState is AudioStateIdle && 
+        if (audioState is AudioStateIdle &&
             failover.audioState is AudioStatePlaying) {
-          Logger.info('Failover track completed naturally, attempting to restore LIVE stream');
+          Logger.info(
+              'Failover track completed naturally, attempting to restore LIVE stream');
           _tryRestoreAfterTrackEnd(failover);
         } else if (audioState is AudioStateError && !audioState.isRetryable) {
-          Logger.warning('Failover track failed with non-retryable error, attempting to restore LIVE stream');
+          Logger.warning(
+              'Failover track failed with non-retryable error, attempting to restore LIVE stream');
           _tryRestoreAfterTrackEnd(failover);
         }
 
@@ -305,10 +316,11 @@ final class EnhancedRadioService implements IRadioService {
           unawaited(_attemptConnect(token, isRetry: true));
         }
       }
-      
+
       // If we're in failover mode and network is restored, start background monitoring
       if (_currentState is RadioStateFailover) {
-        Logger.info('🌐 NETWORK RESTORED: Network restored during failover - starting background config monitoring');
+        Logger.info(
+            '🌐 NETWORK RESTORED: Network restored during failover - starting background config monitoring');
         _startFailoverBackgroundMonitoring();
       }
     }
@@ -401,11 +413,13 @@ final class EnhancedRadioService implements IRadioService {
         _isConnectionInProgress = false; // Reset connection flag
         _scheduleRetry('Connection timeout - retrying');
       } else {
-        Logger.error('🐛 DEBUG: Timeout fired but state changed: ${_currentState.runtimeType}, inProgress: $_isConnectionInProgress');
+        Logger.error(
+            '🐛 DEBUG: Timeout fired but state changed: ${_currentState.runtimeType}, inProgress: $_isConnectionInProgress');
       }
     });
-    
-    Logger.info('🐛 DEBUG: Connection timeout timer set up, about to call tryResultAsync');
+
+    Logger.info(
+        '🐛 DEBUG: Connection timeout timer set up, about to call tryResultAsync');
 
     try {
       final result = await tryResultAsync(() async {
@@ -417,7 +431,7 @@ final class EnhancedRadioService implements IRadioService {
     } catch (e) {
       connectingTimeout.cancel();
       Logger.error('Connection attempt failed: $e');
-      
+
       // Schedule retry on failure
       if (_autoReconnectEnabled) {
         _scheduleRetry('Connection failed: $e');
@@ -428,7 +442,7 @@ final class EnhancedRadioService implements IRadioService {
           attemptCount: attempt,
         ));
       }
-      
+
       return Failure('Connection failed: $e');
     } finally {
       _isConnectionInProgress = false;
@@ -437,7 +451,8 @@ final class EnhancedRadioService implements IRadioService {
 
   Future<void> _performConnection(String token) async {
     Logger.info('🔄 CONNECTION: ===== STARTING CONNECTION PROCESS =====');
-    Logger.info('🐛 DEBUG: _performConnection called with token: ${token.substring(0, 2)}****');
+    Logger.info(
+        '🐛 DEBUG: _performConnection called with token: ${token.substring(0, 2)}****');
     final connectionStartTime = DateTime.now();
 
     try {
@@ -458,14 +473,15 @@ final class EnhancedRadioService implements IRadioService {
         },
       );
 
-      Logger.info('🐛 DEBUG: _apiService.getStreamConfig() completed successfully');
-      
+      Logger.info(
+          '🐛 DEBUG: _apiService.getStreamConfig() completed successfully');
+
       if (config == null) {
         Logger.error('🐛 DEBUG: Config is null, throwing ApiError');
         throw ApiError(
             message: 'Invalid token or server error', isFromBackend: true);
       }
-      
+
       Logger.info('🐛 DEBUG: Config received: ${config.streamUrl}');
 
       final apiDuration = DateTime.now().difference(apiStartTime);
@@ -475,7 +491,8 @@ final class EnhancedRadioService implements IRadioService {
 
       // Download current track for failover if available
       if (config.current != null) {
-        Logger.info('🔄 CONNECTION: Starting background download of current track for failover');
+        Logger.info(
+            '🔄 CONNECTION: Starting background download of current track for failover');
         _downloadTrackInBackground(config.current!);
       }
 
@@ -502,8 +519,9 @@ final class EnhancedRadioService implements IRadioService {
           throw TimeoutException('Audio playback timed out');
         },
       );
-      
-      Logger.info('🐛 DEBUG: _audioService.playStream() completed successfully');
+
+      Logger.info(
+          '🐛 DEBUG: _audioService.playStream() completed successfully');
 
       if (playResult.isFailure) {
         throw Exception('Failed to start audio: ${playResult.error}');
@@ -623,22 +641,23 @@ final class EnhancedRadioService implements IRadioService {
         reason.contains('Connection failed') ||
         reason.contains('Failed host lookup') ||
         reason.contains('SocketException');
-    
+
     if (isNetworkError && _failoverService.cachedTracksCount > 0) {
-      Logger.info('🚨 NETWORK FAILOVER: Network error detected with ${_failoverService.cachedTracksCount} cached tracks - activating failover instead of retry');
-      
+      Logger.info(
+          '🚨 NETWORK FAILOVER: Network error detected with ${_failoverService.cachedTracksCount} cached tracks - activating failover instead of retry');
+
       // Create a dummy connected state to use with existing failover logic
       final dummyConfig = StreamConfig(
         streamUrl: 'offline://cached',
         volume: _storageService.getLastVolume(),
       );
-      
+
       final dummyConnectedState = RadioStateConnected(
         token: token,
         config: dummyConfig,
         audioState: AudioStateIdle(),
       );
-      
+
       _activateFailover(dummyConnectedState, reason);
       return;
     }
@@ -695,16 +714,19 @@ final class EnhancedRadioService implements IRadioService {
           // Only restart stream if critical parameters changed (URL, not just metadata)
           final needsRestart =
               newConfig.streamUrl != connected.config.streamUrl;
-          
+
           // Handle volume change separately without restarting stream
           final volumeChanged = newConfig.volume != connected.config.volume;
 
           if (volumeChanged) {
-            Logger.info('Volume changed from ${connected.config.volume} to ${newConfig.volume}');
+            Logger.info(
+                'Volume changed from ${connected.config.volume} to ${newConfig.volume}');
             // Apply new volume without restarting stream
-            final volumeResult = await _audioService.setVolume(newConfig.volume);
+            final volumeResult =
+                await _audioService.setVolume(newConfig.volume);
             if (volumeResult.isSuccess) {
-              Logger.info('Successfully applied new volume: ${(newConfig.volume * 100).round()}%');
+              Logger.info(
+                  'Successfully applied new volume: ${(newConfig.volume * 100).round()}%');
             } else {
               Logger.error('Failed to apply new volume: ${volumeResult.error}');
             }
@@ -715,7 +737,7 @@ final class EnhancedRadioService implements IRadioService {
 
             // Set flag to prevent failover during planned stream switch
             _isStreamSwitchInProgress = true;
-            
+
             try {
               // Update state with new configuration immediately
               final updatedState = connected.copyWith(config: newConfig);
@@ -730,7 +752,8 @@ final class EnhancedRadioService implements IRadioService {
                     'Failed to restart with new config: ${playResult.error}');
                 _scheduleRetry('Failed to apply config update');
               } else {
-                Logger.info('✅ STREAM SWITCH: Successfully switched to new stream URL');
+                Logger.info(
+                    '✅ STREAM SWITCH: Successfully switched to new stream URL');
               }
             } finally {
               // Always clear the flag, even if there was an error
@@ -765,7 +788,8 @@ final class EnhancedRadioService implements IRadioService {
   void _downloadTrackInBackground(CurrentTrack track) {
     // Only download music tracks for failover - skip ads, jingles, etc.
     if (!track.isMusic) {
-      Logger.debug('Skipping download of non-music track for failover: ${track.artist} - ${track.title}');
+      Logger.debug(
+          'Skipping download of non-music track for failover: ${track.artist} - ${track.title}');
       return;
     }
 
@@ -773,7 +797,8 @@ final class EnhancedRadioService implements IRadioService {
     unawaited(() async {
       try {
         await _failoverService.downloadTrack(track);
-        Logger.info('Successfully downloaded track for failover: ${track.artist} - ${track.title}');
+        Logger.info(
+            'Successfully downloaded track for failover: ${track.artist} - ${track.title}');
       } catch (e) {
         Logger.warning('Failed to download track for failover: $e');
         // Don't throw - this is background operation
@@ -783,17 +808,18 @@ final class EnhancedRadioService implements IRadioService {
 
   void _activateFailover(RadioStateConnected connectedState, String reason) {
     if (_isFailoverOperationInProgress) {
-      Logger.warning('🚨 FAILOVER: Failover already in progress, ignoring duplicate request');
+      Logger.warning(
+          '🚨 FAILOVER: Failover already in progress, ignoring duplicate request');
       return;
     }
 
     Logger.error('🚨 FAILOVER: Activating failover mode - $reason');
     _isFailoverOperationInProgress = true;
-    
+
     // Stop current stream polling
     _configPollingTimer?.cancel();
     _stopPinging();
-    
+
     unawaited(() async {
       try {
         final randomTrack = await _failoverService.getRandomTrack();
@@ -805,12 +831,13 @@ final class EnhancedRadioService implements IRadioService {
         }
 
         Logger.info('🚨 FAILOVER: Playing failover track: ${randomTrack.path}');
-        
+
         // Switch to failover state before playing
         _updateState(RadioStateFailover(
           token: connectedState.token,
           originalConfig: connectedState.config,
-          audioState: AudioStateLoading(config: StreamConfig(streamUrl: 'failover')),
+          audioState:
+              AudioStateLoading(config: StreamConfig(streamUrl: 'failover')),
           currentTrackPath: randomTrack.path,
           attemptCount: 0,
         ));
@@ -825,7 +852,8 @@ final class EnhancedRadioService implements IRadioService {
         );
 
         if (playResult.isFailure) {
-          Logger.error('🚨 FAILOVER: Failed to play failover track: ${playResult.error}');
+          Logger.error(
+              '🚨 FAILOVER: Failed to play failover track: ${playResult.error}');
           _isFailoverOperationInProgress = false;
           _scheduleRetry('Failover playback failed');
         } else {
@@ -843,13 +871,14 @@ final class EnhancedRadioService implements IRadioService {
 
   void _playNextFailoverTrack(RadioStateFailover failoverState) {
     if (_isFailoverOperationInProgress) {
-      Logger.warning('🔄 FAILOVER: Failover operation already in progress, ignoring next track request');
+      Logger.warning(
+          '🔄 FAILOVER: Failover operation already in progress, ignoring next track request');
       return;
     }
 
     Logger.info('🔄 FAILOVER: Playing next random track');
     _isFailoverOperationInProgress = true;
-    
+
     unawaited(() async {
       try {
         final randomTrack = await _failoverService.getRandomTrack();
@@ -861,12 +890,13 @@ final class EnhancedRadioService implements IRadioService {
         }
 
         Logger.info('🔄 FAILOVER: Playing next track: ${randomTrack.path}');
-        
+
         // Update state with new track path
         _updateState(RadioStateFailover(
           token: failoverState.token,
           originalConfig: failoverState.originalConfig,
-          audioState: AudioStateLoading(config: StreamConfig(streamUrl: 'failover')),
+          audioState:
+              AudioStateLoading(config: StreamConfig(streamUrl: 'failover')),
           currentTrackPath: randomTrack.path,
           attemptCount: failoverState.attemptCount,
         ));
@@ -878,7 +908,8 @@ final class EnhancedRadioService implements IRadioService {
         );
 
         if (playResult.isFailure) {
-          Logger.error('🔄 FAILOVER: Failed to play next track: ${playResult.error}');
+          Logger.error(
+              '🔄 FAILOVER: Failed to play next track: ${playResult.error}');
           _isFailoverOperationInProgress = false;
           // Try another track after delay
           Timer(const Duration(seconds: 3), () {
@@ -904,49 +935,55 @@ final class EnhancedRadioService implements IRadioService {
 
   void _tryRestoreAfterTrackEnd(RadioStateFailover failover) {
     if (_isFailoverOperationInProgress) {
-      Logger.warning('🔄 RESTORE: Restore operation already in progress, ignoring duplicate request');
+      Logger.warning(
+          '🔄 RESTORE: Restore operation already in progress, ignoring duplicate request');
       return;
     }
 
-    Logger.info('🔄 RESTORE: Attempting to restore LIVE stream after failover track completion');
+    Logger.info(
+        '🔄 RESTORE: Attempting to restore LIVE stream after failover track completion');
     _isFailoverOperationInProgress = true;
-    
+
     unawaited(() async {
       try {
         // Attempt to get fresh config from server
         final config = await _apiService.getStreamConfig(failover.token);
         if (config == null) {
-          Logger.warning('🔄 RESTORE: Failed to get config, playing next failover track');
+          Logger.warning(
+              '🔄 RESTORE: Failed to get config, playing next failover track');
           _isFailoverOperationInProgress = false;
           _playNextFailoverTrack(failover);
           return;
         }
 
-        Logger.info('🔄 RESTORE: Got fresh config, attempting to restore live stream');
-        
+        Logger.info(
+            '🔄 RESTORE: Got fresh config, attempting to restore live stream');
+
         // Try to play the live stream
         final playResult = await _audioService.playStream(config);
         if (playResult.isSuccess) {
           Logger.info('✅ RESTORE: Successfully restored live stream!');
-          
+
           // Restore normal connected state
           _updateState(RadioStateConnected(
             token: failover.token,
             config: config,
             audioState: AudioStateLoading(config: config),
           ));
-          
+
           // Resume normal operations
           _startConfigPolling();
           _startPinging(config.streamUrl);
           _isFailoverOperationInProgress = false;
         } else {
-          Logger.warning('🔄 RESTORE: Live stream restore failed: ${playResult.error}, playing next failover track');
+          Logger.warning(
+              '🔄 RESTORE: Live stream restore failed: ${playResult.error}, playing next failover track');
           _isFailoverOperationInProgress = false;
           _playNextFailoverTrack(failover);
         }
       } catch (e) {
-        Logger.error('🔄 RESTORE: Error during restore attempt: $e, playing next failover track');
+        Logger.error(
+            '🔄 RESTORE: Error during restore attempt: $e, playing next failover track');
         _isFailoverOperationInProgress = false;
         _playNextFailoverTrackAfterDelay(failover);
       }
@@ -1018,11 +1055,12 @@ final class EnhancedRadioService implements IRadioService {
       Logger.warning('Ping to $host failed: $e');
       _currentPing = null;
       _pingController.add(null);
-      
+
       // If ping fails during connected state, it might indicate network issues
       // Trigger a quick stream health check
       if (_currentState is RadioStateConnected && !_isConnectionInProgress) {
-        Logger.warning('🔍 PING FAIL: Ping failed during connected state - checking stream health');
+        Logger.warning(
+            '🔍 PING FAIL: Ping failed during connected state - checking stream health');
         _checkStreamHealth();
       }
     }
@@ -1040,32 +1078,37 @@ final class EnhancedRadioService implements IRadioService {
     unawaited(() async {
       try {
         Logger.info('🔍 STREAM HEALTH: Checking stream health...');
-        
+
         // Quick network test - try to reach the API
         if (_currentState is RadioStateConnected) {
           final connected = _currentState as RadioStateConnected;
-          
+
           try {
             // Quick ping to the API to test network connectivity
-            final response = await _apiService.getStreamConfig(connected.token).timeout(
-              const Duration(seconds: 3),
-              onTimeout: () => throw TimeoutException('Health check timeout'),
-            );
-            
+            final response =
+                await _apiService.getStreamConfig(connected.token).timeout(
+                      const Duration(seconds: 3),
+                      onTimeout: () =>
+                          throw TimeoutException('Health check timeout'),
+                    );
+
             if (response == null) {
-              Logger.error('🔍 STREAM HEALTH: API returned null - network issues detected');
-              _activateFailover(connected, 'Stream health check failed - API unreachable');
+              Logger.error(
+                  '🔍 STREAM HEALTH: API returned null - network issues detected');
+              _activateFailover(
+                  connected, 'Stream health check failed - API unreachable');
             } else {
               Logger.info('🔍 STREAM HEALTH: Network connectivity confirmed');
             }
           } catch (e) {
             Logger.error('🔍 STREAM HEALTH: Network test failed: $e');
-            _activateFailover(connected, 'Stream health check failed - network error: $e');
+            _activateFailover(
+                connected, 'Stream health check failed - network error: $e');
           }
         }
       } catch (e) {
         Logger.error('🔍 STREAM HEALTH: Health check error: $e');
-        
+
         if (_currentState is RadioStateConnected) {
           final connected = _currentState as RadioStateConnected;
           _activateFailover(connected, 'Stream health check error: $e');
@@ -1155,21 +1198,23 @@ final class EnhancedRadioService implements IRadioService {
 
     // Check if we should activate failover instead of forcing reconnection
     if (_failoverService.cachedTracksCount > 0) {
-      Logger.info('🚨 FORCE RECOVERY FAILOVER: Force recovery with ${_failoverService.cachedTracksCount} cached tracks - activating failover instead');
-      
+      Logger.info(
+          '🚨 FORCE RECOVERY FAILOVER: Force recovery with ${_failoverService.cachedTracksCount} cached tracks - activating failover instead');
+
       // Create a dummy connected state to use with existing failover logic
       final dummyConfig = StreamConfig(
         streamUrl: 'offline://recovery',
         volume: _storageService.getLastVolume(),
       );
-      
+
       final dummyConnectedState = RadioStateConnected(
         token: token,
         config: dummyConfig,
         audioState: AudioStateIdle(),
       );
-      
-      _activateFailover(dummyConnectedState, 'Force recovery - no internet connection');
+
+      _activateFailover(
+          dummyConnectedState, 'Force recovery - no internet connection');
     } else {
       // Force immediate reconnection attempt
       Logger.info('Forcing immediate reconnection attempt...');
@@ -1190,11 +1235,13 @@ final class EnhancedRadioService implements IRadioService {
 
   void _startFailoverBackgroundMonitoring() {
     _stopFailoverBackgroundMonitoring();
-    
-    Logger.info('🔄 FAILOVER BACKGROUND: Starting background monitoring during failover');
-    
+
+    Logger.info(
+        '🔄 FAILOVER BACKGROUND: Starting background monitoring during failover');
+
     // Check every 30 seconds for config updates and new tracks while in failover
-    _failoverBackgroundTimer = Timer.periodic(const Duration(seconds: 30), (_) async {
+    _failoverBackgroundTimer =
+        Timer.periodic(const Duration(seconds: 30), (_) async {
       if (_currentState is RadioStateFailover) {
         await _performFailoverBackgroundCheck();
       } else {
@@ -1203,48 +1250,54 @@ final class EnhancedRadioService implements IRadioService {
       }
     });
   }
-  
+
   void _stopFailoverBackgroundMonitoring() {
     _failoverBackgroundTimer?.cancel();
     _failoverBackgroundTimer = null;
   }
-  
+
   Future<void> _performFailoverBackgroundCheck() async {
     if (_currentState is! RadioStateFailover) return;
-    
+
     final failover = _currentState as RadioStateFailover;
-    
+
     try {
-      Logger.info('🔄 FAILOVER BACKGROUND: Checking for config updates during failover');
-      
+      Logger.info(
+          '🔄 FAILOVER BACKGROUND: Checking for config updates during failover');
+
       // Try to get fresh config from server
       final config = await _apiService.getStreamConfig(failover.token).timeout(
-        const Duration(seconds: 10),
-        onTimeout: () => throw TimeoutException('Background config check timeout'),
-      );
-      
+            const Duration(seconds: 10),
+            onTimeout: () =>
+                throw TimeoutException('Background config check timeout'),
+          );
+
       if (config != null) {
-        Logger.info('🔄 FAILOVER BACKGROUND: Successfully retrieved config during failover');
-        
+        Logger.info(
+            '🔄 FAILOVER BACKGROUND: Successfully retrieved config during failover');
+
         // Download current track for failover cache if available
         if (config.current != null && config.current!.isMusic) {
-          Logger.info('🔄 FAILOVER BACKGROUND: Downloading new track for cache: ${config.current!.artist} - ${config.current!.title}');
+          Logger.info(
+              '🔄 FAILOVER BACKGROUND: Downloading new track for cache: ${config.current!.artist} - ${config.current!.title}');
           _downloadTrackInBackground(config.current!);
         }
-        
+
         // Update volume if changed - apply immediately during failover
-        if (failover.originalConfig != null && 
+        if (failover.originalConfig != null &&
             config.volume != failover.originalConfig!.volume) {
-          Logger.info('🔄 FAILOVER BACKGROUND: Volume changed from ${failover.originalConfig!.volume} to ${config.volume} - applying immediately');
-          
+          Logger.info(
+              '🔄 FAILOVER BACKGROUND: Volume changed from ${failover.originalConfig!.volume} to ${config.volume} - applying immediately');
+
           // Apply the new volume immediately to the current playback
           final volumeResult = await _audioService.setVolume(config.volume);
           if (volumeResult.isSuccess) {
-            Logger.info('🔄 FAILOVER BACKGROUND: Successfully applied new volume during failover: ${(config.volume * 100).round()}%');
-            
+            Logger.info(
+                '🔄 FAILOVER BACKGROUND: Successfully applied new volume during failover: ${(config.volume * 100).round()}%');
+
             // Save the volume to storage
             await _storageService.saveLastVolume(config.volume);
-            
+
             // Update the stored config with new volume
             final updatedFailover = RadioStateFailover(
               token: failover.token,
@@ -1255,16 +1308,17 @@ final class EnhancedRadioService implements IRadioService {
             );
             _updateState(updatedFailover);
           } else {
-            Logger.error('🔄 FAILOVER BACKGROUND: Failed to apply new volume during failover: ${volumeResult.error}');
+            Logger.error(
+                '🔄 FAILOVER BACKGROUND: Failed to apply new volume during failover: ${volumeResult.error}');
           }
         }
-        
       } else {
-        Logger.warning('🔄 FAILOVER BACKGROUND: Config check returned null - network might be down again');
+        Logger.warning(
+            '🔄 FAILOVER BACKGROUND: Config check returned null - network might be down again');
       }
-      
     } catch (e) {
-      Logger.warning('🔄 FAILOVER BACKGROUND: Background config check failed: $e');
+      Logger.warning(
+          '🔄 FAILOVER BACKGROUND: Background config check failed: $e');
       // Don't stop monitoring - network might come back
     }
   }
