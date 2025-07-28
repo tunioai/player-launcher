@@ -290,14 +290,18 @@ final class EnhancedRadioService implements IRadioService {
         }
 
         // Add detailed logging for failover state changes
-        Logger.info('🚨 FAILOVER_DEBUG: ===== FAILOVER AUDIO STATE CHANGE =====');
-        Logger.info('🚨 FAILOVER_DEBUG: New audio state: ${audioState.runtimeType}');
-        Logger.info('🚨 FAILOVER_DEBUG: Previous failover audio state: ${failover.audioState.runtimeType}');
-        
+        Logger.info(
+            '🚨 FAILOVER_DEBUG: ===== FAILOVER AUDIO STATE CHANGE =====');
+        Logger.info(
+            '🚨 FAILOVER_DEBUG: New audio state: ${audioState.runtimeType}');
+        Logger.info(
+            '🚨 FAILOVER_DEBUG: Previous failover audio state: ${failover.audioState.runtimeType}');
+
         // If track ended naturally, try to restore LIVE stream first
         // Track can end either Playing→Idle or Playing→Paused→Idle
         if (audioState is AudioStateIdle &&
-            (failover.audioState is AudioStatePlaying || failover.audioState is AudioStatePaused)) {
+            (failover.audioState is AudioStatePlaying ||
+                failover.audioState is AudioStatePaused)) {
           Logger.info(
               '🚨 FAILOVER_DEBUG: Failover track completed naturally (${failover.audioState.runtimeType} → Idle)');
           Logger.info(
@@ -308,7 +312,8 @@ final class EnhancedRadioService implements IRadioService {
               '🚨 FAILOVER_DEBUG: Failover track failed with non-retryable error, attempting to restore LIVE stream');
           _tryRestoreAfterTrackEnd(failover);
         } else {
-          Logger.info('🚨 FAILOVER_DEBUG: No restore needed - ${audioState.runtimeType} from ${failover.audioState.runtimeType}');
+          Logger.info(
+              '🚨 FAILOVER_DEBUG: No restore needed - ${audioState.runtimeType} from ${failover.audioState.runtimeType}');
         }
 
       default:
