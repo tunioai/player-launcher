@@ -203,7 +203,7 @@ class _HomeScreenState extends State<HomeScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
-        backgroundColor: Colors.red.withOpacity(0.9),
+        backgroundColor: Colors.red.withValues(alpha: 0.9),
         behavior: SnackBarBehavior.floating,
         duration: const Duration(seconds: 4),
         action: SnackBarAction(
@@ -220,7 +220,7 @@ class _HomeScreenState extends State<HomeScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
-        backgroundColor: Colors.green.withOpacity(0.9),
+        backgroundColor: Colors.green.withValues(alpha: 0.9),
         behavior: SnackBarBehavior.floating,
         duration: const Duration(seconds: 3),
         action: SnackBarAction(
@@ -449,11 +449,11 @@ class _HomeScreenState extends State<HomeScreen> {
                         style: ElevatedButton.styleFrom(
                           padding: const EdgeInsets.symmetric(vertical: 10),
                           backgroundColor: _radioState.isConnecting
-                              ? TunioColors.primary.withOpacity(0.7)
+                              ? TunioColors.primary.withValues(alpha: 0.7)
                               : TunioColors.primary,
                           foregroundColor: Colors.white,
                           disabledBackgroundColor:
-                              TunioColors.primary.withOpacity(0.7),
+                              TunioColors.primary.withValues(alpha: 0.7),
                           disabledForegroundColor: Colors.white,
                           side: _connectButtonFocusNode.hasFocus
                               ? BorderSide(color: TunioColors.primary, width: 2)
@@ -469,10 +469,10 @@ class _HomeScreenState extends State<HomeScreen> {
                         padding: const EdgeInsets.symmetric(
                             horizontal: 12, vertical: 8),
                         decoration: BoxDecoration(
-                          color: Colors.green.withOpacity(0.1),
+                          color: Colors.green.withValues(alpha: 0.1),
                           borderRadius: BorderRadius.circular(6),
                           border: Border.all(
-                            color: Colors.green.withOpacity(0.3),
+                            color: Colors.green.withValues(alpha: 0.3),
                           ),
                         ),
                         child: Row(
@@ -603,13 +603,13 @@ class _HomeScreenState extends State<HomeScreen> {
                 margin: const EdgeInsets.only(top: 8),
                 decoration: BoxDecoration(
                   color: _radioState.isConnecting
-                      ? Colors.blue.withOpacity(0.1)
-                      : Colors.red.withOpacity(0.1),
+                      ? Colors.blue.withValues(alpha: 0.1)
+                      : Colors.red.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(8),
                   border: Border.all(
                     color: _radioState.isConnecting
-                        ? Colors.blue.withOpacity(0.3)
-                        : Colors.red.withOpacity(0.3),
+                        ? Colors.blue.withValues(alpha: 0.3)
+                        : Colors.red.withValues(alpha: 0.3),
                   ),
                 ),
                 child: Row(
@@ -657,9 +657,9 @@ class _HomeScreenState extends State<HomeScreen> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
-        color: backgroundColor ?? color.withOpacity(0.1),
+        color: backgroundColor ?? color.withValues(alpha: 0.1),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: color.withOpacity(0.3)),
+        border: Border.all(color: color.withValues(alpha: 0.3)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
