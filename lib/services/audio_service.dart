@@ -1,8 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:just_audio/just_audio.dart';
-import 'package:audio_session/audio_session.dart';
+import 'package:media_kit/media_kit.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 
 import '../core/result.dart';
@@ -32,8 +31,7 @@ abstract interface class IAudioService implements Disposable {
 
 /// Enhanced AudioService with proper error handling and clean architecture
 final class EnhancedAudioService implements IAudioService {
-  late final AudioPlayer _audioPlayer;
-  late final AudioSession _audioSession;
+  late final Player _audioPlayer;
 
   // State management
   final StreamController<AudioState> _stateController =
@@ -46,9 +44,9 @@ final class EnhancedAudioService implements IAudioService {
       const NetworkState(isConnected: false, type: ConnectionType.unknown);
 
   // Subscriptions
-  StreamSubscription<PlayerState>? _playerStateSubscription;
+  StreamSubscription<bool>? _playingSubscription;
   StreamSubscription<Duration>? _positionSubscription;
-  StreamSubscription<Duration>? _bufferedPositionSubscription;
+  StreamSubscription<Duration>? _bufferSubscription;
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
 
   // Current stream tracking
@@ -100,7 +98,6 @@ final class EnhancedAudioService implements IAudioService {
     }
 
     return tryResultAsync(() async {
-      await _initializeAudioSession();
       await _initializeAudioPlayer();
       _setupSubscriptions();
       _startHangDetection();
@@ -112,66 +109,49 @@ final class EnhancedAudioService implements IAudioService {
     });
   }
 
-  Future<void> _initializeAudioSession() async {
-    _audioSession = await AudioSession.instance;
-    await _audioSession.configure(AudioSessionConfiguration(
-      avAudioSessionCategory: AVAudioSessionCategory.playback,
-      avAudioSessionCategoryOptions:
-          AVAudioSessionCategoryOptions.allowBluetooth |
-              AVAudioSessionCategoryOptions.defaultToSpeaker,
-      avAudioSessionMode: AVAudioSessionMode.defaultMode,
-      avAudioSessionRouteSharingPolicy:
-          AVAudioSessionRouteSharingPolicy.defaultPolicy,
-      avAudioSessionSetActiveOptions: AVAudioSessionSetActiveOptions.none,
-      androidAudioAttributes: const AndroidAudioAttributes(
-        contentType: AndroidAudioContentType.music,
-        flags: AndroidAudioFlags.none,
-        usage: AndroidAudioUsage.media,
-      ),
-      androidAudioFocusGainType: AndroidAudioFocusGainType.gain,
-      androidWillPauseWhenDucked: false,
-    ));
-  }
 
   Future<void> _initializeAudioPlayer() async {
     Logger.info('🎵 INIT_DEBUG: ===== INITIALIZING AUDIO PLAYER =====');
     Logger.info('🎵 INIT_DEBUG: User agent: ${AudioConfig.userAgent}');
 
-    // Minimal configuration to avoid stream conflicts
-    _audioPlayer = AudioPlayer(
-      userAgent: AudioConfig.userAgent,
-      audioLoadConfiguration: AudioLoadConfiguration(
-        darwinLoadControl: DarwinLoadControl(
-          preferredForwardBufferDuration: const Duration(seconds: 4),
-        ),
-        androidLoadControl: AndroidLoadControl(
-          bufferForPlaybackDuration: const Duration(seconds: 4),
-          bufferForPlaybackAfterRebufferDuration: const Duration(seconds: 4),
-        ),
-      ),
+    // Configure player with buffering settings for radio streams
+    final configuration = PlayerConfiguration(
+      // Buffer settings for live radio streams
+      bufferSize: AudioConfig.androidTargetBufferBytes,
+      
+      // Optimize for live streaming
+      logLevel: MPVLogLevel.info,
+      
+      // Enable additional protocol support for radio streams
+      protocolWhitelist: [
+        'udp', 'rtp', 'tcp', 'tls', 'data', 'file', 
+        'http', 'https', 'crypto', 'hls', 'dash'
+      ],
     );
 
-    Logger.info('🎵 INIT_DEBUG: AudioPlayer instance created');
-    Logger.info(
-        '🎵 INIT_DEBUG: Initial player state: ${_audioPlayer.playerState}');
+    _audioPlayer = Player(configuration: configuration);
+
+    Logger.info('🎵 INIT_DEBUG: AudioPlayer instance created with buffer config');
+    Logger.info('🎵 INIT_DEBUG: Buffer size: ${AudioConfig.androidTargetBufferBytes ~/ (1024 * 1024)}MB');
+    Logger.info('🎵 INIT_DEBUG: Initial player state: ${_audioPlayer.state.playing}');
     Logger.info('🎵 INIT_DEBUG: ===== AUDIO PLAYER INITIALIZED =====');
   }
 
   void _setupSubscriptions() {
     // Player state monitoring
-    _playerStateSubscription = _audioPlayer.playerStateStream.listen(
-      _handlePlayerStateChange,
+    _playingSubscription = _audioPlayer.stream.playing.listen(
+      _handlePlayingStateChange,
       onError: _handlePlayerError,
     );
 
     // Position monitoring with hang detection
-    _positionSubscription = _audioPlayer.positionStream.listen(
+    _positionSubscription = _audioPlayer.stream.position.listen(
       _handlePositionUpdate,
       onError: (error) => Logger.error('Position stream error: $error'),
     );
 
     // Buffer monitoring
-    _bufferedPositionSubscription = _audioPlayer.bufferedPositionStream.listen(
+    _bufferSubscription = _audioPlayer.stream.buffer.listen(
       _handleBufferUpdate,
       onError: (error) => Logger.error('Buffer stream error: $error'),
     );
@@ -181,13 +161,6 @@ final class EnhancedAudioService implements IAudioService {
           _handleConnectivityChange,
           onError: (error) => Logger.error('Connectivity stream error: $error'),
         );
-
-    // Error stream monitoring
-    _audioPlayer.errorStream.listen(
-      _handlePlayerError,
-      onError: (error) =>
-          Logger.error('Audio player error stream error: $error'),
-    );
 
     // Check initial network state
     _checkInitialNetworkState();
@@ -245,15 +218,13 @@ final class EnhancedAudioService implements IAudioService {
     }
   }
 
-  void _handlePlayerStateChange(PlayerState playerState) {
+  void _handlePlayingStateChange(bool isPlaying) {
     Logger.info('🎵 STATE_DEBUG: ===== PLAYER STATE CHANGED =====');
-    Logger.info(
-        '🎵 STATE_DEBUG: Processing state: ${playerState.processingState}');
-    Logger.info('🎵 STATE_DEBUG: Playing: ${playerState.playing}');
-    Logger.info('🎵 STATE_DEBUG: Player position: ${_audioPlayer.position}');
-    Logger.info('🎵 STATE_DEBUG: Player duration: ${_audioPlayer.duration}');
+    Logger.info('🎵 STATE_DEBUG: Playing: $isPlaying');
+    Logger.info('🎵 STATE_DEBUG: Player position: ${_audioPlayer.state.position}');
+    Logger.info('🎵 STATE_DEBUG: Player duration: ${_audioPlayer.state.duration}');
 
-    final newAudioState = _computeAudioState(playerState);
+    final newAudioState = _computeAudioState(isPlaying);
     Logger.info(
         '🎵 STATE_DEBUG: Computed new audio state: ${newAudioState.runtimeType}');
 
@@ -300,18 +271,13 @@ final class EnhancedAudioService implements IAudioService {
     Logger.info('🎵 STATE_DEBUG: State updated and emitted');
   }
 
-  AudioState _computeAudioState(PlayerState playerState) {
+  AudioState _computeAudioState(bool isPlaying) {
     if (_currentConfig == null) return const AudioStateIdle();
 
-    // Smart state detection - trust position over processingState if actually playing
-    final position = _audioPlayer.position;
-    final isActuallyPlaying = _audioPlayer.playing && position.inSeconds > 0;
-
-    if (isActuallyPlaying &&
-        (playerState.processingState == ProcessingState.loading ||
-            playerState.processingState == ProcessingState.buffering)) {
-      Logger.debug(
-          'Smart detection: Actually playing despite processingState=${playerState.processingState}');
+    final position = _audioPlayer.state.position;
+    
+    // Simple state logic based on media_kit states
+    if (isPlaying) {
       return AudioStatePlaying(
         config: _currentConfig!,
         position: position,
@@ -320,32 +286,19 @@ final class EnhancedAudioService implements IAudioService {
         stats: _playbackStats,
       );
     }
-
-    return switch (playerState.processingState) {
-      ProcessingState.loading => AudioStateLoading(
-          config: _currentConfig!,
-          elapsed: _getElapsedTime(),
-        ),
-      ProcessingState.buffering => AudioStateBuffering(
-          config: _currentConfig!,
-          bufferSize: _currentBufferSize,
-          elapsed: _getElapsedTime(),
-        ),
-      ProcessingState.ready when playerState.playing => AudioStatePlaying(
-          config: _currentConfig!,
-          position: position,
-          bufferSize: _currentBufferSize,
-          quality: ConnectionQuality.fromBufferSize(_currentBufferSize),
-          stats: _playbackStats,
-        ),
-      ProcessingState.ready => AudioStatePaused(
-          config: _currentConfig!,
-          position: position,
-          bufferSize: _currentBufferSize,
-        ),
-      ProcessingState.completed => const AudioStateIdle(),
-      ProcessingState.idle => const AudioStateIdle(),
-    };
+    
+    if (position.inMilliseconds > 0) {
+      return AudioStatePaused(
+        config: _currentConfig!,
+        position: position,
+        bufferSize: _currentBufferSize,
+      );
+    }
+    
+    return AudioStateLoading(
+      config: _currentConfig!,
+      elapsed: _getElapsedTime(),
+    );
   }
 
   Duration _getElapsedTime() {
@@ -363,21 +316,61 @@ final class EnhancedAudioService implements IAudioService {
   }
 
   void _handleBufferUpdate(Duration bufferedPosition) {
-    final currentPosition = _audioPlayer.position;
+    final currentPosition = _audioPlayer.state.position;
     final rawBufferAhead = bufferedPosition - currentPosition;
-    _currentBufferSize =
-        Duration(seconds: rawBufferAhead.inSeconds.clamp(0, 10));
+    
+    Logger.info('🎵 BUFFER_DEBUG: ===== BUFFER UPDATE =====');
+    Logger.info('🎵 BUFFER_DEBUG: Current position: ${currentPosition.inSeconds}s');
+    Logger.info('🎵 BUFFER_DEBUG: Buffered position: ${bufferedPosition.inSeconds}s');
+    Logger.info('🎵 BUFFER_DEBUG: Raw buffer ahead: ${rawBufferAhead.inSeconds}s');
+    
+    // For live radio streams, buffer calculation is different
+    // If both positions are near zero (live stream), use buffer from MPV cache
+    if (currentPosition.inSeconds < 2 && bufferedPosition.inSeconds < 2) {
+      // Live stream: use a fixed reasonable buffer size based on time playing
+      final timePlaying = _streamStartTime != null 
+          ? DateTime.now().difference(_streamStartTime!)
+          : Duration.zero;
+      
+      Logger.info('🎵 BUFFER_DEBUG: Detected live stream (positions < 2s)');
+      Logger.info('🎵 BUFFER_DEBUG: Time playing: ${timePlaying.inSeconds}s');
+      
+      if (timePlaying.inSeconds > 5) {
+        // After 5 seconds of playing, assume we have some buffer
+        _currentBufferSize = const Duration(seconds: 5);
+        Logger.info('🎵 BUFFER_DEBUG: Live stream buffer estimated: 5s');
+      } else {
+        _currentBufferSize = Duration(seconds: timePlaying.inSeconds.clamp(0, 5));
+        Logger.info('🎵 BUFFER_DEBUG: Live stream buffer building: ${_currentBufferSize.inSeconds}s');
+      }
+    } else {
+      // Regular stream: use position difference
+      _currentBufferSize = Duration(seconds: rawBufferAhead.inSeconds.clamp(0, 10));
+      Logger.info('🎵 BUFFER_DEBUG: Regular stream buffer: ${_currentBufferSize.inSeconds}s');
+    }
+    
+    Logger.info('🎵 BUFFER_DEBUG: Final buffer size: ${_currentBufferSize.inSeconds}s');
     _lastBufferUpdate = DateTime.now();
 
     // Update current state if it includes buffer info
     if (_currentState case AudioStatePlaying playing) {
       final quality = ConnectionQuality.fromBufferSize(_currentBufferSize);
-      _currentState =
-          playing.copyWith(bufferSize: _currentBufferSize, quality: quality);
+      final newState = playing.copyWith(bufferSize: _currentBufferSize, quality: quality);
+      
+      Logger.info('🎵 BUFFER_DEBUG: Before update - playing.bufferSize: ${playing.bufferSize.inSeconds}s');
+      Logger.info('🎵 BUFFER_DEBUG: After copyWith - newState.bufferSize: ${newState.bufferSize.inSeconds}s');
+      Logger.info('🎵 BUFFER_DEBUG: About to emit state with buffer: ${newState.bufferSize.inSeconds}s');
+      
+      _currentState = newState;
       _stateController.add(_currentState);
+      
+      Logger.info('🎵 BUFFER_DEBUG: State emitted - _currentState.bufferSize: ${(_currentState as AudioStatePlaying).bufferSize.inSeconds}s');
     } else if (_currentState case AudioStateBuffering buffering) {
       _currentState = buffering.copyWith(bufferSize: _currentBufferSize);
+      Logger.info('🎵 BUFFER_DEBUG: Updated AudioStateBuffering with buffer: ${_currentBufferSize.inSeconds}s');
       _stateController.add(_currentState);
+    } else {
+      Logger.warning('🎵 BUFFER_DEBUG: Current state is not Playing or Buffering: ${_currentState.runtimeType}');
     }
   }
 
@@ -425,7 +418,7 @@ final class EnhancedAudioService implements IAudioService {
     Logger.error('🎵 ERROR_DEBUG: Error message: $errorMessage');
     Logger.error('🎵 ERROR_DEBUG: Current config: $_currentConfig');
     Logger.error(
-        '🎵 ERROR_DEBUG: Current player state: ${_audioPlayer.playerState}');
+        '🎵 ERROR_DEBUG: Current player state: ${_audioPlayer.state.playing}');
 
     // Enhanced HTTP error logging
     if (errorMessage.contains('400')) {
@@ -539,7 +532,7 @@ final class EnhancedAudioService implements IAudioService {
     if (_lastBufferUpdate != null &&
         _currentState.isPlaying &&
         now.difference(_lastBufferUpdate!) > Duration(minutes: 2) &&
-        _audioPlayer.position.inSeconds == 0) {
+        _audioPlayer.state.position.inSeconds == 0) {
       // Only trigger hang detection if position is also stuck at 0
       Logger.error('Buffer update hang detected (position also stuck)');
       _handlePlayerError(
@@ -598,55 +591,62 @@ final class EnhancedAudioService implements IAudioService {
         _currentConfig = config;
         Logger.info('🎵 AUDIO_DEBUG: Stream start time and config set');
 
-        // Create audio source - try different types for live streams
-        Logger.info('🎵 AUDIO_DEBUG: Parsing URI...');
-        final uri = Uri.parse(config.streamUrl);
-        Logger.info('🎵 AUDIO_DEBUG: URI parsed successfully: $uri');
+        // Open media with media_kit
+        Logger.info('🎵 AUDIO_DEBUG: Opening media source...');
+        final media = Media(
+          config.streamUrl,
+          httpHeaders: AudioConfig.getStreamingHeaders(),
+          // Extra options for live radio streams (MPV options)
+          extras: {
+            // Live streaming cache settings
+            'cache': 'yes',
+            'cache-secs': '20', // 20 seconds cache for live streams
+            'cache-pause': 'no', // Don't pause on buffer underrun for live
+            'cache-pause-wait': '1', // Resume quickly
+            
+            // Live stream specific options
+            'stream-buffer-size': '2097152', // 2MB stream buffer
+            'demuxer-cache-wait': 'no', // Don't wait for full cache
+            'demuxer-readahead-secs': '5.0', // 5 seconds readahead
+            
+            // Network timeouts
+            'network-timeout': '10', // 10 second network timeout
+            'stream-lavf-o': 'timeout=10000000', // 10 second timeout (microseconds)
+            
+            // Audio specific optimizations
+            'audio-buffer': '0.5', // 500ms audio buffer
+            'audio-stream-silence': 'yes', // Handle silence in streams
+            
+            // Disable video processing for audio-only streams
+            'vid': 'no',
+            'video': 'no',
+          },
+        );
+        Logger.info('🎵 AUDIO_DEBUG: Media created with cache options: ${config.streamUrl}');
 
-        AudioSource audioSource;
-
-        // Try Progressive for AAC live streams (not HLS)
-        Logger.info('🎵 AUDIO_DEBUG: Determining audio source type...');
-        if (config.streamUrl.contains('.m3u8')) {
-          audioSource = HlsAudioSource(uri);
-          Logger.info(
-              '🎵 AUDIO_DEBUG: Using HLS audio source for .m3u8 stream');
-        } else if (config.streamUrl.contains('live')) {
-          audioSource = ProgressiveAudioSource(uri);
-          Logger.info(
-              '🎵 AUDIO_DEBUG: Using Progressive audio source for live AAC stream');
-        } else {
-          audioSource = ProgressiveAudioSource(uri);
-          Logger.info(
-              '🎵 AUDIO_DEBUG: Using Progressive audio source for regular stream');
-        }
+        // Open media source with timeout to prevent hanging
+        Logger.info('🎵 AUDIO_DEBUG: About to call open...');
         Logger.info(
-            '🎵 AUDIO_DEBUG: Audio source created: ${audioSource.runtimeType}');
-
-        // Set audio source with timeout to prevent hanging
-        Logger.info('🎵 AUDIO_DEBUG: About to call setAudioSource...');
-        Logger.info(
-            '🎵 AUDIO_DEBUG: Current player state: ${_audioPlayer.playerState}');
+            '🎵 AUDIO_DEBUG: Current player state: ${_audioPlayer.state.playing}');
         try {
           final setSourceStartTime = DateTime.now();
-          final result = await _audioPlayer.setAudioSource(audioSource).timeout(
-            const Duration(seconds: 15), // Timeout for setAudioSource
+          await _audioPlayer.open(media).timeout(
+            const Duration(seconds: 15), // Timeout for open
             onTimeout: () {
               final elapsed = DateTime.now().difference(setSourceStartTime);
               Logger.error(
-                  '🎵 AUDIO_DEBUG: setAudioSource timed out after ${elapsed.inSeconds}s');
-              throw TimeoutException('setAudioSource operation timed out');
+                  '🎵 AUDIO_DEBUG: open timed out after ${elapsed.inSeconds}s');
+              throw TimeoutException('open operation timed out');
             },
           );
           final setSourceDuration =
               DateTime.now().difference(setSourceStartTime);
           Logger.info(
-              '🎵 AUDIO_DEBUG: setAudioSource completed successfully in ${setSourceDuration.inMilliseconds}ms');
-          Logger.info('🎵 AUDIO_DEBUG: setAudioSource result: $result');
+              '🎵 AUDIO_DEBUG: open completed successfully in ${setSourceDuration.inMilliseconds}ms');
           Logger.info(
-              '🎵 AUDIO_DEBUG: Player state after setAudioSource: ${_audioPlayer.playerState}');
+              '🎵 AUDIO_DEBUG: Player state after open: ${_audioPlayer.state.playing}');
         } catch (e, stackTrace) {
-          Logger.error('🎵 AUDIO_DEBUG: setAudioSource FAILED: $e');
+          Logger.error('🎵 AUDIO_DEBUG: open FAILED: $e');
           Logger.error('🎵 AUDIO_DEBUG: Stack trace: $stackTrace');
           rethrow;
         }
@@ -666,11 +666,11 @@ final class EnhancedAudioService implements IAudioService {
         // Start playback with timeout to prevent hanging
         Logger.info('🎵 AUDIO_DEBUG: About to call play()...');
         Logger.info(
-            '🎵 AUDIO_DEBUG: Player state before play(): ${_audioPlayer.playerState}');
+            '🎵 AUDIO_DEBUG: Player state before play(): ${_audioPlayer.state.playing}');
         Logger.info(
-            '🎵 AUDIO_DEBUG: Player position before play(): ${_audioPlayer.position}');
+            '🎵 AUDIO_DEBUG: Player position before play(): ${_audioPlayer.state.position}');
         Logger.info(
-            '🎵 AUDIO_DEBUG: Player duration before play(): ${_audioPlayer.duration}');
+            '🎵 AUDIO_DEBUG: Player duration before play(): ${_audioPlayer.state.duration}');
         try {
           final playStartTime = DateTime.now();
           await _audioPlayer.play().timeout(
@@ -686,9 +686,9 @@ final class EnhancedAudioService implements IAudioService {
           Logger.info(
               '🎵 AUDIO_DEBUG: play() completed successfully in ${playDuration.inMilliseconds}ms');
           Logger.info(
-              '🎵 AUDIO_DEBUG: Player state after play(): ${_audioPlayer.playerState}');
+              '🎵 AUDIO_DEBUG: Player state after play(): ${_audioPlayer.state.playing}');
           Logger.info(
-              '🎵 AUDIO_DEBUG: Player position after play(): ${_audioPlayer.position}');
+              '🎵 AUDIO_DEBUG: Player position after play(): ${_audioPlayer.state.position}');
         } catch (e, stackTrace) {
           Logger.error('🎵 AUDIO_DEBUG: play() FAILED: $e');
           Logger.error('🎵 AUDIO_DEBUG: Stack trace: $stackTrace');
@@ -747,22 +747,22 @@ final class EnhancedAudioService implements IAudioService {
               volume: _currentVolume,
             );
 
-        Logger.info('🎵 FAILOVER: Creating audio source from local file...');
-        final audioSource = ProgressiveAudioSource(Uri.file(filePath));
+        Logger.info('🎵 FAILOVER: Creating media from local file...');
+        final media = Media('file://$filePath');
 
-        // Set audio source
-        Logger.info('🎵 FAILOVER: Setting audio source...');
-        await _audioPlayer.setAudioSource(audioSource).timeout(
+        // Open media source
+        Logger.info('🎵 FAILOVER: Opening media...');
+        await _audioPlayer.open(media).timeout(
           const Duration(seconds: 10),
           onTimeout: () {
-            Logger.error('🎵 FAILOVER: setAudioSource timed out');
-            throw TimeoutException('setAudioSource operation timed out');
+            Logger.error('🎵 FAILOVER: open timed out');
+            throw TimeoutException('open operation timed out');
           },
         );
 
         // Set volume
         Logger.info('🎵 FAILOVER: Setting volume...');
-        await _audioPlayer.setVolume(_currentVolume);
+        await _audioPlayer.setVolume(_currentVolume * 100); // media_kit uses 0-100 scale
 
         // Start playback
         Logger.info('🎵 FAILOVER: Starting playback...');
@@ -821,7 +821,7 @@ final class EnhancedAudioService implements IAudioService {
   Future<Result<void>> setVolume(double volume) async {
     return tryResultAsync(() async {
       _currentVolume = volume.clamp(0.0, 1.0);
-      await _audioPlayer.setVolume(_currentVolume);
+      await _audioPlayer.setVolume(_currentVolume * 100); // media_kit uses 0-100 scale
     });
   }
 
@@ -835,9 +835,9 @@ final class EnhancedAudioService implements IAudioService {
     _cancelTimeouts();
     _hangDetectionTimer?.cancel();
 
-    await _playerStateSubscription?.cancel();
+    await _playingSubscription?.cancel();
     await _positionSubscription?.cancel();
-    await _bufferedPositionSubscription?.cancel();
+    await _bufferSubscription?.cancel();
     await _connectivitySubscription?.cancel();
 
     await _audioPlayer.dispose();

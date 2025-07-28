@@ -276,11 +276,18 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   AudioState? _getAudioState() {
-    return switch (_radioState) {
+    final audioState = switch (_radioState) {
       RadioStateConnected(:final audioState) => audioState,
       RadioStateFailover(:final audioState) => audioState,
       _ => null,
     };
+    
+    // Debug buffer value
+    if (audioState is AudioStatePlaying) {
+      Logger.info('🎵 UI_DEBUG: UI reading AudioStatePlaying with buffer: ${audioState.bufferSize.inSeconds}s');
+    }
+    
+    return audioState;
   }
 
   String _getStatusText() {

@@ -157,6 +157,19 @@ final class EnhancedRadioService implements IRadioService {
     _startStateMonitoring();
   }
 
+  bool _isBufferChangeSignificant(AudioState newAudioState) {
+    if (_currentState case RadioStateConnected connected) {
+      final currentAudioState = connected.audioState;
+      
+      // Consider buffer changes significant for UI updates
+      if (newAudioState is AudioStatePlaying && currentAudioState is AudioStatePlaying) {
+        // Update UI when buffer size changes
+        return newAudioState.bufferSize != currentAudioState.bufferSize;
+      }
+    }
+    return false;
+  }
+
   void _handleAudioStateChange(AudioState audioState) {
     // Only log significant state changes, not position updates
     final currentType = (_currentState is RadioStateConnected)
@@ -164,7 +177,8 @@ final class EnhancedRadioService implements IRadioService {
         : null;
     final isSignificantChange = currentType != audioState.runtimeType ||
         (audioState is AudioStateError) ||
-        (audioState is AudioStateLoading);
+        (audioState is AudioStateLoading) ||
+        _isBufferChangeSignificant(audioState);
 
     if (isSignificantChange) {
       Logger.info('Audio state changed: ${audioState.runtimeType}');
@@ -463,7 +477,7 @@ final class EnhancedRadioService implements IRadioService {
       final apiStartTime = DateTime.now();
 
       final config = await _apiService.getStreamConfig(token).timeout(
-        const Duration(seconds: 5),
+        const Duration(seconds: 20), // Increased to match ApiService timeout + buffer
         onTimeout: () {
           final elapsed = DateTime.now().difference(apiStartTime);
           Logger.error(
@@ -1140,8 +1154,8 @@ final class EnhancedRadioService implements IRadioService {
       final timeInConnecting = now.difference(_connectingStateStartTime!);
       final stage = _currentConnectionStage ?? 'UNKNOWN_STAGE';
 
-      // If stuck in connecting for more than 5 seconds, force recovery (faster)
-      if (timeInConnecting.inSeconds > 5) {
+      // If stuck in connecting for more than 25 seconds, force recovery
+      if (timeInConnecting.inSeconds > 25) {
         Logger.error(
             '🚨 CRITICAL: Detected hung connecting state for ${timeInConnecting.inSeconds}s at stage [$stage] - forcing recovery');
         _forceConnectionRecovery(
@@ -1150,7 +1164,7 @@ final class EnhancedRadioService implements IRadioService {
       }
 
       // Warn if connecting too long but not yet forcing recovery
-      if (timeInConnecting.inSeconds > 3) {
+      if (timeInConnecting.inSeconds > 10) {
         Logger.warning(
             '⚠️ Connecting state prolonged: ${timeInConnecting.inSeconds}s at stage [$stage]');
       }
