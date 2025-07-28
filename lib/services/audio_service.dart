@@ -296,7 +296,7 @@ final class EnhancedAudioService implements IAudioService {
 
     final position = _audioPlayer.state.position;
 
-    // Simple state logic based on media_kit states
+    // Simple state logic: if playing -> Playing, otherwise -> Loading/Paused based on position
     if (isPlaying) {
       return AudioStatePlaying(
         config: _currentConfig!,
@@ -307,6 +307,7 @@ final class EnhancedAudioService implements IAudioService {
       );
     }
 
+    // If not playing but we have position, consider it paused
     if (position.inMilliseconds > 0) {
       return AudioStatePaused(
         config: _currentConfig!,
@@ -315,6 +316,7 @@ final class EnhancedAudioService implements IAudioService {
       );
     }
 
+    // Otherwise, still loading
     return AudioStateLoading(
       config: _currentConfig!,
       elapsed: _getElapsedTime(),
@@ -327,37 +329,7 @@ final class EnhancedAudioService implements IAudioService {
   }
 
   void _handlePositionUpdate(Duration position) {
-    // Check for track completion based on position vs duration
-    final duration = _audioPlayer.state.duration;
-    final isPlaying = _audioPlayer.state.playing;
-    
-    // If we have both position and duration, check if track is near the end
-    // BUT ONLY for non-live streams (duration > 10 seconds indicates it's a real track, not live stream)
-    if (duration != Duration.zero && position != Duration.zero && duration.inSeconds > 10) {
-      final remainingTime = duration - position;
-      
-      // Track is considered complete if less than 1 second remaining
-      if (remainingTime.inMilliseconds < 1000 && remainingTime.inMilliseconds >= 0) {
-        Logger.info('🎵 POSITION_DEBUG: ===== TRACK END DETECTED BY POSITION =====');
-        Logger.info('🎵 POSITION_DEBUG: Position: ${position.inSeconds}s, Duration: ${duration.inSeconds}s');
-        Logger.info('🎵 POSITION_DEBUG: Remaining: ${remainingTime.inMilliseconds}ms');
-        Logger.info('🎵 POSITION_DEBUG: Is playing: $isPlaying');
-        Logger.info('🎵 POSITION_DEBUG: Current config: ${_currentConfig?.title}');
-        
-        // Force transition to Idle state when track is near completion
-        if (_currentConfig != null) {
-          Logger.info('🎵 POSITION_DEBUG: Track near end - transitioning to AudioStateIdle');
-          _currentState = const AudioStateIdle();
-          _stateController.add(_currentState);
-          Logger.info('🎵 POSITION_DEBUG: AudioStateIdle event sent to radio service');
-          return; // Don't update position after transitioning to Idle
-        }
-      }
-    } else if (duration.inSeconds <= 10 && duration != Duration.zero) {
-      Logger.debug('🎵 POSITION_DEBUG: Ignoring position-based track end detection for live stream (duration: ${duration.inSeconds}s)');
-    }
-    
-    // Update current state if it includes position
+    // Simple position update - no track end detection for live streams
     if (_currentState is AudioStatePlaying) {
       final playing = _currentState as AudioStatePlaying;
       _currentState = playing.copyWith(position: position);
@@ -440,20 +412,11 @@ final class EnhancedAudioService implements IAudioService {
   }
 
   void _handleTrackCompleted(bool completed) {
-    Logger.info('🎵 COMPLETED_DEBUG: ===== TRACK COMPLETED EVENT =====');
-    Logger.info('🎵 COMPLETED_DEBUG: Track completed: $completed');
-    Logger.info('🎵 COMPLETED_DEBUG: Current config: ${_currentConfig?.title}');
-    Logger.info('🎵 COMPLETED_DEBUG: Player position: ${_audioPlayer.state.position}');
-    Logger.info('🎵 COMPLETED_DEBUG: Player duration: ${_audioPlayer.state.duration}');
-    
+    // For live streams, completion events are rare and should be handled simply
     if (completed && _currentConfig != null) {
-      Logger.info('🎵 COMPLETED_DEBUG: Track has ended - transitioning to AudioStateIdle');
-      
-      // Force transition to Idle state when track completes
+      Logger.info('Track completed - transitioning to idle');
       _currentState = const AudioStateIdle();
       _stateController.add(_currentState);
-      
-      Logger.info('🎵 COMPLETED_DEBUG: AudioStateIdle event sent to radio service');
     }
   }
 

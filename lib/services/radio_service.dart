@@ -295,10 +295,11 @@ final class EnhancedRadioService implements IRadioService {
         Logger.info('🚨 FAILOVER_DEBUG: Previous failover audio state: ${failover.audioState.runtimeType}');
         
         // If track ended naturally, try to restore LIVE stream first
+        // Track can end either Playing→Idle or Playing→Paused→Idle
         if (audioState is AudioStateIdle &&
-            failover.audioState is AudioStatePlaying) {
+            (failover.audioState is AudioStatePlaying || failover.audioState is AudioStatePaused)) {
           Logger.info(
-              '🚨 FAILOVER_DEBUG: Failover track completed naturally (Playing → Idle)');
+              '🚨 FAILOVER_DEBUG: Failover track completed naturally (${failover.audioState.runtimeType} → Idle)');
           Logger.info(
               '🚨 FAILOVER_DEBUG: Attempting to restore LIVE stream first...');
           _tryRestoreAfterTrackEnd(failover);
