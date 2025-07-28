@@ -289,16 +289,25 @@ final class EnhancedRadioService implements IRadioService {
           _currentState = newState;
         }
 
+        // Add detailed logging for failover state changes
+        Logger.info('🚨 FAILOVER_DEBUG: ===== FAILOVER AUDIO STATE CHANGE =====');
+        Logger.info('🚨 FAILOVER_DEBUG: New audio state: ${audioState.runtimeType}');
+        Logger.info('🚨 FAILOVER_DEBUG: Previous failover audio state: ${failover.audioState.runtimeType}');
+        
         // If track ended naturally, try to restore LIVE stream first
         if (audioState is AudioStateIdle &&
             failover.audioState is AudioStatePlaying) {
           Logger.info(
-              'Failover track completed naturally, attempting to restore LIVE stream');
+              '🚨 FAILOVER_DEBUG: Failover track completed naturally (Playing → Idle)');
+          Logger.info(
+              '🚨 FAILOVER_DEBUG: Attempting to restore LIVE stream first...');
           _tryRestoreAfterTrackEnd(failover);
         } else if (audioState is AudioStateError && !audioState.isRetryable) {
           Logger.warning(
-              'Failover track failed with non-retryable error, attempting to restore LIVE stream');
+              '🚨 FAILOVER_DEBUG: Failover track failed with non-retryable error, attempting to restore LIVE stream');
           _tryRestoreAfterTrackEnd(failover);
+        } else {
+          Logger.info('🚨 FAILOVER_DEBUG: No restore needed - ${audioState.runtimeType} from ${failover.audioState.runtimeType}');
         }
 
       default:
@@ -957,7 +966,10 @@ final class EnhancedRadioService implements IRadioService {
     }
 
     Logger.info(
+        '🔄 RESTORE: ===== STARTING RESTORE PROCESS AFTER TRACK END =====');
+    Logger.info(
         '🔄 RESTORE: Attempting to restore LIVE stream after failover track completion');
+    Logger.info('🔄 RESTORE: Failover token: ${failover.token}');
     _isFailoverOperationInProgress = true;
 
     unawaited(() async {

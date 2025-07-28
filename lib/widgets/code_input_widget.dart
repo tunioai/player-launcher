@@ -143,10 +143,10 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
                 borderRadius: BorderRadius.circular(8),
                 color: _digits[index].isNotEmpty
                     ? (_focusNode.hasFocus
-                        ? TunioColors.primary.withValues(alpha: 0.1)
+                        ? TunioColors.primary.withOpacity(0.1)
                         : Colors.grey[50])
                     : (_focusNode.hasFocus
-                        ? TunioColors.primary.withValues(alpha: 0.05)
+                        ? TunioColors.primary.withOpacity(0.05)
                         : Colors.white),
               ),
               child: Center(
@@ -213,8 +213,8 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
               borderRadius: BorderRadius.circular(8),
               color: widget.enabled
                   ? (_focusNode.hasFocus
-                      ? TunioColors.primary.withValues(alpha: 0.1)
-                      : TunioColors.primary.withValues(alpha: 0.05))
+                      ? TunioColors.primary.withOpacity(0.1)
+                      : TunioColors.primary.withOpacity(0.05))
                   : Colors.grey[100],
             ),
             child: Text(
