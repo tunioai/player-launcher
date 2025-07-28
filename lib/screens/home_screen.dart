@@ -281,12 +281,13 @@ class _HomeScreenState extends State<HomeScreen> {
       RadioStateFailover(:final audioState) => audioState,
       _ => null,
     };
-    
+
     // Debug buffer value
     if (audioState is AudioStatePlaying) {
-      Logger.info('🎵 UI_DEBUG: UI reading AudioStatePlaying with buffer: ${audioState.bufferSize.inSeconds}s');
+      Logger.info(
+          '🎵 UI_DEBUG: UI reading AudioStatePlaying with buffer: ${audioState.bufferSize.inSeconds}s');
     }
-    
+
     return audioState;
   }
 

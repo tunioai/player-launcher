@@ -160,9 +160,10 @@ final class EnhancedRadioService implements IRadioService {
   bool _isBufferChangeSignificant(AudioState newAudioState) {
     if (_currentState case RadioStateConnected connected) {
       final currentAudioState = connected.audioState;
-      
+
       // Consider buffer changes significant for UI updates
-      if (newAudioState is AudioStatePlaying && currentAudioState is AudioStatePlaying) {
+      if (newAudioState is AudioStatePlaying &&
+          currentAudioState is AudioStatePlaying) {
         // Update UI when buffer size changes
         return newAudioState.bufferSize != currentAudioState.bufferSize;
       }
@@ -477,7 +478,8 @@ final class EnhancedRadioService implements IRadioService {
       final apiStartTime = DateTime.now();
 
       final config = await _apiService.getStreamConfig(token).timeout(
-        const Duration(seconds: 20), // Increased to match ApiService timeout + buffer
+        const Duration(
+            seconds: 20), // Increased to match ApiService timeout + buffer
         onTimeout: () {
           final elapsed = DateTime.now().difference(apiStartTime);
           Logger.error(

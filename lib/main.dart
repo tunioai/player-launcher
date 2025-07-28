@@ -10,7 +10,7 @@ import 'utils/logger.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
+
   // Initialize media_kit
   MediaKit.ensureInitialized();
 

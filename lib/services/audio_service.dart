@@ -109,7 +109,6 @@ final class EnhancedAudioService implements IAudioService {
     });
   }
 
-
   Future<void> _initializeAudioPlayer() async {
     Logger.info('🎵 INIT_DEBUG: ===== INITIALIZING AUDIO PLAYER =====');
     Logger.info('🎵 INIT_DEBUG: User agent: ${AudioConfig.userAgent}');
@@ -118,22 +117,34 @@ final class EnhancedAudioService implements IAudioService {
     final configuration = PlayerConfiguration(
       // Buffer settings for live radio streams
       bufferSize: AudioConfig.androidTargetBufferBytes,
-      
+
       // Optimize for live streaming
       logLevel: MPVLogLevel.info,
-      
+
       // Enable additional protocol support for radio streams
       protocolWhitelist: [
-        'udp', 'rtp', 'tcp', 'tls', 'data', 'file', 
-        'http', 'https', 'crypto', 'hls', 'dash'
+        'udp',
+        'rtp',
+        'tcp',
+        'tls',
+        'data',
+        'file',
+        'http',
+        'https',
+        'crypto',
+        'hls',
+        'dash'
       ],
     );
 
     _audioPlayer = Player(configuration: configuration);
 
-    Logger.info('🎵 INIT_DEBUG: AudioPlayer instance created with buffer config');
-    Logger.info('🎵 INIT_DEBUG: Buffer size: ${AudioConfig.androidTargetBufferBytes ~/ (1024 * 1024)}MB');
-    Logger.info('🎵 INIT_DEBUG: Initial player state: ${_audioPlayer.state.playing}');
+    Logger.info(
+        '🎵 INIT_DEBUG: AudioPlayer instance created with buffer config');
+    Logger.info(
+        '🎵 INIT_DEBUG: Buffer size: ${AudioConfig.androidTargetBufferBytes ~/ (1024 * 1024)}MB');
+    Logger.info(
+        '🎵 INIT_DEBUG: Initial player state: ${_audioPlayer.state.playing}');
     Logger.info('🎵 INIT_DEBUG: ===== AUDIO PLAYER INITIALIZED =====');
   }
 
@@ -221,8 +232,10 @@ final class EnhancedAudioService implements IAudioService {
   void _handlePlayingStateChange(bool isPlaying) {
     Logger.info('🎵 STATE_DEBUG: ===== PLAYER STATE CHANGED =====');
     Logger.info('🎵 STATE_DEBUG: Playing: $isPlaying');
-    Logger.info('🎵 STATE_DEBUG: Player position: ${_audioPlayer.state.position}');
-    Logger.info('🎵 STATE_DEBUG: Player duration: ${_audioPlayer.state.duration}');
+    Logger.info(
+        '🎵 STATE_DEBUG: Player position: ${_audioPlayer.state.position}');
+    Logger.info(
+        '🎵 STATE_DEBUG: Player duration: ${_audioPlayer.state.duration}');
 
     final newAudioState = _computeAudioState(isPlaying);
     Logger.info(
@@ -275,7 +288,7 @@ final class EnhancedAudioService implements IAudioService {
     if (_currentConfig == null) return const AudioStateIdle();
 
     final position = _audioPlayer.state.position;
-    
+
     // Simple state logic based on media_kit states
     if (isPlaying) {
       return AudioStatePlaying(
@@ -286,7 +299,7 @@ final class EnhancedAudioService implements IAudioService {
         stats: _playbackStats,
       );
     }
-    
+
     if (position.inMilliseconds > 0) {
       return AudioStatePaused(
         config: _currentConfig!,
@@ -294,7 +307,7 @@ final class EnhancedAudioService implements IAudioService {
         bufferSize: _currentBufferSize,
       );
     }
-    
+
     return AudioStateLoading(
       config: _currentConfig!,
       elapsed: _getElapsedTime(),
@@ -318,59 +331,74 @@ final class EnhancedAudioService implements IAudioService {
   void _handleBufferUpdate(Duration bufferedPosition) {
     final currentPosition = _audioPlayer.state.position;
     final rawBufferAhead = bufferedPosition - currentPosition;
-    
+
     Logger.info('🎵 BUFFER_DEBUG: ===== BUFFER UPDATE =====');
-    Logger.info('🎵 BUFFER_DEBUG: Current position: ${currentPosition.inSeconds}s');
-    Logger.info('🎵 BUFFER_DEBUG: Buffered position: ${bufferedPosition.inSeconds}s');
-    Logger.info('🎵 BUFFER_DEBUG: Raw buffer ahead: ${rawBufferAhead.inSeconds}s');
-    
+    Logger.info(
+        '🎵 BUFFER_DEBUG: Current position: ${currentPosition.inSeconds}s');
+    Logger.info(
+        '🎵 BUFFER_DEBUG: Buffered position: ${bufferedPosition.inSeconds}s');
+    Logger.info(
+        '🎵 BUFFER_DEBUG: Raw buffer ahead: ${rawBufferAhead.inSeconds}s');
+
     // For live radio streams, buffer calculation is different
     // If both positions are near zero (live stream), use buffer from MPV cache
     if (currentPosition.inSeconds < 2 && bufferedPosition.inSeconds < 2) {
       // Live stream: use a fixed reasonable buffer size based on time playing
-      final timePlaying = _streamStartTime != null 
+      final timePlaying = _streamStartTime != null
           ? DateTime.now().difference(_streamStartTime!)
           : Duration.zero;
-      
+
       Logger.info('🎵 BUFFER_DEBUG: Detected live stream (positions < 2s)');
       Logger.info('🎵 BUFFER_DEBUG: Time playing: ${timePlaying.inSeconds}s');
-      
+
       if (timePlaying.inSeconds > 5) {
         // After 5 seconds of playing, assume we have some buffer
         _currentBufferSize = const Duration(seconds: 5);
         Logger.info('🎵 BUFFER_DEBUG: Live stream buffer estimated: 5s');
       } else {
-        _currentBufferSize = Duration(seconds: timePlaying.inSeconds.clamp(0, 5));
-        Logger.info('🎵 BUFFER_DEBUG: Live stream buffer building: ${_currentBufferSize.inSeconds}s');
+        _currentBufferSize =
+            Duration(seconds: timePlaying.inSeconds.clamp(0, 5));
+        Logger.info(
+            '🎵 BUFFER_DEBUG: Live stream buffer building: ${_currentBufferSize.inSeconds}s');
       }
     } else {
       // Regular stream: use position difference
-      _currentBufferSize = Duration(seconds: rawBufferAhead.inSeconds.clamp(0, 10));
-      Logger.info('🎵 BUFFER_DEBUG: Regular stream buffer: ${_currentBufferSize.inSeconds}s');
+      _currentBufferSize =
+          Duration(seconds: rawBufferAhead.inSeconds.clamp(0, 10));
+      Logger.info(
+          '🎵 BUFFER_DEBUG: Regular stream buffer: ${_currentBufferSize.inSeconds}s');
     }
-    
-    Logger.info('🎵 BUFFER_DEBUG: Final buffer size: ${_currentBufferSize.inSeconds}s');
+
+    Logger.info(
+        '🎵 BUFFER_DEBUG: Final buffer size: ${_currentBufferSize.inSeconds}s');
     _lastBufferUpdate = DateTime.now();
 
     // Update current state if it includes buffer info
     if (_currentState case AudioStatePlaying playing) {
       final quality = ConnectionQuality.fromBufferSize(_currentBufferSize);
-      final newState = playing.copyWith(bufferSize: _currentBufferSize, quality: quality);
-      
-      Logger.info('🎵 BUFFER_DEBUG: Before update - playing.bufferSize: ${playing.bufferSize.inSeconds}s');
-      Logger.info('🎵 BUFFER_DEBUG: After copyWith - newState.bufferSize: ${newState.bufferSize.inSeconds}s');
-      Logger.info('🎵 BUFFER_DEBUG: About to emit state with buffer: ${newState.bufferSize.inSeconds}s');
-      
+      final newState =
+          playing.copyWith(bufferSize: _currentBufferSize, quality: quality);
+
+      Logger.info(
+          '🎵 BUFFER_DEBUG: Before update - playing.bufferSize: ${playing.bufferSize.inSeconds}s');
+      Logger.info(
+          '🎵 BUFFER_DEBUG: After copyWith - newState.bufferSize: ${newState.bufferSize.inSeconds}s');
+      Logger.info(
+          '🎵 BUFFER_DEBUG: About to emit state with buffer: ${newState.bufferSize.inSeconds}s');
+
       _currentState = newState;
       _stateController.add(_currentState);
-      
-      Logger.info('🎵 BUFFER_DEBUG: State emitted - _currentState.bufferSize: ${(_currentState as AudioStatePlaying).bufferSize.inSeconds}s');
+
+      Logger.info(
+          '🎵 BUFFER_DEBUG: State emitted - _currentState.bufferSize: ${(_currentState as AudioStatePlaying).bufferSize.inSeconds}s');
     } else if (_currentState case AudioStateBuffering buffering) {
       _currentState = buffering.copyWith(bufferSize: _currentBufferSize);
-      Logger.info('🎵 BUFFER_DEBUG: Updated AudioStateBuffering with buffer: ${_currentBufferSize.inSeconds}s');
+      Logger.info(
+          '🎵 BUFFER_DEBUG: Updated AudioStateBuffering with buffer: ${_currentBufferSize.inSeconds}s');
       _stateController.add(_currentState);
     } else {
-      Logger.warning('🎵 BUFFER_DEBUG: Current state is not Playing or Buffering: ${_currentState.runtimeType}');
+      Logger.warning(
+          '🎵 BUFFER_DEBUG: Current state is not Playing or Buffering: ${_currentState.runtimeType}');
     }
   }
 
@@ -603,26 +631,28 @@ final class EnhancedAudioService implements IAudioService {
             'cache-secs': '20', // 20 seconds cache for live streams
             'cache-pause': 'no', // Don't pause on buffer underrun for live
             'cache-pause-wait': '1', // Resume quickly
-            
+
             // Live stream specific options
             'stream-buffer-size': '2097152', // 2MB stream buffer
             'demuxer-cache-wait': 'no', // Don't wait for full cache
             'demuxer-readahead-secs': '5.0', // 5 seconds readahead
-            
+
             // Network timeouts
             'network-timeout': '10', // 10 second network timeout
-            'stream-lavf-o': 'timeout=10000000', // 10 second timeout (microseconds)
-            
+            'stream-lavf-o':
+                'timeout=10000000', // 10 second timeout (microseconds)
+
             // Audio specific optimizations
             'audio-buffer': '0.5', // 500ms audio buffer
             'audio-stream-silence': 'yes', // Handle silence in streams
-            
+
             // Disable video processing for audio-only streams
             'vid': 'no',
             'video': 'no',
           },
         );
-        Logger.info('🎵 AUDIO_DEBUG: Media created with cache options: ${config.streamUrl}');
+        Logger.info(
+            '🎵 AUDIO_DEBUG: Media created with cache options: ${config.streamUrl}');
 
         // Open media source with timeout to prevent hanging
         Logger.info('🎵 AUDIO_DEBUG: About to call open...');
@@ -762,7 +792,8 @@ final class EnhancedAudioService implements IAudioService {
 
         // Set volume
         Logger.info('🎵 FAILOVER: Setting volume...');
-        await _audioPlayer.setVolume(_currentVolume * 100); // media_kit uses 0-100 scale
+        await _audioPlayer
+            .setVolume(_currentVolume * 100); // media_kit uses 0-100 scale
 
         // Start playback
         Logger.info('🎵 FAILOVER: Starting playback...');
@@ -821,7 +852,8 @@ final class EnhancedAudioService implements IAudioService {
   Future<Result<void>> setVolume(double volume) async {
     return tryResultAsync(() async {
       _currentVolume = volume.clamp(0.0, 1.0);
-      await _audioPlayer.setVolume(_currentVolume * 100); // media_kit uses 0-100 scale
+      await _audioPlayer
+          .setVolume(_currentVolume * 100); // media_kit uses 0-100 scale
     });
   }
 
