@@ -204,8 +204,8 @@ final class EnhancedRadioService implements IRadioService {
           Logger.warning(
               'Audio error detected: ${audioState.message}, isRetryable: ${audioState.isRetryable}');
 
-          // Faster detection - wait only 3 seconds for stream loss
-          Timer(const Duration(seconds: 3), () {
+          // Wait 15 seconds before activating failover to allow stream to recover
+          Timer(const Duration(seconds: 15), () {
             // Check if we're still in error state after delay
             if (_currentState is RadioStateConnected &&
                 !_isConnectionInProgress) {
@@ -231,8 +231,8 @@ final class EnhancedRadioService implements IRadioService {
           Logger.error(
               '🚨 STREAM INTERRUPTION: Stream unexpectedly stopped while we were playing');
 
-          // Wait 2 seconds to see if it recovers automatically
-          Timer(const Duration(seconds: 2), () {
+          // Wait 10 seconds to see if it recovers automatically
+          Timer(const Duration(seconds: 10), () {
             if (_currentState is RadioStateConnected &&
                 !_isConnectionInProgress &&
                 !_isStreamSwitchInProgress) {
@@ -1058,8 +1058,8 @@ final class EnhancedRadioService implements IRadioService {
     // Initial ping
     _performPing(host);
 
-    // Schedule periodic pings every 10 seconds for faster network failure detection
-    _pingTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+    // Schedule periodic pings every 30 seconds to reduce load
+    _pingTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       _performPing(host);
     });
   }

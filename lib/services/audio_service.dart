@@ -47,6 +47,7 @@ final class EnhancedAudioService implements IAudioService {
   StreamSubscription<bool>? _playingSubscription;
   StreamSubscription<Duration>? _positionSubscription;
   StreamSubscription<Duration>? _bufferSubscription;
+  StreamSubscription<bool>? _completedSubscription;
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
 
   // Current stream tracking
@@ -165,6 +166,12 @@ final class EnhancedAudioService implements IAudioService {
     _bufferSubscription = _audioPlayer.stream.buffer.listen(
       _handleBufferUpdate,
       onError: (error) => Logger.error('Buffer stream error: $error'),
+    );
+
+    // Completed event monitoring
+    _completedSubscription = _audioPlayer.stream.completed.listen(
+      _handleTrackCompleted,
+      onError: (error) => Logger.error('Completed stream error: $error'),
     );
 
     // Network monitoring
@@ -320,6 +327,36 @@ final class EnhancedAudioService implements IAudioService {
   }
 
   void _handlePositionUpdate(Duration position) {
+    // Check for track completion based on position vs duration
+    final duration = _audioPlayer.state.duration;
+    final isPlaying = _audioPlayer.state.playing;
+    
+    // If we have both position and duration, check if track is near the end
+    // BUT ONLY for non-live streams (duration > 10 seconds indicates it's a real track, not live stream)
+    if (duration != Duration.zero && position != Duration.zero && duration.inSeconds > 10) {
+      final remainingTime = duration - position;
+      
+      // Track is considered complete if less than 1 second remaining
+      if (remainingTime.inMilliseconds < 1000 && remainingTime.inMilliseconds >= 0) {
+        Logger.info('🎵 POSITION_DEBUG: ===== TRACK END DETECTED BY POSITION =====');
+        Logger.info('🎵 POSITION_DEBUG: Position: ${position.inSeconds}s, Duration: ${duration.inSeconds}s');
+        Logger.info('🎵 POSITION_DEBUG: Remaining: ${remainingTime.inMilliseconds}ms');
+        Logger.info('🎵 POSITION_DEBUG: Is playing: $isPlaying');
+        Logger.info('🎵 POSITION_DEBUG: Current config: ${_currentConfig?.title}');
+        
+        // Force transition to Idle state when track is near completion
+        if (_currentConfig != null) {
+          Logger.info('🎵 POSITION_DEBUG: Track near end - transitioning to AudioStateIdle');
+          _currentState = const AudioStateIdle();
+          _stateController.add(_currentState);
+          Logger.info('🎵 POSITION_DEBUG: AudioStateIdle event sent to radio service');
+          return; // Don't update position after transitioning to Idle
+        }
+      }
+    } else if (duration.inSeconds <= 10 && duration != Duration.zero) {
+      Logger.debug('🎵 POSITION_DEBUG: Ignoring position-based track end detection for live stream (duration: ${duration.inSeconds}s)');
+    }
+    
     // Update current state if it includes position
     if (_currentState is AudioStatePlaying) {
       final playing = _currentState as AudioStatePlaying;
@@ -399,6 +436,24 @@ final class EnhancedAudioService implements IAudioService {
     } else {
       Logger.warning(
           '🎵 BUFFER_DEBUG: Current state is not Playing or Buffering: ${_currentState.runtimeType}');
+    }
+  }
+
+  void _handleTrackCompleted(bool completed) {
+    Logger.info('🎵 COMPLETED_DEBUG: ===== TRACK COMPLETED EVENT =====');
+    Logger.info('🎵 COMPLETED_DEBUG: Track completed: $completed');
+    Logger.info('🎵 COMPLETED_DEBUG: Current config: ${_currentConfig?.title}');
+    Logger.info('🎵 COMPLETED_DEBUG: Player position: ${_audioPlayer.state.position}');
+    Logger.info('🎵 COMPLETED_DEBUG: Player duration: ${_audioPlayer.state.duration}');
+    
+    if (completed && _currentConfig != null) {
+      Logger.info('🎵 COMPLETED_DEBUG: Track has ended - transitioning to AudioStateIdle');
+      
+      // Force transition to Idle state when track completes
+      _currentState = const AudioStateIdle();
+      _stateController.add(_currentState);
+      
+      Logger.info('🎵 COMPLETED_DEBUG: AudioStateIdle event sent to radio service');
     }
   }
 
@@ -870,6 +925,7 @@ final class EnhancedAudioService implements IAudioService {
     await _playingSubscription?.cancel();
     await _positionSubscription?.cancel();
     await _bufferSubscription?.cancel();
+    await _completedSubscription?.cancel();
     await _connectivitySubscription?.cancel();
 
     await _audioPlayer.dispose();
