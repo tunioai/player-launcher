@@ -26,14 +26,14 @@ class AudioConfig {
       Duration(seconds: 5); // Slow devices/poor network
   static const Duration androidTVPrebuffer = Duration(seconds: 4); // TV devices
 
-  // Network and quality settings
+  // Network and quality settings - Enhanced for maximum stability
   static const int targetBufferBytes =
-      8 * 1024 * 1024; // 8MB (increased for Android)
+      16 * 1024 * 1024; // Increased to 16MB for maximum stability
   static const int androidTargetBufferBytes =
-      8 * 1024 * 1024; // 8MB for Android
-  static const int tvTargetBufferBytes = 4 * 1024 * 1024; // 4MB for TV
+      16 * 1024 * 1024; // 16MB for Android - maximum stability
+  static const int tvTargetBufferBytes = 12 * 1024 * 1024; // Increased to 12MB for TV
   static const int maxBitRate = 320000; // 320 kbps
-  static const String userAgent = 'TunioRadioPlayer/1.0 (Mobile; Streaming)';
+  static const String userAgent = 'TunioRadioPlayer/1.0 (Mobile; Streaming; Icecast2)';
 
   // Buffer health monitoring
   static const Duration bufferCheckInterval = Duration(seconds: 2);
@@ -59,7 +59,11 @@ class AudioConfig {
   static Map<String, String> getStreamingHeaders() {
     return {
       'User-Agent': userAgent,
-      // Minimal headers - only User-Agent to avoid conflicts
+      'Accept': '*/*',
+      'Connection': 'keep-alive',
+      'Icy-MetaData': '1', // Request Icecast2 metadata
+      'Cache-Control': 'no-cache', // Disable caching for live streams
+      'Accept-Encoding': 'identity', // Disable compression for live streams
     };
   }
 

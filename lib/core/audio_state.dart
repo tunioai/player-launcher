@@ -184,9 +184,9 @@ enum ConnectionQuality {
   static ConnectionQuality fromBufferSize(Duration bufferSize) {
     final seconds = bufferSize.inSeconds;
     return switch (seconds) {
-      <= 2 => ConnectionQuality.poor,
-      <= 5 => ConnectionQuality.fair,
-      <= 10 => ConnectionQuality.good,
+      <= 3 => ConnectionQuality.poor,
+      <= 8 => ConnectionQuality.fair,
+      <= 15 => ConnectionQuality.good,
       _ => ConnectionQuality.excellent,
     };
   }
