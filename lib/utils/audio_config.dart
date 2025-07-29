@@ -26,11 +26,11 @@ class AudioConfig {
       Duration(seconds: 5); // Slow devices/poor network
   static const Duration androidTVPrebuffer = Duration(seconds: 4); // TV devices
 
-  // Network and quality settings - Enhanced for maximum stability
+  // Network and quality settings - Optimized for live radio streams
   static const int targetBufferBytes =
-      16 * 1024 * 1024; // Increased to 16MB for maximum stability
+      4 * 1024 * 1024; // 4MB - optimal for live streams, reduces memory pressure
   static const int androidTargetBufferBytes =
-      16 * 1024 * 1024; // 16MB for Android - maximum stability
+      4 * 1024 * 1024; // 4MB for Android - balanced stability and memory usage
   static const int tvTargetBufferBytes = 12 * 1024 * 1024; // Increased to 12MB for TV
   static const int maxBitRate = 320000; // 320 kbps
   static const String userAgent = 'TunioRadioPlayer/1.0 (Mobile; Streaming; Icecast2)';
@@ -41,13 +41,13 @@ class AudioConfig {
   static const int goodBufferThresholdSeconds = 10; // Healthy threshold
   static const int excellentBufferThresholdSeconds = 20; // Excellent threshold
 
-  // Live streaming simplified approach
+  // Live streaming optimized approach for Icecast2
   static const Duration liveStreamStartupDelay =
-      Duration(seconds: 4); // Configurable startup delay (tested: 2s, 4s work)
+      Duration(seconds: 2); // Reduced for faster startup
   static const Duration liveStreamFastStartup =
-      Duration(seconds: 2); // Fast networks
+      Duration(seconds: 1); // Very fast for good connections
   static const Duration liveStreamSlowStartup =
-      Duration(seconds: 6); // Slow networks
+      Duration(seconds: 3); // Moderate for poor connections
 
   // Simple live stream settings - no complex buffering
   static const Duration simpleMinBuffer = Duration(seconds: 5); // Stable buffer

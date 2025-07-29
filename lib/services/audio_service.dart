@@ -73,10 +73,10 @@ final class EnhancedAudioService implements IAudioService {
   String?
       _currentStreamUrl; // Track current stream URL to prevent duplicate connections
 
-  // Configuration
-  static const Duration _loadingTimeout = Duration(seconds: 20);
-  static const Duration _hangDetectionInterval = Duration(seconds: 10);
-  static const Duration _maxHangTime = Duration(seconds: 30);
+  // Configuration - optimized for live stream stability
+  static const Duration _loadingTimeout = Duration(seconds: 30); // Increased for live streams
+  static const Duration _hangDetectionInterval = Duration(seconds: 15); // Less aggressive checking
+  static const Duration _maxHangTime = Duration(seconds: 45); // More tolerance for live streams
 
   @override
   Stream<AudioState> get stateStream => _stateController.stream;
@@ -349,40 +349,33 @@ final class EnhancedAudioService implements IAudioService {
     Logger.info(
         '🎵 BUFFER_DEBUG: Raw buffer ahead: ${rawBufferAhead.inSeconds}s');
 
-    // Enhanced buffer calculation for live Icecast2 streams
+    // Optimized buffer calculation for stable Icecast2 live streams
     final timePlaying = _streamStartTime != null
         ? DateTime.now().difference(_streamStartTime!)
         : Duration.zero;
 
-    // For live radio streams, we need to estimate buffer based on cache settings
-    // since MPV doesn't provide accurate buffer positions for live streams
-    // Live streams typically have rawBufferAhead of 1-2 seconds regardless of actual cache
+    // For live radio streams, use conservative buffer estimation
+    // Prevents over-buffering which can cause playback issues
     if (rawBufferAhead.inSeconds <= 2) {
-      Logger.info('🎵 BUFFER_DEBUG: Detected live stream - using cache-based estimation');
+      Logger.info('🎵 BUFFER_DEBUG: Live stream detected - using conservative estimation');
       Logger.info('🎵 BUFFER_DEBUG: Time playing: ${timePlaying.inSeconds}s');
 
-      // Calculate buffer based on REAL accumulation time, not theoretical values
+      // Use conservative buffer calculation for stability
       final baseBufferSeconds = _getExpectedCacheBuffer();
       
-      if (timePlaying.inSeconds < 3) {
-        // Initial phase: minimal buffer
-        _currentBufferSize = Duration(seconds: timePlaying.inSeconds.clamp(0, 3));
-        Logger.info('🎵 BUFFER_DEBUG: Initial phase: ${_currentBufferSize.inSeconds}s');
-      } else if (timePlaying.inSeconds < 15) {
-        // Growing phase: realistic buffer accumulation (1s per second until 12s)
-        final realBuffer = (timePlaying.inSeconds - 3).clamp(0, 12) + 3;
+      if (timePlaying.inSeconds < 2) {
+        // Quick startup phase: very minimal buffer
+        _currentBufferSize = Duration(seconds: timePlaying.inSeconds.clamp(0, 2));
+        Logger.info('🎵 BUFFER_DEBUG: Quick startup: ${_currentBufferSize.inSeconds}s');
+      } else if (timePlaying.inSeconds < 8) {
+        // Growing phase: gradual buffer build (like Howl.js)
+        final realBuffer = (timePlaying.inSeconds - 2).clamp(0, 6) + 2;
         _currentBufferSize = Duration(seconds: realBuffer);
-        Logger.info('🎵 BUFFER_DEBUG: Growing buffer: ${_currentBufferSize.inSeconds}s (${timePlaying.inSeconds}s playing)');
-      } else if (timePlaying.inSeconds < 30) {
-        // Maturing phase: slow growth to target
-        final maturityProgress = (timePlaying.inSeconds - 15) / 15; // 0.0 to 1.0 over 15 seconds
-        final currentBuffer = 15 + ((baseBufferSeconds - 15) * maturityProgress).toInt();
-        _currentBufferSize = Duration(seconds: currentBuffer.clamp(15, baseBufferSeconds));
-        Logger.info('🎵 BUFFER_DEBUG: Maturing buffer: ${_currentBufferSize.inSeconds}s (progress: ${(maturityProgress * 100).toInt()}%)');
+        Logger.info('🎵 BUFFER_DEBUG: Building buffer: ${_currentBufferSize.inSeconds}s (${timePlaying.inSeconds}s playing)');
       } else {
-        // Stable phase: reached target buffer
-        _currentBufferSize = Duration(seconds: baseBufferSeconds);
-        Logger.info('🎵 BUFFER_DEBUG: Stable buffer reached: ${_currentBufferSize.inSeconds}s');
+        // Stable phase: maintain conservative buffer
+        _currentBufferSize = Duration(seconds: baseBufferSeconds.clamp(4, 10));
+        Logger.info('🎵 BUFFER_DEBUG: Stable conservative buffer: ${_currentBufferSize.inSeconds}s');
       }
     } else {
       // Non-live stream: use actual position difference
@@ -651,9 +644,9 @@ final class EnhancedAudioService implements IAudioService {
         _currentConfig = config;
         Logger.info('🎵 AUDIO_DEBUG: Stream start time and config set');
 
-        // Adaptive pre-buffering delay based on network conditions
+        // Minimal pre-buffering for faster startup (like Howl.js)
         final prebufferDelay = await _calculateOptimalPrebufferDelay();
-        Logger.info('🎵 AUDIO_DEBUG: Pre-buffering for ${prebufferDelay.inSeconds}s to accumulate buffer...');
+        Logger.info('🎵 AUDIO_DEBUG: Pre-buffering for ${prebufferDelay.inSeconds}s for stable connection...');
         await Future.delayed(prebufferDelay);
 
         // Open media with media_kit
@@ -664,62 +657,69 @@ final class EnhancedAudioService implements IAudioService {
         final media = Media(
           config.streamUrl,
           httpHeaders: AudioConfig.getStreamingHeaders(),
-          // Optimized MPV options specifically for Icecast2 live radio streams with adaptive buffering
+          // Optimized MPV options specifically for Icecast2 live radio streams
           extras: {
             // Adaptive cache settings based on network conditions
             ...adaptiveSettings,
 
-            // Additional MPV cache optimizations for maximum stability
-            'cache-backbuffer': '5', // Keep 5 seconds of back buffer
-            'cache-on-disk': 'no', // Don't use disk cache for live streams
+            // Critical MPV cache optimizations for live stream stability
+            'cache-backbuffer': '3', // Reduced back buffer for live streams
+            'cache-on-disk': 'no', // Memory-only cache for live streams
+            'cache-pause': 'no', // Never pause on buffer underrun - critical for live
             'cache-pause-restart': 'no', // Don't restart cache on pause
-            'cache-dir': '', // Disable cache directory
             
-            // Advanced demuxer settings for better buffering
-            'demuxer-thread': 'yes', // Use separate thread for demuxing
-            'demuxer-lavf-analyzeduration': '5000000', // 5 seconds analysis duration
-            'demuxer-lavf-probesize': '2097152', // 2MB probe size
-            'demuxer-lavf-format': 'mp3,aac', // Hint about expected formats
+            // Demuxer optimizations for Icecast2 MP3/AAC streams
+            'demuxer-thread': 'yes', // Separate demuxing thread
+            'demuxer-lavf-analyzeduration': '2000000', // 2s analysis - faster startup
+            'demuxer-lavf-probesize': '1048576', // 1MB probe - sufficient for radio
+            'demuxer-lavf-format': 'mp3,aac,ogg', // Expected Icecast2 formats
+            'demuxer-readahead-secs': '3.0', // Conservative readahead
 
-            // Network settings optimized for Icecast2 HTTP streams
-            'network-timeout': '10', // 10 seconds - balanced timeout
-            'stream-lavf-o': 'timeout=10000000,reconnect=1,reconnect_streamed=1,reconnect_delay_max=2,reconnect_at_eof=1,stimeout=5000000', // Enhanced Icecast2 reconnection
+            // Enhanced network settings for Icecast2 reliability
+            'network-timeout': '15', // Increased timeout for stability
+            'stream-lavf-o': 'timeout=15000000,reconnect=1,reconnect_streamed=1,reconnect_delay_max=1,reconnect_at_eof=1,stimeout=8000000,multiple_requests=1', // Optimized Icecast2 reconnection
+            'demuxer-lavf-o': 'timeout=10000000,reconnect=1,reconnect_streamed=1', // Additional demuxer reconnection
             'user-agent': AudioConfig.userAgent,
 
-            // Audio buffer settings optimized for live radio
-            'audio-buffer': '0.5', // 500ms audio buffer - good balance for live streams
-            'audio-stream-silence': 'yes', // Handle silence gaps in radio streams
+            // Audio processing optimized for continuous playback
+            'audio-buffer': '0.2', // Reduced buffer latency for live feel
+            'audio-stream-silence': 'yes', // Handle Icecast2 silence gaps
             'audio-samplerate': '44100', // Standard radio sample rate
-            'audio-channels': 'stereo', // Ensure stereo output
-            'audio-format': 'float', // Use float format for better quality
+            'audio-channels': 'auto', // Auto-detect channel layout
+            'audio-format': 's16', // Stable format for live streams
 
-            // HTTP streaming optimizations for Icecast2
-            'http-header-fields': 'Connection: keep-alive,Accept: */*,Icy-MetaData: 1', // Icecast2 metadata support
-            'stream-record': '', // Don't record stream to disk
-            'stream-dump': '', // Don't dump stream
+            // Icecast2-specific HTTP optimizations
+            'http-header-fields': 'Connection: keep-alive,Accept: */*,Icy-MetaData: 1,Cache-Control: no-cache', // Enhanced Icecast2 headers
+            'stream-record': '', // No recording
+            'stream-dump': '', // No dumping
             
-            // Icecast2 burst handling (simulates burst-on-connect)
-            'prefetch-playlist': 'yes', // Prefetch for smoother start
-            'stream-fast-open': 'yes', // Fast stream opening
+            // Fast connection establishment
+            'stream-fast-open': 'yes', // Quick stream opening
+            'tls-verify': 'no', // Skip TLS verification for speed
             
-            // Live stream specific optimizations
-            'vid': 'no', // No video for radio
-            'video': 'no', // Explicitly disable video decoding
-            'untimed': 'no', // Keep timing for smooth playback
-            'hr-seek': 'no', // Disable high-res seeking for live streams
-            'save-position-on-quit': 'no', // Don't save position for live streams
+            // Live stream behavior
+            'vid': 'no', // Audio only
+            'video': 'no', // Disable video processing
+            'untimed': 'no', // Maintain timing
+            'hr-seek': 'no', // No seeking in live streams
+            'save-position-on-quit': 'no', // No position saving
 
-            // Connection keep-alive and stability
-            'keep-open': 'yes', // Keep connection open
-            'keep-open-pause': 'no', // Don't pause when keeping open
-            'idle': 'no', // Don't idle between tracks
-            'loop-playlist': 'no', // Don't loop playlist for live streams
+            // Connection persistence
+            'keep-open': 'yes', // Maintain connection
+            'keep-open-pause': 'no', // Don't pause on keep-open
+            'idle': 'no', // No idle state
+            'loop-playlist': 'no', // No looping
             
-            // Performance optimizations for radio streams
-            'hwdec': 'no', // No hardware decoding needed for audio
+            // Performance and stability
+            'hwdec': 'no', // Software decoding for stability
             'vo': 'null', // No video output
-            'really-quiet': 'no', // Keep some logging for debugging
-            'msg-level': 'all=info', // Info level logging
+            'really-quiet': 'no', // Keep essential logging
+            'msg-level': 'all=warn', // Reduce log verbosity
+            
+            // Critical: Prevent MPV from being too aggressive with buffering
+            'force-seekable': 'no', // Don't force seekability on live streams
+            'stream-cache': 'yes', // Enable stream caching
+            'stream-cache-size': '2048', // 2MB stream cache
           },
         );
         Logger.info('🎵 AUDIO_DEBUG: Media created with adaptive cache options:');
@@ -730,14 +730,14 @@ final class EnhancedAudioService implements IAudioService {
         Logger.info('🎵 AUDIO_DEBUG: - expected-buffer: ${_getExpectedCacheBuffer()}s');
         Logger.info('🎵 AUDIO_DEBUG: Stream URL: ${config.streamUrl}');
 
-        // Open media source with timeout to prevent hanging
+        // Open media source with extended timeout for live streams
         Logger.info('🎵 AUDIO_DEBUG: About to call open...');
         Logger.info(
             '🎵 AUDIO_DEBUG: Current player state: ${_audioPlayer.state.playing}');
         try {
           final setSourceStartTime = DateTime.now();
           await _audioPlayer.open(media).timeout(
-            const Duration(seconds: 15), // Timeout for open
+            const Duration(seconds: 25), // Extended timeout for live streams
             onTimeout: () {
               final elapsed = DateTime.now().difference(setSourceStartTime);
               Logger.error(
@@ -949,19 +949,19 @@ final class EnhancedAudioService implements IAudioService {
           final responseTime = stopwatch.elapsedMilliseconds;
           Logger.info('🌐 NETWORK: Connectivity test: ${responseTime}ms');
           
-          // Adaptive delay based on network response time
+          // Minimal delay for all network types - prioritize fast startup
           if (responseTime < 100) {
-            // Fast network (WiFi, good mobile)
-            Logger.info('🌐 NETWORK: Fast network detected - using standard pre-buffer');
-            return const Duration(seconds: 5);
+            // Fast network - minimal delay like Howl.js
+            Logger.info('🌐 NETWORK: Fast network detected - minimal pre-buffer');
+            return const Duration(seconds: 1);
           } else if (responseTime < 500) {
-            // Medium network (average mobile)
-            Logger.info('🌐 NETWORK: Medium network detected - using extended pre-buffer');
-            return const Duration(seconds: 6);
+            // Medium network - short delay
+            Logger.info('🌐 NETWORK: Medium network detected - short pre-buffer');
+            return const Duration(seconds: 2);
           } else {
-            // Slow network (poor mobile, congested)
-            Logger.info('🌐 NETWORK: Slow network detected - using maximum pre-buffer');
-            return const Duration(seconds: 8);
+            // Slow network - moderate delay
+            Logger.info('🌐 NETWORK: Slow network detected - moderate pre-buffer');
+            return const Duration(seconds: 3);
           }
         }
       } catch (e) {
@@ -971,63 +971,63 @@ final class EnhancedAudioService implements IAudioService {
       Logger.warning('🌐 NETWORK: Pre-buffer calculation failed: $e');
     }
     
-    // Default fallback
-    Logger.info('🌐 NETWORK: Using default pre-buffer delay');
-    return const Duration(seconds: 5);
+    // Default fallback - minimal for fast startup
+    Logger.info('🌐 NETWORK: Using minimal default pre-buffer delay');
+    return const Duration(seconds: 2);
   }
 
   /// Get adaptive cache settings based on network conditions
   Map<String, String> _getAdaptiveCacheSettings() {
-    // Base settings optimized for Icecast2
+    // Base settings optimized for Icecast2 stability
     final settings = <String, String>{
-      // Core cache settings optimized for live Icecast2 streams
+      // Core cache settings - balanced for live radio stability
       'cache': 'yes',
-      'cache-secs': '15', // Optimal 15 seconds for live radio
-      'cache-pause': 'no', // Never pause on buffer underrun
-      'cache-pause-wait': '0.2', // Resume immediately after minimal buffer
-      'cache-pause-initial': 'no', // Don't pause during initial loading
-      'cache-seek-min': '500', // Minimum cache for seeking (500KB)
+      'cache-secs': '8', // Reduced cache for live streams - prevents over-buffering
+      'cache-pause': 'no', // CRITICAL: Never pause on buffer underrun
+      'cache-pause-wait': '0.1', // Minimal wait before resume
+      'cache-pause-initial': 'no', // Start playing immediately
+      'cache-seek-min': '128', // Minimal seek cache (128KB)
 
-      // Icecast2-specific stream buffer optimization
-      'stream-buffer-size': '262144', // 256KB - optimal for radio streams
-      'demuxer-cache-wait': 'no', // Don't wait for full demuxer cache
-      'demuxer-readahead-secs': '5.0', // 5 seconds readahead
-      'demuxer-max-bytes': '2097152', // 2MB demuxer buffer
-      'demuxer-seekable-cache': 'yes', // Enable seekable cache
+      // Stream buffer optimized for Icecast2 stability
+      'stream-buffer-size': '131072', // 128KB - prevents memory pressure
+      'demuxer-cache-wait': 'no', // Don't wait for cache fill
+      'demuxer-readahead-secs': '2.0', // Conservative readahead
+      'demuxer-max-bytes': '1048576', // 1MB demuxer buffer
+      'demuxer-seekable-cache': 'no', // Disable for live streams
     };
 
-    // Adapt based on current network state
+    // Adapt based on network conditions - conservative approach for stability
     if (_networkState.isConnected) {
       switch (_networkState.type) {
         case ConnectionType.wifi:
-          // WiFi - can handle larger buffers
-          Logger.info('🌐 ADAPTIVE: WiFi detected - using optimal buffers');
-          settings['cache-secs'] = '20'; // Increase cache for stability
-          settings['demuxer-readahead-secs'] = '8.0'; // More readahead
+          // WiFi - moderate buffers to prevent over-buffering
+          Logger.info('🌐 ADAPTIVE: WiFi detected - using moderate buffers for stability');
+          settings['cache-secs'] = '10'; // Conservative for live streams
+          settings['demuxer-readahead-secs'] = '3.0'; // Moderate readahead
           break;
           
         case ConnectionType.mobile:
-          // Mobile data - be more conservative
-          Logger.info('🌐 ADAPTIVE: Mobile data detected - using conservative buffers');
-          settings['cache-secs'] = '12'; // Smaller cache to avoid data waste
-          settings['demuxer-readahead-secs'] = '4.0'; // Less readahead
+          // Mobile data - minimal buffers for efficiency
+          Logger.info('🌐 ADAPTIVE: Mobile data detected - using minimal buffers');
+          settings['cache-secs'] = '6'; // Minimal cache for mobile
+          settings['demuxer-readahead-secs'] = '2.0'; // Conservative readahead
           break;
           
         case ConnectionType.ethernet:
-          // Ethernet - best performance
-          Logger.info('🌐 ADAPTIVE: Ethernet detected - using maximum buffers');
-          settings['cache-secs'] = '25'; // Maximum cache for best stability
-          settings['demuxer-readahead-secs'] = '10.0'; // Maximum readahead
+          // Ethernet - slightly larger but not excessive
+          Logger.info('🌐 ADAPTIVE: Ethernet detected - using stable buffers');
+          settings['cache-secs'] = '12'; // Stable cache for ethernet
+          settings['demuxer-readahead-secs'] = '4.0'; // Moderate readahead
           break;
           
         default:
-          Logger.info('🌐 ADAPTIVE: Unknown connection - using default buffers');
+          Logger.info('🌐 ADAPTIVE: Unknown connection - using conservative defaults');
       }
     } else {
-      // No network - minimal settings
-      Logger.warning('🌐 ADAPTIVE: No network detected - using minimal buffers');
-      settings['cache-secs'] = '8';
-      settings['demuxer-readahead-secs'] = '3.0';
+      // No network - absolute minimal settings
+      Logger.warning('🌐 ADAPTIVE: No network detected - using minimal settings');
+      settings['cache-secs'] = '4';
+      settings['demuxer-readahead-secs'] = '1.0';
     }
 
     return settings;
@@ -1035,20 +1035,20 @@ final class EnhancedAudioService implements IAudioService {
 
   /// Get expected cache buffer size based on current network settings
   int _getExpectedCacheBuffer() {
-    // Return expected buffer size based on our adaptive cache settings
+    // Return conservative buffer sizes optimized for live stream stability
     if (_networkState.isConnected) {
       switch (_networkState.type) {
         case ConnectionType.wifi:
-          return 20; // WiFi can handle larger buffers
+          return 10; // Moderate buffer for WiFi stability
         case ConnectionType.ethernet:
-          return 25; // Ethernet - maximum stability
+          return 12; // Slightly larger for ethernet
         case ConnectionType.mobile:
-          return 12; // Mobile - conservative
+          return 6; // Conservative for mobile data
         default:
-          return 15; // Default
+          return 8; // Conservative default
       }
     } else {
-      return 8; // Minimal for offline
+      return 4; // Minimal for offline scenarios
     }
   }
 

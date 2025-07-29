@@ -781,6 +781,10 @@ final class EnhancedRadioService implements IRadioService {
           if (needsRestart) {
             Logger.info('Stream restart required due to URL change');
 
+            // Clear failover cache when stream URL changes (different station/stream)
+            Logger.info('🧹 CLEANUP: Stream URL changed, clearing failover cache');
+            unawaited(_failoverService.clearCache());
+
             // Set flag to prevent failover during planned stream switch
             _isStreamSwitchInProgress = true;
 
