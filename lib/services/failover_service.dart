@@ -112,6 +112,9 @@ class FailoverService implements IFailoverService {
 
         // Update count after successful download
         _updateCachedCount();
+        
+        // Clean up excess tracks if needed
+        await _cleanupExcessTracks();
       } else {
         Logger.error(
             'FailoverService: Failed to download track ${track.uuid}: HTTP ${response.statusCode}');
