@@ -86,7 +86,8 @@ class FailoverService implements IFailoverService {
 
     // Check if we're at the limit BEFORE downloading
     final currentCount = _getCachedTracksCountSync();
-    if (currentCount >= AppConstants.maxFailoverTracks && !await file.exists()) {
+    if (currentCount >= AppConstants.maxFailoverTracks &&
+        !await file.exists()) {
       Logger.info(
           'FailoverService: Cache limit reached ($currentCount/${AppConstants.maxFailoverTracks}), skipping download');
       return; // Don't download if at limit
@@ -112,7 +113,7 @@ class FailoverService implements IFailoverService {
 
         // Update count after successful download
         _updateCachedCount();
-        
+
         // Clean up excess tracks if needed
         await _cleanupExcessTracks();
       } else {

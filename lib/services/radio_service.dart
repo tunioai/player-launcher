@@ -205,17 +205,19 @@ final class EnhancedRadioService implements IRadioService {
               'Audio error detected: ${audioState.message}, isRetryable: ${audioState.isRetryable}');
 
           // Check if this is a network error and we should activate failover immediately
-          final isNetworkError = audioState.message.contains('No internet connection') ||
-              audioState.message.contains('Connection failed') ||
-              audioState.message.contains('Failed host lookup') ||
-              audioState.message.contains('SocketException') ||
-              audioState.message.contains('Network error') ||
-              audioState.message.contains('Connection timeout');
+          final isNetworkError =
+              audioState.message.contains('No internet connection') ||
+                  audioState.message.contains('Connection failed') ||
+                  audioState.message.contains('Failed host lookup') ||
+                  audioState.message.contains('SocketException') ||
+                  audioState.message.contains('Network error') ||
+                  audioState.message.contains('Connection timeout');
 
           if (isNetworkError && _failoverService.cachedTracksCount > 0) {
             Logger.info(
                 '🚨 INSTANT FAILOVER: Network error detected in audio state - activating failover immediately');
-            _activateFailover(connected, 'Network error: ${audioState.message}');
+            _activateFailover(
+                connected, 'Network error: ${audioState.message}');
             return;
           }
 
@@ -782,7 +784,8 @@ final class EnhancedRadioService implements IRadioService {
             Logger.info('Stream restart required due to URL change');
 
             // Clear failover cache when stream URL changes (different station/stream)
-            Logger.info('🧹 CLEANUP: Stream URL changed, clearing failover cache');
+            Logger.info(
+                '🧹 CLEANUP: Stream URL changed, clearing failover cache');
             unawaited(_failoverService.clearCache());
 
             // Set flag to prevent failover during planned stream switch

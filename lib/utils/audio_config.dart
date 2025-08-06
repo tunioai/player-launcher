@@ -27,13 +27,16 @@ class AudioConfig {
   static const Duration androidTVPrebuffer = Duration(seconds: 4); // TV devices
 
   // Network and quality settings - Optimized for live radio streams
-  static const int targetBufferBytes =
-      4 * 1024 * 1024; // 4MB - optimal for live streams, reduces memory pressure
+  static const int targetBufferBytes = 4 *
+      1024 *
+      1024; // 4MB - optimal for live streams, reduces memory pressure
   static const int androidTargetBufferBytes =
       4 * 1024 * 1024; // 4MB for Android - balanced stability and memory usage
-  static const int tvTargetBufferBytes = 12 * 1024 * 1024; // Increased to 12MB for TV
+  static const int tvTargetBufferBytes =
+      12 * 1024 * 1024; // Increased to 12MB for TV
   static const int maxBitRate = 320000; // 320 kbps
-  static const String userAgent = 'TunioRadioPlayer/1.0 (Mobile; Streaming; Icecast2)';
+  static const String userAgent =
+      'TunioRadioPlayer/1.0 (Mobile; Streaming; Icecast2)';
 
   // Buffer health monitoring
   static const Duration bufferCheckInterval = Duration(seconds: 2);
