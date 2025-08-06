@@ -204,7 +204,24 @@ final class EnhancedRadioService implements IRadioService {
           Logger.warning(
               'Audio error detected: ${audioState.message}, isRetryable: ${audioState.isRetryable}');
 
-          // Wait 15 seconds before activating failover to allow stream to recover
+          // Check if this is a network error and we should activate failover immediately
+          final isNetworkError =
+              audioState.message.contains('No internet connection') ||
+                  audioState.message.contains('Connection failed') ||
+                  audioState.message.contains('Failed host lookup') ||
+                  audioState.message.contains('SocketException') ||
+                  audioState.message.contains('Network error') ||
+                  audioState.message.contains('Connection timeout');
+
+          if (isNetworkError && _failoverService.cachedTracksCount > 0) {
+            Logger.info(
+                '🚨 INSTANT FAILOVER: Network error detected in audio state - activating failover immediately');
+            _activateFailover(
+                connected, 'Network error: ${audioState.message}');
+            return;
+          }
+
+          // Wait 15 seconds before activating failover to allow stream to recover (for non-network errors)
           Timer(const Duration(seconds: 15), () {
             // Check if we're still in error state after delay
             if (_currentState is RadioStateConnected &&
@@ -213,7 +230,7 @@ final class EnhancedRadioService implements IRadioService {
                   (_currentState as RadioStateConnected).audioState;
               if (currentAudioState is AudioStateError) {
                 Logger.error(
-                    'Stream lost - activating failover immediately (retryable: ${currentAudioState.isRetryable})');
+                    'Stream lost - activating failover after delay (retryable: ${currentAudioState.isRetryable})');
                 _activateFailover(
                     connected, 'Stream lost: ${currentAudioState.message}');
               } else {
@@ -765,6 +782,11 @@ final class EnhancedRadioService implements IRadioService {
 
           if (needsRestart) {
             Logger.info('Stream restart required due to URL change');
+
+            // Clear failover cache when stream URL changes (different station/stream)
+            Logger.info(
+                '🧹 CLEANUP: Stream URL changed, clearing failover cache');
+            unawaited(_failoverService.clearCache());
 
             // Set flag to prevent failover during planned stream switch
             _isStreamSwitchInProgress = true;

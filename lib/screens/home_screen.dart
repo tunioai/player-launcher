@@ -596,7 +596,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
 
-            // Диагностический индикатор внизу
+            // Diagnostic indicator at the bottom
             if (_radioState.isConnecting || _radioState is RadioStateError)
               Container(
                 padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
@@ -791,11 +791,13 @@ class _HomeScreenState extends State<HomeScreen> {
         icon: Icons.memory,
         label: 'Buffer',
         value: '${audioState.bufferSize.inSeconds}s',
-        color: audioState.bufferSize.inSeconds >= 3
+        color: audioState.bufferSize.inSeconds >= 10
             ? Colors.green
-            : audioState.bufferSize.inSeconds >= 1
-                ? Colors.orange
-                : Colors.red,
+            : audioState.bufferSize.inSeconds >= 5
+                ? Colors.lightGreen
+                : audioState.bufferSize.inSeconds >= 3
+                    ? Colors.orange
+                    : Colors.red,
       ),
 
       // Quality

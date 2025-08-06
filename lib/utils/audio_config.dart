@@ -26,14 +26,17 @@ class AudioConfig {
       Duration(seconds: 5); // Slow devices/poor network
   static const Duration androidTVPrebuffer = Duration(seconds: 4); // TV devices
 
-  // Network and quality settings
-  static const int targetBufferBytes =
-      8 * 1024 * 1024; // 8MB (increased for Android)
+  // Network and quality settings - Optimized for live radio streams
+  static const int targetBufferBytes = 4 *
+      1024 *
+      1024; // 4MB - optimal for live streams, reduces memory pressure
   static const int androidTargetBufferBytes =
-      8 * 1024 * 1024; // 8MB for Android
-  static const int tvTargetBufferBytes = 4 * 1024 * 1024; // 4MB for TV
+      4 * 1024 * 1024; // 4MB for Android - balanced stability and memory usage
+  static const int tvTargetBufferBytes =
+      12 * 1024 * 1024; // Increased to 12MB for TV
   static const int maxBitRate = 320000; // 320 kbps
-  static const String userAgent = 'TunioRadioPlayer/1.0 (Mobile; Streaming)';
+  static const String userAgent =
+      'TunioRadioPlayer/1.0 (Mobile; Streaming; Icecast2)';
 
   // Buffer health monitoring
   static const Duration bufferCheckInterval = Duration(seconds: 2);
@@ -41,13 +44,13 @@ class AudioConfig {
   static const int goodBufferThresholdSeconds = 10; // Healthy threshold
   static const int excellentBufferThresholdSeconds = 20; // Excellent threshold
 
-  // Live streaming simplified approach
+  // Live streaming optimized approach for Icecast2
   static const Duration liveStreamStartupDelay =
-      Duration(seconds: 4); // Configurable startup delay (tested: 2s, 4s work)
+      Duration(seconds: 2); // Reduced for faster startup
   static const Duration liveStreamFastStartup =
-      Duration(seconds: 2); // Fast networks
+      Duration(seconds: 1); // Very fast for good connections
   static const Duration liveStreamSlowStartup =
-      Duration(seconds: 6); // Slow networks
+      Duration(seconds: 3); // Moderate for poor connections
 
   // Simple live stream settings - no complex buffering
   static const Duration simpleMinBuffer = Duration(seconds: 5); // Stable buffer
@@ -59,7 +62,11 @@ class AudioConfig {
   static Map<String, String> getStreamingHeaders() {
     return {
       'User-Agent': userAgent,
-      // Minimal headers - only User-Agent to avoid conflicts
+      'Accept': '*/*',
+      'Connection': 'keep-alive',
+      'Icy-MetaData': '1', // Request Icecast2 metadata
+      'Cache-Control': 'no-cache', // Disable caching for live streams
+      'Accept-Encoding': 'identity', // Disable compression for live streams
     };
   }
 

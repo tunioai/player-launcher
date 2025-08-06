@@ -26,7 +26,7 @@ class FailoverService implements IFailoverService {
   late Directory _cacheDirectory;
   bool _isInitialized = false;
   final Set<String> _downloadingTracks = {};
-  Timer? _cleanupTimer;
+  // Timer? _cleanupTimer; // Removed automatic cleanup
 
   @override
   Future<void> initialize() async {
@@ -44,12 +44,7 @@ class FailoverService implements IFailoverService {
       }
 
       // Clean up old files on startup
-      await _cleanupOldTracks();
-
-      // Start periodic cleanup every 10 minutes
-      _cleanupTimer = Timer.periodic(const Duration(minutes: 10), (_) {
-        unawaited(_cleanupOldTracks());
-      });
+      // Initial cleanup removed - will be handled manually
 
       _isInitialized = true;
       _updateCachedCount();
@@ -89,6 +84,15 @@ class FailoverService implements IFailoverService {
       }
     }
 
+    // Check if we're at the limit BEFORE downloading
+    final currentCount = _getCachedTracksCountSync();
+    if (currentCount >= AppConstants.maxFailoverTracks &&
+        !await file.exists()) {
+      Logger.info(
+          'FailoverService: Cache limit reached ($currentCount/${AppConstants.maxFailoverTracks}), skipping download');
+      return; // Don't download if at limit
+    }
+
     _downloadingTracks.add(track.uuid);
 
     try {
@@ -110,7 +114,7 @@ class FailoverService implements IFailoverService {
         // Update count after successful download
         _updateCachedCount();
 
-        // Clean up if we have too many tracks (prioritize removing old tracks)
+        // Clean up excess tracks if needed
         await _cleanupExcessTracks();
       } else {
         Logger.error(
@@ -322,7 +326,7 @@ class FailoverService implements IFailoverService {
 
   @override
   Future<void> dispose() async {
-    _cleanupTimer?.cancel();
+    // _cleanupTimer?.cancel(); // Removed automatic cleanup
     await _cachedTracksCountController.close();
     Logger.info('FailoverService: Disposed');
   }

@@ -106,8 +106,8 @@ jobs:
         name: macos-builds
         path: build/macos/Build/Products/Release/tunio-spot-macos.tar.gz
         
-  build-windows:
-    name: Build Windows
+  build-windows-x64:
+    name: Build Windows x64
     runs-on: windows-latest
     
     steps:
@@ -132,29 +132,75 @@ jobs:
     - name: Enable Windows desktop
       run: flutter config --enable-windows-desktop
       
-    - name: Build Windows app
+    - name: Build Windows x64 app
       run: flutter build windows --release
       
-    - name: List Windows build output
+    - name: List Windows x64 build output
       run: |
         dir build\windows\x64\runner\Release
       shell: cmd
       
-    - name: Create Windows archive
+    - name: Create Windows x64 archive
       run: |
         cd build/windows/x64/runner/Release
-        Compress-Archive -Path * -DestinationPath tunio-spot-windows.zip
+        Compress-Archive -Path * -DestinationPath tunio-spot-windows-x64.zip
       shell: powershell
         
-    - name: Upload Windows artifacts
+    - name: Upload Windows x64 artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: windows-builds
-        path: build/windows/x64/runner/Release/tunio-spot-windows.zip
+        name: windows-x64-builds
+        path: build/windows/x64/runner/Release/tunio-spot-windows-x64.zip
+        
+  build-windows-x86:
+    name: Build Windows x86
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Setup Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: '3.27.1'
+        channel: 'stable'
+        
+    - name: Flutter version
+      run: flutter --version
+      
+    - name: Disable Flutter analytics
+      run: flutter config --no-analytics
+      
+    - name: Install dependencies
+      run: flutter pub get
+      
+    - name: Enable Windows desktop
+      run: flutter config --enable-windows-desktop
+      
+    - name: Build Windows x86 app
+      run: flutter build windows --release --target-platform windows-x86
+      
+    - name: List Windows x86 build output
+      run: |
+        dir build\windows\x86\runner\Release
+      shell: cmd
+      
+    - name: Create Windows x86 archive
+      run: |
+        cd build/windows/x86/runner/Release
+        Compress-Archive -Path * -DestinationPath tunio-spot-windows-x86.zip
+      shell: powershell
+        
+    - name: Upload Windows x86 artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: windows-x86-builds
+        path: build/windows/x86/runner/Release/tunio-spot-windows-x86.zip
         
   create-release:
     name: Create Release
-    needs: [build-android, build-macos, build-windows]
+    needs: [build-android, build-macos, build-windows-x64, build-windows-x86]
     runs-on: ubuntu-latest
     
     steps:
@@ -166,7 +212,8 @@ jobs:
         echo "All prerequisite jobs should have completed successfully"
         echo "build-android: ${{ needs.build-android.result }}"
         echo "build-macos: ${{ needs.build-macos.result }}"
-        echo "build-windows: ${{ needs.build-windows.result }}"
+        echo "build-windows-x64: ${{ needs.build-windows-x64.result }}"
+        echo "build-windows-x86: ${{ needs.build-windows-x86.result }}"
       
     - name: Get version from tag
       id: get_version
@@ -195,11 +242,17 @@ jobs:
         name: macos-builds
         path: ./macos-builds
         
-    - name: Download Windows artifacts
+    - name: Download Windows x64 artifacts
       uses: actions/download-artifact@v4
       with:
-        name: windows-builds
-        path: ./windows-builds
+        name: windows-x64-builds
+        path: ./windows-x64-builds
+        
+    - name: Download Windows x86 artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: windows-x86-builds
+        path: ./windows-x86-builds
         
     - name: Debug all artifacts
       run: |
@@ -207,8 +260,10 @@ jobs:
         ls -la ./ || echo "No artifacts found"
         echo "macOS artifacts:"
         ls -la ./macos-builds/ || echo "macOS artifacts not found"
-        echo "Windows artifacts:"
-        ls -la ./windows-builds/ || echo "Windows artifacts not found"
+        echo "Windows x64 artifacts:"
+        ls -la ./windows-x64-builds/ || echo "Windows x64 artifacts not found"
+        echo "Windows x86 artifacts:"
+        ls -la ./windows-x86-builds/ || echo "Windows x86 artifacts not found"
         
     - name: Create Release
       uses: softprops/action-gh-release@v1
@@ -222,7 +277,8 @@ jobs:
           - **app-release.aab** - Android App Bundle for Google Play upload
           - **app-release.apk** - APK file for Android testing
           - **tunio-spot-macos.tar.gz** - macOS application
-          - **tunio-spot-windows.zip** - Windows application
+          - **tunio-spot-windows-x64.zip** - Windows application (64-bit)
+          - **tunio-spot-windows-x86.zip** - Windows application (32-bit)
           
           ### Installation instructions:
           
@@ -235,6 +291,8 @@ jobs:
           
           #### Windows:
           - Extract ZIP archive and run tunio_spot.exe
+          - Choose x64 version for 64-bit Windows systems (recommended)
+          - Choose x86 version for 32-bit Windows systems or older computers
           
           ---
           
@@ -243,7 +301,8 @@ jobs:
           ./android-builds/bundle/release/app-release.aab
           ./android-builds/flutter-apk/app-release.apk
           ./macos-builds/tunio-spot-macos.tar.gz
-          ./windows-builds/tunio-spot-windows.zip
+          ./windows-x64-builds/tunio-spot-windows-x64.zip
+          ./windows-x86-builds/tunio-spot-windows-x86.zip
         draft: false
         prerelease: false
       env:
