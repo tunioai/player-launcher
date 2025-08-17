@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import '../models/stream_config.dart';
 import '../models/api_error.dart';
 import '../utils/logger.dart';
+import '../utils/platform_info.dart';
 
 class ApiService {
   static const String baseUrl = 'https://api.tunio.ai';
@@ -23,9 +24,8 @@ class ApiService {
       Logger.debug(
           '🔄 API_DEBUG: Current timestamp: ${DateTime.now().toIso8601String()}',
           'ApiService');
-      Logger.debug(
-          '🔄 API_DEBUG: Request headers: Content-Type: application/json, User-Agent: TunioRadioPlayer/1.0',
-          'ApiService');
+      final headers = PlatformInfo.apiHeaders;
+      Logger.debug('🔄 API_DEBUG: Request headers: $headers', 'ApiService');
       Logger.debug('🔄 API_DEBUG: Timeout duration: ${timeout.inSeconds}s',
           'ApiService');
 
@@ -33,13 +33,12 @@ class ApiService {
           '🔄 API_DEBUG: About to make HTTP GET request...', 'ApiService');
       final requestStartTime = DateTime.now();
 
-      final response = await http.get(
-        uri,
-        headers: {
-          'Content-Type': 'application/json',
-          'User-Agent': 'TunioRadioPlayer/1.0',
-        },
-      ).timeout(timeout);
+      final response = await http
+          .get(
+            uri,
+            headers: headers,
+          )
+          .timeout(timeout);
 
       final requestDuration = DateTime.now().difference(requestStartTime);
       Logger.debug(

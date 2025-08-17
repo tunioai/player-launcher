@@ -799,7 +799,6 @@ class _HomeScreenState extends State<HomeScreen> {
                     ? Colors.orange
                     : Colors.red,
       ),
-
     ];
   }
 }

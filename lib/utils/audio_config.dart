@@ -1,4 +1,5 @@
 import '../utils/logger.dart';
+import '../utils/platform_info.dart';
 
 class AudioConfig {
   // Two-level buffering strategy (like YouTube)
@@ -35,8 +36,8 @@ class AudioConfig {
   static const int tvTargetBufferBytes =
       12 * 1024 * 1024; // Increased to 12MB for TV
   static const int maxBitRate = 320000; // 320 kbps
-  static const String userAgent =
-      'TunioRadioPlayer/1.0 (Mobile; Streaming; Icecast2)';
+  // Use platform-aware user agent
+  static String get userAgent => PlatformInfo.userAgent;
 
   // Buffer health monitoring
   static const Duration bufferCheckInterval = Duration(seconds: 2);
@@ -62,6 +63,7 @@ class AudioConfig {
   static Map<String, String> getStreamingHeaders() {
     return {
       'User-Agent': userAgent,
+      'Platform': PlatformInfo.platform,
       'Accept': '*/*',
       'Connection': 'keep-alive',
       'Icy-MetaData': '1', // Request Icecast2 metadata

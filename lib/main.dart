@@ -4,12 +4,16 @@ import 'package:media_kit/media_kit.dart';
 
 import 'core/service_locator.dart';
 import 'services/storage_service.dart';
+import 'utils/platform_info.dart';
 
 import 'screens/home_screen.dart';
 import 'utils/logger.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Initialize platform info to get dynamic version
+  await PlatformInfo.initialize();
 
   // Initialize media_kit
   MediaKit.ensureInitialized();

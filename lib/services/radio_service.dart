@@ -750,7 +750,14 @@ final class EnhancedRadioService implements IRadioService {
   Future<void> _refreshConfig() async {
     if (_currentState case RadioStateConnected connected) {
       try {
-        final newConfig = await _apiService.getStreamConfig(connected.token);
+        // Run API call in background to prevent blocking audio thread
+        Logger.debug('Starting background config refresh...');
+
+        final newConfig = await Future(() async {
+          // This ensures the API call runs asynchronously
+          return await _apiService.getStreamConfig(connected.token);
+        });
+
         if (newConfig != null && newConfig != connected.config) {
           Logger.info('Configuration updated - stream URL or settings changed');
 
@@ -1093,33 +1100,40 @@ final class EnhancedRadioService implements IRadioService {
   }
 
   Future<void> _performPing(String host) async {
-    try {
-      final stopwatch = Stopwatch()..start();
+    // Run ping in background to prevent blocking audio thread
+    unawaited(Future(() async {
+      try {
+        final stopwatch = Stopwatch()..start();
 
-      final socket =
-          await Socket.connect(host, 80, timeout: const Duration(seconds: 10));
-      await socket.close();
+        final socket = await Socket.connect(host, 80,
+            timeout: const Duration(seconds: 5) // Reduced timeout to 5s
+            );
+        await socket.close();
 
-      stopwatch.stop();
-      final pingMs = stopwatch.elapsedMilliseconds;
+        stopwatch.stop();
+        final pingMs = stopwatch.elapsedMilliseconds;
 
-      _currentPing = pingMs;
-      _pingController.add(pingMs);
+        _currentPing = pingMs;
+        _pingController.add(pingMs);
 
-      Logger.info('Ping to $host: ${pingMs}ms');
-    } catch (e) {
-      Logger.warning('Ping to $host failed: $e');
-      _currentPing = null;
-      _pingController.add(null);
+        Logger.debug('Ping to $host: ${pingMs}ms'); // Reduced to debug level
+      } catch (e) {
+        Logger.debug('Ping to $host failed: $e'); // Reduced to debug level
+        _currentPing = null;
+        _pingController.add(null);
 
-      // If ping fails during connected state, it might indicate network issues
-      // Trigger a quick stream health check
-      if (_currentState is RadioStateConnected && !_isConnectionInProgress) {
-        Logger.warning(
-            '🔍 PING FAIL: Ping failed during connected state - checking stream health');
-        _checkStreamHealth();
+        // If ping fails during connected state, it might indicate network issues
+        // But don't trigger health check too aggressively from ping failures
+        if (_currentState is RadioStateConnected &&
+            !_isConnectionInProgress &&
+            !_audioService.currentState.isPlaying) {
+          // Only if audio is also not playing
+          Logger.warning(
+              '🔍 PING FAIL: Ping failed and audio not playing - checking stream health');
+          _checkStreamHealth();
+        }
       }
-    }
+    }));
   }
 
   void _stopPinging() {

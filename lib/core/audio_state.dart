@@ -164,7 +164,6 @@ final class AudioStateError extends AudioState {
   int get hashCode => Object.hash(message, exception, config, isRetryable);
 }
 
-
 /// Playback statistics
 final class PlaybackStats {
   final Duration totalPlaytime;

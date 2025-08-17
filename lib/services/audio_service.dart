@@ -117,27 +117,33 @@ final class EnhancedAudioService implements IAudioService {
     Logger.info('🎵 INIT_DEBUG: ===== INITIALIZING AUDIO PLAYER =====');
     Logger.info('🎵 INIT_DEBUG: User agent: ${AudioConfig.userAgent}');
 
-    // Configure player with minimal buffering for live radio stability
+    // Optimized configuration for AAC live streams
     final configuration = PlayerConfiguration(
-      // Smaller buffer for live streaming to prevent over-buffering
-      bufferSize: 2 * 1024 * 1024, // 2MB instead of large buffer
-      
+      // Increased buffer for AAC stream stability
+      bufferSize: 4 * 1024 * 1024, // 4MB for better AAC stability
+
+      // Enable async mode for improved performance (media_kit 1.2.0+)
+      async: true,
+
       // Reduced logging for stability
       logLevel: MPVLogLevel.warn,
-      
-      // Minimal protocol support for radio streams
+
+      // Extended protocol support for various stream types
       protocolWhitelist: [
         'http',
         'https',
         'tcp',
+        'tls',
+        'rtp',
+        'rtsp',
       ],
     );
 
     _audioPlayer = Player(configuration: configuration);
 
     Logger.info(
-        '🎵 INIT_DEBUG: AudioPlayer instance created with minimal buffer config');
-    Logger.info('🎵 INIT_DEBUG: Buffer size: 2MB');
+        '🎵 INIT_DEBUG: AudioPlayer instance created with AAC-optimized config');
+    Logger.info('🎵 INIT_DEBUG: Buffer size: 4MB, Async mode: enabled');
     Logger.info(
         '🎵 INIT_DEBUG: Initial player state: ${_audioPlayer.state.playing}');
     Logger.info('🎵 INIT_DEBUG: ===== AUDIO PLAYER INITIALIZED =====');
@@ -334,67 +340,38 @@ final class EnhancedAudioService implements IAudioService {
     final currentPosition = _audioPlayer.state.position;
     final rawBufferAhead = bufferedPosition - currentPosition;
 
-    Logger.info('🎵 BUFFER_DEBUG: ===== BUFFER UPDATE =====');
-    Logger.info(
-        '🎵 BUFFER_DEBUG: Current position: ${currentPosition.inSeconds}s');
-    Logger.info(
-        '🎵 BUFFER_DEBUG: Buffered position: ${bufferedPosition.inSeconds}s');
-    Logger.info(
-        '🎵 BUFFER_DEBUG: Raw buffer ahead: ${rawBufferAhead.inSeconds}s');
-
-    // Optimized buffer calculation for stable Icecast2 live streams
+    // Optimized buffer calculation for AAC live streams
     final timePlaying = _streamStartTime != null
         ? DateTime.now().difference(_streamStartTime!)
         : Duration.zero;
 
-    // For live radio streams, use minimal buffer estimation
-    // Prevents over-buffering which causes stream drops
-    if (rawBufferAhead.inSeconds <= 1) {
-      Logger.info('🎵 BUFFER_DEBUG: Live stream - using minimal buffer');
-      
-      // Always use very small buffer for live streams (like Howl.js)
-      if (timePlaying.inSeconds < 2) {
-        _currentBufferSize = Duration(seconds: 1); // Minimal startup
+    // For AAC radio streams, use slightly larger buffer for stability
+    // AAC streams need more buffer to prevent drops
+    if (rawBufferAhead.inSeconds <= 2) {
+      // AAC streams benefit from slightly larger buffers
+      if (timePlaying.inSeconds < 5) {
+        _currentBufferSize = Duration(seconds: 3); // Initial buffer for AAC
       } else {
-        _currentBufferSize = Duration(seconds: 2); // Small stable buffer
+        _currentBufferSize = Duration(seconds: 5); // Stable buffer for AAC
       }
-      
-      Logger.info('🎵 BUFFER_DEBUG: Live buffer: ${_currentBufferSize.inSeconds}s');
     } else {
-      // Use actual buffer but cap it low for stability
-      _currentBufferSize = Duration(seconds: rawBufferAhead.inSeconds.clamp(0, 3));
-      Logger.info('🎵 BUFFER_DEBUG: Capped buffer: ${_currentBufferSize.inSeconds}s');
+      // Use actual buffer but with higher cap for AAC stability
+      _currentBufferSize =
+          Duration(seconds: rawBufferAhead.inSeconds.clamp(0, 8));
     }
 
-    Logger.info(
-        '🎵 BUFFER_DEBUG: Final buffer size: ${_currentBufferSize.inSeconds}s');
     _lastBufferUpdate = DateTime.now();
 
     // Update current state if it includes buffer info
     if (_currentState case AudioStatePlaying playing) {
       final newState = playing.copyWith(bufferSize: _currentBufferSize);
 
-      Logger.info(
-          '🎵 BUFFER_DEBUG: Before update - playing.bufferSize: ${playing.bufferSize.inSeconds}s');
-      Logger.info(
-          '🎵 BUFFER_DEBUG: After copyWith - newState.bufferSize: ${newState.bufferSize.inSeconds}s');
-      Logger.info(
-          '🎵 BUFFER_DEBUG: About to emit state with buffer: ${newState.bufferSize.inSeconds}s');
-
       _currentState = newState;
       _stateController.add(_currentState);
-
-      Logger.info(
-          '🎵 BUFFER_DEBUG: State emitted - _currentState.bufferSize: ${(_currentState as AudioStatePlaying).bufferSize.inSeconds}s');
     } else if (_currentState case AudioStateBuffering buffering) {
       _currentState = buffering.copyWith(bufferSize: _currentBufferSize);
-      Logger.info(
-          '🎵 BUFFER_DEBUG: Updated AudioStateBuffering with buffer: ${_currentBufferSize.inSeconds}s');
       _stateController.add(_currentState);
-    } else {
-      Logger.warning(
-          '🎵 BUFFER_DEBUG: Current state is not Playing or Buffering: ${_currentState.runtimeType}');
-    }
+    } else {}
   }
 
   void _handleTrackCompleted(bool completed) {
@@ -636,33 +613,49 @@ final class EnhancedAudioService implements IAudioService {
         final media = Media(
           config.streamUrl,
           httpHeaders: AudioConfig.getStreamingHeaders(),
-          // Simplified MPV configuration for stable radio streaming
+          // Optimized MPV configuration for AAC live streaming
           extras: {
-            // Core cache settings - minimal for live radio stability
+            // Enhanced cache settings for AAC streams
             'cache': 'yes',
-            'cache-secs': '4', // Small cache for live streams
-            'cache-pause': 'no', // Critical: never pause on underrun
+            'cache-secs': '10', // Increased cache for AAC stability
+            'cache-pause': 'no', // Never pause on underrun
             'cache-on-disk': 'no', // Memory cache only
-            
-            // Basic network settings
-            'network-timeout': '10',
+            'demuxer-max-bytes': '10MiB', // Larger demuxer buffer for AAC
+            'demuxer-max-back-bytes': '5MiB',
+
+            // AAC-specific optimizations
+            'audio-samplerate': '44100', // Match your stream's sample rate
+            'audio-channels': 'stereo', // Force stereo for consistency
+            'audio-format': 'f32', // Float32 for better quality
+            'audio-buffer': '1.0', // 1 second audio buffer
+
+            // Enhanced network settings
+            'network-timeout': '30', // Increased timeout for stability
             'user-agent': AudioConfig.userAgent,
-            
+            'stream-lavf-o':
+                'timeout=30000000,reconnect=1,reconnect_streamed=1,reconnect_delay_max=5',
+
             // Audio-only optimizations
             'vid': 'no', // Audio only
             'video': 'no', // Disable video processing
             'vo': 'null', // No video output
-            
+
             // Stream reliability
-            'stream-lavf-o': 'timeout=10000000,reconnect=1,reconnect_streamed=1',
             'keep-open': 'yes', // Maintain connection
             'hwdec': 'no', // Software decoding for stability
-            
+            'hr-seek': 'no', // Disable precise seeking for streams
+            'cache-seek-min': '1024', // Minimum seek size
+
+            // Platform-specific (Android)
+            'ao': 'audiotrack', // Use Android AudioTrack
+            'audio-fallback-to-null': 'yes', // Fallback on errors
+
             // Reduce logging
             'msg-level': 'all=warn',
           },
         );
-        Logger.info('🎵 AUDIO_DEBUG: Media created with simplified cache settings');
+        Logger.info(
+            '🎵 AUDIO_DEBUG: Media created with simplified cache settings');
         Logger.info('🎵 AUDIO_DEBUG: Stream URL: ${config.streamUrl}');
 
         // Open media source with extended timeout for live streams
@@ -884,22 +877,22 @@ final class EnhancedAudioService implements IAudioService {
           final responseTime = stopwatch.elapsedMilliseconds;
           Logger.info('🌐 NETWORK: Connectivity test: ${responseTime}ms');
 
-          // Minimal delay for all network types - prioritize fast startup
+          // AAC streams need slightly more pre-buffer time for stability
           if (responseTime < 100) {
-            // Fast network - minimal delay like Howl.js
+            // Fast network - moderate delay for AAC
             Logger.info(
-                '🌐 NETWORK: Fast network detected - minimal pre-buffer');
-            return const Duration(seconds: 1);
-          } else if (responseTime < 500) {
-            // Medium network - short delay
-            Logger.info(
-                '🌐 NETWORK: Medium network detected - short pre-buffer');
+                '🌐 NETWORK: Fast network detected - AAC pre-buffer 2s');
             return const Duration(seconds: 2);
-          } else {
-            // Slow network - moderate delay
+          } else if (responseTime < 500) {
+            // Medium network - standard delay for AAC
             Logger.info(
-                '🌐 NETWORK: Slow network detected - moderate pre-buffer');
+                '🌐 NETWORK: Medium network detected - AAC pre-buffer 3s');
             return const Duration(seconds: 3);
+          } else {
+            // Slow network - extended delay for AAC
+            Logger.info(
+                '🌐 NETWORK: Slow network detected - AAC pre-buffer 4s');
+            return const Duration(seconds: 4);
           }
         }
       } catch (e) {
@@ -909,36 +902,9 @@ final class EnhancedAudioService implements IAudioService {
       Logger.warning('🌐 NETWORK: Pre-buffer calculation failed: $e');
     }
 
-    // Default fallback - minimal for fast startup
-    Logger.info('🌐 NETWORK: Using minimal default pre-buffer delay');
-    return const Duration(seconds: 2);
-  }
-
-  /// Get simplified cache settings for radio streaming
-  Map<String, String> _getAdaptiveCacheSettings() {
-    // Minimal settings for live radio stability
-    return {
-      'cache-secs': '3', // Very small cache for live streams
-    };
-  }
-
-  /// Get expected cache buffer size based on current network settings
-  int _getExpectedCacheBuffer() {
-    // Return conservative buffer sizes optimized for live stream stability
-    if (_networkState.isConnected) {
-      switch (_networkState.type) {
-        case ConnectionType.wifi:
-          return 10; // Moderate buffer for WiFi stability
-        case ConnectionType.ethernet:
-          return 12; // Slightly larger for ethernet
-        case ConnectionType.mobile:
-          return 6; // Conservative for mobile data
-        default:
-          return 8; // Conservative default
-      }
-    } else {
-      return 4; // Minimal for offline scenarios
-    }
+    // Default fallback - moderate for AAC stability
+    Logger.info('🌐 NETWORK: Using default AAC pre-buffer delay');
+    return const Duration(seconds: 3);
   }
 
   @override
