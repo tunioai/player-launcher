@@ -75,11 +75,11 @@ final class EnhancedAudioService implements IAudioService {
 
   // Configuration - optimized for live stream stability
   static const Duration _loadingTimeout =
-      Duration(seconds: 30); // Increased for live streams
+      Duration(seconds: 60); // Doubled timeout for live streams
   static const Duration _hangDetectionInterval =
-      Duration(seconds: 15); // Less aggressive checking
+      Duration(seconds: 30); // Doubled detection interval
   static const Duration _maxHangTime =
-      Duration(seconds: 45); // More tolerance for live streams
+      Duration(seconds: 90); // Doubled tolerance for live streams
 
   @override
   Stream<AudioState> get stateStream => _stateController.stream;
@@ -650,6 +650,8 @@ final class EnhancedAudioService implements IAudioService {
             // Platform-specific (Android)
             'ao': 'audiotrack', // Use Android AudioTrack
             'audio-fallback-to-null': 'yes', // Fallback on errors
+            'ao-opensl-partial-frames': 'yes', // Better OpenSL ES handling
+            'ao-opensl-framerate': '44100', // Match stream sample rate
 
             // Reduce logging
             'msg-level': 'all=warn',
@@ -666,7 +668,7 @@ final class EnhancedAudioService implements IAudioService {
         try {
           final setSourceStartTime = DateTime.now();
           await _audioPlayer.open(media).timeout(
-            const Duration(seconds: 25), // Extended timeout for live streams
+            const Duration(seconds: 50), // Doubled timeout for live streams
             onTimeout: () {
               final elapsed = DateTime.now().difference(setSourceStartTime);
               Logger.error(
@@ -709,7 +711,7 @@ final class EnhancedAudioService implements IAudioService {
         try {
           final playStartTime = DateTime.now();
           await _audioPlayer.play().timeout(
-            const Duration(seconds: 10), // Timeout for play operation
+            const Duration(seconds: 20), // Doubled timeout for play operation
             onTimeout: () {
               final elapsed = DateTime.now().difference(playStartTime);
               Logger.error(
