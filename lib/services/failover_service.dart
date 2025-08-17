@@ -99,29 +99,33 @@ class FailoverService implements IFailoverService {
       Logger.info(
           'FailoverService: Downloading track ${track.artist} - ${track.title}');
 
-      final response = await http.get(
-        Uri.parse(track.url),
-        headers: {
-          'User-Agent': AppConstants.userAgent,
-        },
-      ).timeout(const Duration(minutes: 5));
+      // Run download in background to prevent blocking audio
+      await Future(() async {
+        final response = await http.get(
+          Uri.parse(track.url),
+          headers: {
+            'User-Agent': AppConstants.userAgent,
+          },
+        ).timeout(const Duration(seconds: 30)); // Reduced timeout
 
-      if (response.statusCode == 200) {
-        await file.writeAsBytes(response.bodyBytes);
-        Logger.info(
-            'FailoverService: Successfully downloaded ${track.fileName} (${response.bodyBytes.length} bytes)');
+        if (response.statusCode == 200) {
+          // Write file in background
+          await file.writeAsBytes(response.bodyBytes);
+          Logger.info(
+              'FailoverService: Successfully downloaded ${track.fileName} (${response.bodyBytes.length} bytes)');
 
-        // Update count after successful download
-        _updateCachedCount();
+          // Update count after successful download
+          _updateCachedCount();
 
-        // Clean up excess tracks if needed
-        await _cleanupExcessTracks();
-      } else {
-        Logger.error(
-            'FailoverService: Failed to download track ${track.uuid}: HTTP ${response.statusCode}');
-        throw Exception(
-            'Failed to download track: HTTP ${response.statusCode}');
-      }
+          // Clean up excess tracks if needed (in background)
+          unawaited(_cleanupExcessTracks());
+        } else {
+          Logger.error(
+              'FailoverService: Failed to download track ${track.uuid}: HTTP ${response.statusCode}');
+          throw Exception(
+              'Failed to download track: HTTP ${response.statusCode}');
+        }
+      });
     } catch (e) {
       Logger.error(
           'FailoverService: Error downloading track ${track.uuid}: $e');

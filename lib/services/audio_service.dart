@@ -617,17 +617,18 @@ final class EnhancedAudioService implements IAudioService {
           extras: {
             // Enhanced cache settings for AAC streams
             'cache': 'yes',
-            'cache-secs': '10', // Increased cache for AAC stability
+            'cache-secs': '15', // Increased cache for AAC stability
             'cache-pause': 'no', // Never pause on underrun
             'cache-on-disk': 'no', // Memory cache only
-            'demuxer-max-bytes': '10MiB', // Larger demuxer buffer for AAC
-            'demuxer-max-back-bytes': '5MiB',
+            'demuxer-max-bytes': '16MiB', // Larger demuxer buffer for AAC
+            'demuxer-max-back-bytes': '8MiB',
 
             // AAC-specific optimizations
             'audio-samplerate': '44100', // Match your stream's sample rate
             'audio-channels': 'stereo', // Force stereo for consistency
-            'audio-format': 'f32', // Float32 for better quality
-            'audio-buffer': '1.0', // 1 second audio buffer
+            'audio-format':
+                's16', // Use 16-bit for better Android compatibility
+            'audio-buffer': '2.0', // 2 second audio buffer
 
             // Enhanced network settings
             'network-timeout': '30', // Increased timeout for stability
