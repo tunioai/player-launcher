@@ -800,19 +800,6 @@ class _HomeScreenState extends State<HomeScreen> {
                     : Colors.red,
       ),
 
-      // Quality
-      _buildStatusChip(
-        icon: Icons.high_quality,
-        label: 'Quality',
-        value: audioState.quality.displayName,
-        color: audioState.quality == ConnectionQuality.excellent
-            ? Colors.green
-            : audioState.quality == ConnectionQuality.good
-                ? Colors.lightGreen
-                : audioState.quality == ConnectionQuality.fair
-                    ? Colors.orange
-                    : Colors.red,
-      ),
     ];
   }
 }

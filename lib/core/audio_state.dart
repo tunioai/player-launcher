@@ -93,14 +93,12 @@ final class AudioStatePlaying extends AudioState {
   final StreamConfig config;
   final Duration position;
   final Duration bufferSize;
-  final ConnectionQuality quality;
   final PlaybackStats stats;
 
   const AudioStatePlaying({
     required this.config,
     this.position = Duration.zero,
     this.bufferSize = Duration.zero,
-    this.quality = ConnectionQuality.good,
     this.stats = const PlaybackStats(),
   });
 
@@ -111,11 +109,10 @@ final class AudioStatePlaying extends AudioState {
           config == other.config &&
           position == other.position &&
           bufferSize == other.bufferSize &&
-          quality == other.quality &&
           stats == other.stats;
 
   @override
-  int get hashCode => Object.hash(config, position, bufferSize, quality, stats);
+  int get hashCode => Object.hash(config, position, bufferSize, stats);
 }
 
 final class AudioStatePaused extends AudioState {
@@ -167,30 +164,6 @@ final class AudioStateError extends AudioState {
   int get hashCode => Object.hash(message, exception, config, isRetryable);
 }
 
-/// Connection quality assessment
-enum ConnectionQuality {
-  poor,
-  fair,
-  good,
-  excellent;
-
-  String get displayName => switch (this) {
-        ConnectionQuality.poor => 'Poor',
-        ConnectionQuality.fair => 'Fair',
-        ConnectionQuality.good => 'Good',
-        ConnectionQuality.excellent => 'Excellent',
-      };
-
-  static ConnectionQuality fromBufferSize(Duration bufferSize) {
-    final seconds = bufferSize.inSeconds;
-    return switch (seconds) {
-      <= 3 => ConnectionQuality.poor,
-      <= 8 => ConnectionQuality.fair,
-      <= 15 => ConnectionQuality.good,
-      _ => ConnectionQuality.excellent,
-    };
-  }
-}
 
 /// Playback statistics
 final class PlaybackStats {
