@@ -197,17 +197,15 @@ class ApiService {
     }
 
     final uri = Uri.parse('$baseUrl/v1/spot-debug?pin=$pin');
-    final payload = events
-        .map((event) {
-          final data = event.toJson();
-          data.remove('sent');
-          return data;
-        })
-        .toList(growable: false);
+    final payload = events.map((event) {
+      final data = event.toJson();
+      data.remove('sent');
+      return data;
+    }).toList(growable: false);
 
     try {
-      Logger.info('🚨 FAILOVER_REPORT: Sending ${events.length} events',
-          'ApiService');
+      Logger.info(
+          '🚨 FAILOVER_REPORT: Sending ${events.length} events', 'ApiService');
 
       final response = await http
           .post(
@@ -233,10 +231,8 @@ class ApiService {
         isFromBackend: true,
       );
     } on TimeoutException catch (e) {
-      Logger.error(
-          '🚨 FAILOVER_REPORT: Timeout after ${timeout.inSeconds}s',
-          'ApiService',
-          e);
+      Logger.error('🚨 FAILOVER_REPORT: Timeout after ${timeout.inSeconds}s',
+          'ApiService', e);
       rethrow;
     } catch (e) {
       Logger.error('🚨 FAILOVER_REPORT: Unexpected error: $e', 'ApiService');

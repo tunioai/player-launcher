@@ -976,8 +976,8 @@ final class EnhancedRadioService implements IRadioService {
         return true;
       }
 
-      Logger.warning(
-          'Live stream restart failed: $reason → ${result.error}', 'RadioService');
+      Logger.warning('Live stream restart failed: $reason → ${result.error}',
+          'RadioService');
       return false;
     } catch (e) {
       Logger.error('Live stream restart threw error: $e', 'RadioService');
@@ -1000,8 +1000,7 @@ final class EnhancedRadioService implements IRadioService {
       return;
     }
 
-    Logger.error(
-        'Health check threshold reached - attempting stream restart');
+    Logger.error('Health check threshold reached - attempting stream restart');
     final restarted =
         await _attemptStreamRestart(connected, 'Health check failure');
     if (restarted) {
@@ -1325,7 +1324,8 @@ final class EnhancedRadioService implements IRadioService {
     unawaited(() async {
       try {
         Logger.info('🔍 STREAM HEALTH: Checking stream health...');
-        final response = await _apiService.getStreamConfig(connected.token)
+        final response = await _apiService
+            .getStreamConfig(connected.token)
             .timeout(const Duration(seconds: 5));
 
         if (response != null) {

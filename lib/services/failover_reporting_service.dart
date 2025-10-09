@@ -38,8 +38,8 @@ class FailoverReportingService implements Disposable {
     }
 
     if (_isSending) {
-      Logger.debug('Failover report already in progress',
-          'FailoverReportingService');
+      Logger.debug(
+          'Failover report already in progress', 'FailoverReportingService');
       return;
     }
 
@@ -53,8 +53,8 @@ class FailoverReportingService implements Disposable {
     _isSending = true;
 
     try {
-      Logger.info(
-          'Reporting ${events.length} failover events', 'FailoverReportingService');
+      Logger.info('Reporting ${events.length} failover events',
+          'FailoverReportingService');
       await _apiService.sendFailoverReport(targetPin, events);
       await _storageService
           .markFailoverEventsAsSent(events.map((event) => event.id).toList());
