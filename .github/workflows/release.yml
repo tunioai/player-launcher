@@ -23,8 +23,17 @@ jobs:
     - name: Setup Flutter
       uses: subosito/flutter-action@v2
       with:
-        flutter-version: '3.27.1'
+        flutter-version: '3.32.4'
         channel: 'stable'
+
+    - name: Install Android SDK components
+      env:
+        ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+        ANDROID_HOME: /usr/local/lib/android/sdk
+      run: |
+        export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH"
+        yes | sdkmanager --licenses
+        sdkmanager --install "platforms;android-35" "build-tools;35.0.0" "platform-tools" "ndk;26.1.10909125"
         
     - name: Flutter version
       run: flutter --version
@@ -74,7 +83,7 @@ jobs:
     - name: Setup Flutter
       uses: subosito/flutter-action@v2
       with:
-        flutter-version: '3.27.1'
+        flutter-version: '3.32.4'
         channel: 'stable'
         
     - name: Flutter version
@@ -117,7 +126,7 @@ jobs:
     - name: Setup Flutter
       uses: subosito/flutter-action@v2
       with:
-        flutter-version: '3.27.1'
+        flutter-version: '3.32.4'
         channel: 'stable'
         
     - name: Flutter version

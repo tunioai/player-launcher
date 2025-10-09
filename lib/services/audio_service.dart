@@ -522,13 +522,13 @@ final class EnhancedAudioService implements IAudioService {
 
     // Check for loading/buffering hangs
     if (_currentState case AudioStateLoading loading) {
-      if (loading.elapsed > _maxHangTime) {
+      if (loading.elapsed > _maxHangTime && !_audioPlayer.state.playing) {
         Logger.error('Detected loading hang: ${loading.elapsed.inSeconds}s');
         _handlePlayerError(
             TimeoutException('Loading hang detected', _maxHangTime));
       }
     } else if (_currentState case AudioStateBuffering buffering) {
-      if (buffering.elapsed > _maxHangTime) {
+      if (buffering.elapsed > _maxHangTime && !_audioPlayer.state.playing) {
         Logger.error(
             'Detected buffering hang: ${buffering.elapsed.inSeconds}s');
         _handlePlayerError(
@@ -540,6 +540,7 @@ final class EnhancedAudioService implements IAudioService {
     // Live streams may not update buffer position regularly while playing normally
     if (_lastBufferUpdate != null &&
         _currentState.isPlaying &&
+        !_audioPlayer.state.playing &&
         now.difference(_lastBufferUpdate!) > Duration(minutes: 2) &&
         _audioPlayer.state.position.inSeconds == 0) {
       // Only trigger hang detection if position is also stuck at 0

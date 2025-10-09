@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
+import '../models/failover_event.dart';
 import '../models/stream_config.dart';
 import '../models/api_error.dart';
 import '../utils/logger.dart';
@@ -184,6 +185,62 @@ class ApiService {
         return 'Service unavailable';
       default:
         return 'Server error ($statusCode)';
+    }
+  }
+
+  Future<void> sendFailoverReport(
+    String pin,
+    List<FailoverEvent> events,
+  ) async {
+    if (pin.isEmpty || events.isEmpty) {
+      return;
+    }
+
+    final uri = Uri.parse('$baseUrl/v1/spot-debug?pin=$pin');
+    final payload = events
+        .map((event) {
+          final data = event.toJson();
+          data.remove('sent');
+          return data;
+        })
+        .toList(growable: false);
+
+    try {
+      Logger.info('🚨 FAILOVER_REPORT: Sending ${events.length} events',
+          'ApiService');
+
+      final response = await http
+          .post(
+            uri,
+            headers: PlatformInfo.apiHeaders,
+            body: jsonEncode({'events': payload}),
+          )
+          .timeout(timeout);
+
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        Logger.info(
+            '🚨 FAILOVER_REPORT: Report delivered (${response.statusCode})',
+            'ApiService');
+        return;
+      }
+
+      Logger.error(
+          '🚨 FAILOVER_REPORT: Server responded ${response.statusCode}: ${response.body}',
+          'ApiService');
+      throw ApiError(
+        message: 'Failed to deliver failover report',
+        statusCode: response.statusCode,
+        isFromBackend: true,
+      );
+    } on TimeoutException catch (e) {
+      Logger.error(
+          '🚨 FAILOVER_REPORT: Timeout after ${timeout.inSeconds}s',
+          'ApiService',
+          e);
+      rethrow;
+    } catch (e) {
+      Logger.error('🚨 FAILOVER_REPORT: Unexpected error: $e', 'ApiService');
+      rethrow;
     }
   }
 }

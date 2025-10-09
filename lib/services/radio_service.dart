@@ -10,8 +10,10 @@ import '../services/api_service.dart';
 import '../services/storage_service.dart';
 import '../services/failover_service.dart';
 import '../models/current_track.dart';
+import '../models/failover_event.dart';
 import '../utils/logger.dart';
 import 'audio_service.dart';
+import 'failover_reporting_service.dart';
 
 /// Interface for radio service
 abstract interface class IRadioService implements Disposable {
@@ -38,6 +40,7 @@ final class EnhancedRadioService implements IRadioService {
   final ApiService _apiService;
   final StorageService _storageService;
   final IFailoverService _failoverService;
+  final FailoverReportingService _failoverReportingService;
 
   // State management
   final StreamController<RadioState> _stateController =
@@ -68,6 +71,8 @@ final class EnhancedRadioService implements IRadioService {
   Timer? _forceRecoveryTimer;
   String?
       _currentConnectionStage; // Track which stage we're in for better diagnostics
+  int _consecutiveHealthFailures = 0;
+  static const int _healthFailureThreshold = 3;
 
   // Auto-start and reconnection
   bool _autoReconnectEnabled = false;
@@ -88,10 +93,12 @@ final class EnhancedRadioService implements IRadioService {
     required ApiService apiService,
     required StorageService storageService,
     required IFailoverService failoverService,
+    required FailoverReportingService failoverReportingService,
   })  : _audioService = audioService,
         _apiService = apiService,
         _storageService = storageService,
-        _failoverService = failoverService;
+        _failoverService = failoverService,
+        _failoverReportingService = failoverReportingService;
 
   @override
   Stream<RadioState> get stateStream => _stateController.stream;
@@ -185,6 +192,10 @@ final class EnhancedRadioService implements IRadioService {
       Logger.info('Audio state changed: ${audioState.runtimeType}');
     }
 
+    if (audioState.isPlaying) {
+      _resetHealthFailures();
+    }
+
     // Update radio state based on audio state
     switch (_currentState) {
       case RadioStateConnected connected:
@@ -213,29 +224,58 @@ final class EnhancedRadioService implements IRadioService {
                   audioState.message.contains('Network error') ||
                   audioState.message.contains('Connection timeout');
 
-          if (isNetworkError && _failoverService.cachedTracksCount > 0) {
+          if (isNetworkError) {
             Logger.info(
-                '🚨 INSTANT FAILOVER: Network error detected in audio state - activating failover immediately');
-            _activateFailover(
-                connected, 'Network error: ${audioState.message}');
+                '⚠️ NETWORK ERROR: Attempting restart before failover (${audioState.message})');
+            unawaited(() async {
+              if (_currentState is! RadioStateConnected) return;
+              final latest = _currentState as RadioStateConnected;
+              final restarted = await _attemptStreamRestart(
+                  latest, 'Network error: ${audioState.message}');
+              if (restarted) {
+                Logger.info('Network error resolved by restart');
+                return;
+              }
+
+              if (_failoverService.cachedTracksCount > 0) {
+                _activateFailover(
+                    latest, 'Network error: ${audioState.message}');
+              } else {
+                Logger.warning(
+                    'Network error but no failover tracks available - staying in error state');
+              }
+            }());
             return;
           }
 
           // Wait 15 seconds before activating failover to allow stream to recover (for non-network errors)
           Timer(const Duration(seconds: 15), () {
-            // Check if we're still in error state after delay
-            if (_currentState is RadioStateConnected &&
-                !_isConnectionInProgress) {
-              final currentAudioState =
-                  (_currentState as RadioStateConnected).audioState;
-              if (currentAudioState is AudioStateError) {
+            if (_currentState is! RadioStateConnected ||
+                _isConnectionInProgress ||
+                _isStreamSwitchInProgress) {
+              return;
+            }
+
+            final latest = _currentState as RadioStateConnected;
+            final currentAudioState = latest.audioState;
+            if (currentAudioState is AudioStateError) {
+              Logger.warning(
+                  'Stream still in error after delay, attempting restart');
+              unawaited(() async {
+                final restarted = await _attemptStreamRestart(
+                    latest, 'Retry after audio error');
+                if (restarted) {
+                  Logger.info('Stream recovered after retry');
+                  return;
+                }
+
                 Logger.error(
-                    'Stream lost - activating failover after delay (retryable: ${currentAudioState.isRetryable})');
+                    'Stream restart failed after error delay - activating failover');
                 _activateFailover(
-                    connected, 'Stream lost: ${currentAudioState.message}');
-              } else {
-                Logger.info('Audio error resolved automatically');
-              }
+                    latest, 'Stream lost: ${currentAudioState.message}');
+              }());
+            } else {
+              Logger.info('Audio error resolved automatically');
             }
           });
         }
@@ -250,19 +290,32 @@ final class EnhancedRadioService implements IRadioService {
 
           // Wait 10 seconds to see if it recovers automatically
           Timer(const Duration(seconds: 10), () {
-            if (_currentState is RadioStateConnected &&
-                !_isConnectionInProgress &&
-                !_isStreamSwitchInProgress) {
-              final currentAudioState =
-                  (_currentState as RadioStateConnected).audioState;
-              if (currentAudioState is AudioStateIdle ||
-                  currentAudioState is AudioStatePaused) {
+            if (_currentState is! RadioStateConnected ||
+                _isConnectionInProgress ||
+                _isStreamSwitchInProgress) {
+              return;
+            }
+
+            final latest = _currentState as RadioStateConnected;
+            final currentAudioState = latest.audioState;
+            if (currentAudioState is AudioStateIdle ||
+                currentAudioState is AudioStatePaused) {
+              Logger.warning(
+                  'Stream still idle after interruption - attempting restart');
+              unawaited(() async {
+                final restarted = await _attemptStreamRestart(
+                    latest, 'Unexpected idle state');
+                if (restarted) {
+                  Logger.info('Stream recovered after idle restart');
+                  return;
+                }
+
                 Logger.error(
-                    '🚨 STREAM INTERRUPTION: Stream still stopped, activating failover');
-                _activateFailover(connected, 'Stream unexpectedly stopped');
-              } else {
-                Logger.info('Stream recovered automatically');
-              }
+                    'Stream restart failed after idle detection - activating failover');
+                _activateFailover(latest, 'Stream unexpectedly stopped');
+              }());
+            } else {
+              Logger.info('Stream recovered automatically');
             }
           });
         } else if (_isStreamSwitchInProgress) {
@@ -361,6 +414,7 @@ final class EnhancedRadioService implements IRadioService {
           _connectingStateStartTime = null;
 
           unawaited(_attemptConnect(token, isRetry: true));
+          unawaited(_failoverReportingService.flush(pin: token));
         }
       }
 
@@ -866,6 +920,98 @@ final class EnhancedRadioService implements IRadioService {
     }());
   }
 
+  void _resetHealthFailures() {
+    if (_consecutiveHealthFailures != 0) {
+      Logger.debug('Health check failures reset', 'RadioService');
+    }
+    _consecutiveHealthFailures = 0;
+  }
+
+  void _recordFailoverEvent({
+    required FailoverEventDirection direction,
+    required String reason,
+    String? pin,
+    Map<String, dynamic>? extra,
+  }) {
+    final data = <String, dynamic>{
+      'audioState': _audioService.currentState.runtimeType.toString(),
+      'pingMs': _currentPing,
+      'retryAttempt': _retryManager.currentAttempt,
+      if (extra != null) ...extra,
+    };
+
+    final event = FailoverEvent.create(
+      direction: direction,
+      reason: reason,
+      extra: data,
+    );
+
+    unawaited(_failoverReportingService.logEvent(event, pin: pin));
+  }
+
+  Future<bool> _attemptStreamRestart(
+    RadioStateConnected connected,
+    String reason,
+  ) async {
+    if (_isConnectionInProgress) {
+      Logger.warning(
+          'Skipping stream restart ($reason) - connection already in progress');
+      return false;
+    }
+
+    Logger.info('Attempting live stream restart: $reason');
+    _isConnectionInProgress = true;
+    _isStreamSwitchInProgress = true;
+
+    try {
+      final stopResult = await _audioService.stop();
+      if (stopResult.isFailure) {
+        Logger.warning(
+            'Stop before restart failed: ${stopResult.error}', 'RadioService');
+      }
+      final result = await _audioService.playStream(connected.config);
+      if (result.isSuccess) {
+        Logger.info('Live stream restart succeeded: $reason');
+        _resetHealthFailures();
+        return true;
+      }
+
+      Logger.warning(
+          'Live stream restart failed: $reason → ${result.error}', 'RadioService');
+      return false;
+    } catch (e) {
+      Logger.error('Live stream restart threw error: $e', 'RadioService');
+      return false;
+    } finally {
+      _isStreamSwitchInProgress = false;
+      _isConnectionInProgress = false;
+    }
+  }
+
+  Future<void> _handleHealthCheckFailure(
+    RadioStateConnected connected,
+    String reason,
+  ) async {
+    _consecutiveHealthFailures++;
+    Logger.warning(
+        'Health check failure #$_consecutiveHealthFailures: $reason');
+
+    if (_consecutiveHealthFailures < _healthFailureThreshold) {
+      return;
+    }
+
+    Logger.error(
+        'Health check threshold reached - attempting stream restart');
+    final restarted =
+        await _attemptStreamRestart(connected, 'Health check failure');
+    if (restarted) {
+      return;
+    }
+
+    Logger.error('Health check restart failed - activating failover');
+    _activateFailover(connected, 'Stream health check failed: $reason');
+  }
+
   void _activateFailover(RadioStateConnected connectedState, String reason) {
     if (_isFailoverOperationInProgress) {
       Logger.warning(
@@ -875,6 +1021,17 @@ final class EnhancedRadioService implements IRadioService {
 
     Logger.error('🚨 FAILOVER: Activating failover mode - $reason');
     _isFailoverOperationInProgress = true;
+
+    _recordFailoverEvent(
+      direction: FailoverEventDirection.failover,
+      reason: reason,
+      pin: connectedState.token,
+      extra: {
+        'cachedTracks': _failoverService.cachedTracksCount,
+        'audioState': connectedState.audioState.runtimeType.toString(),
+      },
+    );
+    _resetHealthFailures();
 
     // Stop current stream polling
     _configPollingTimer?.cancel();
@@ -1026,6 +1183,16 @@ final class EnhancedRadioService implements IRadioService {
         final playResult = await _audioService.playStream(config);
         if (playResult.isSuccess) {
           Logger.info('✅ RESTORE: Successfully restored live stream!');
+          _resetHealthFailures();
+
+          _recordFailoverEvent(
+            direction: FailoverEventDirection.restore,
+            reason: 'live stream restored',
+            pin: failover.token,
+            extra: {
+              'failoverAttempts': failover.attemptCount,
+            },
+          );
 
           // Restore normal connected state
           _updateState(RadioStateConnected(
@@ -1144,45 +1311,39 @@ final class EnhancedRadioService implements IRadioService {
   }
 
   void _checkStreamHealth() {
-    // Quick check if the stream is actually working by testing network connectivity
+    if (_currentState is! RadioStateConnected) {
+      return;
+    }
+
+    if (_audioService.currentState.isPlaying) {
+      _resetHealthFailures();
+      return;
+    }
+
+    final connected = _currentState as RadioStateConnected;
+
     unawaited(() async {
       try {
         Logger.info('🔍 STREAM HEALTH: Checking stream health...');
+        final response = await _apiService.getStreamConfig(connected.token)
+            .timeout(const Duration(seconds: 5));
 
-        // Quick network test - try to reach the API
-        if (_currentState is RadioStateConnected) {
-          final connected = _currentState as RadioStateConnected;
-
-          try {
-            // Quick ping to the API to test network connectivity
-            final response =
-                await _apiService.getStreamConfig(connected.token).timeout(
-                      const Duration(seconds: 3),
-                      onTimeout: () =>
-                          throw TimeoutException('Health check timeout'),
-                    );
-
-            if (response == null) {
-              Logger.error(
-                  '🔍 STREAM HEALTH: API returned null - network issues detected');
-              _activateFailover(
-                  connected, 'Stream health check failed - API unreachable');
-            } else {
-              Logger.info('🔍 STREAM HEALTH: Network connectivity confirmed');
-            }
-          } catch (e) {
-            Logger.error('🔍 STREAM HEALTH: Network test failed: $e');
-            _activateFailover(
-                connected, 'Stream health check failed - network error: $e');
-          }
+        if (response != null) {
+          Logger.info('🔍 STREAM HEALTH: Connectivity confirmed');
+          _resetHealthFailures();
+          return;
         }
+
+        await _handleHealthCheckFailure(connected, 'Config response empty');
+      } on TimeoutException catch (e) {
+        Logger.warning('🔍 STREAM HEALTH: Timeout: $e');
+        await _handleHealthCheckFailure(connected, 'Timeout');
+      } on ApiError catch (e) {
+        Logger.warning('🔍 STREAM HEALTH: API error: ${e.message}');
+        await _handleHealthCheckFailure(connected, e.message);
       } catch (e) {
-        Logger.error('🔍 STREAM HEALTH: Health check error: $e');
-
-        if (_currentState is RadioStateConnected) {
-          final connected = _currentState as RadioStateConnected;
-          _activateFailover(connected, 'Stream health check error: $e');
-        }
+        Logger.error('🔍 STREAM HEALTH: Unexpected error: $e');
+        await _handleHealthCheckFailure(connected, e.toString());
       }
     }());
   }
