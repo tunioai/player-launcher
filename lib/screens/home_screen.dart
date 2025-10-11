@@ -282,11 +282,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _ => null,
     };
 
-    // Debug buffer value
-    if (audioState is AudioStatePlaying) {
-      Logger.info(
-          '🎵 UI_DEBUG: UI reading AudioStatePlaying with buffer: ${audioState.bufferSize.inSeconds}s');
-    }
+    // Buffer value available for UI use
 
     return audioState;
   }

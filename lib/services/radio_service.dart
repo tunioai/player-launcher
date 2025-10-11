@@ -165,14 +165,20 @@ final class EnhancedRadioService implements IRadioService {
   }
 
   bool _isBufferChangeSignificant(AudioState newAudioState) {
+    // Check buffer changes for both Connected and Failover states
     if (_currentState case RadioStateConnected connected) {
       final currentAudioState = connected.audioState;
-
-      // Consider buffer changes significant for UI updates
       if (newAudioState is AudioStatePlaying &&
           currentAudioState is AudioStatePlaying) {
-        // Update UI when buffer size changes
         return newAudioState.bufferSize != currentAudioState.bufferSize;
+      }
+    } else if (_currentState case RadioStateFailover failover) {
+      final currentAudioState = failover.audioState;
+      if (newAudioState is AudioStatePlaying &&
+          currentAudioState is AudioStatePlaying) {
+        // For failover, only consider buffer changes significant if they're substantial
+        final bufferDiff = (newAudioState.bufferSize.inSeconds - currentAudioState.bufferSize.inSeconds).abs();
+        return bufferDiff > 2; // Only update if buffer changed by more than 2 seconds
       }
     }
     return false;
@@ -180,9 +186,11 @@ final class EnhancedRadioService implements IRadioService {
 
   void _handleAudioStateChange(AudioState audioState) {
     // Only log significant state changes, not position updates
-    final currentType = (_currentState is RadioStateConnected)
-        ? (_currentState as RadioStateConnected).audioState.runtimeType
-        : null;
+    final currentType = switch (_currentState) {
+      RadioStateConnected(:final AudioState audioState) => audioState.runtimeType,
+      RadioStateFailover(:final AudioState audioState) => audioState.runtimeType,
+      _ => null,
+    };
     final isSignificantChange = currentType != audioState.runtimeType ||
         (audioState is AudioStateError) ||
         (audioState is AudioStateLoading) ||
@@ -248,8 +256,8 @@ final class EnhancedRadioService implements IRadioService {
             return;
           }
 
-          // Wait 15 seconds before activating failover to allow stream to recover (for non-network errors)
-          Timer(const Duration(seconds: 15), () {
+          // Wait 5 seconds before activating failover to allow stream to recover
+          Timer(const Duration(seconds: 5), () {
             if (_currentState is! RadioStateConnected ||
                 _isConnectionInProgress ||
                 _isStreamSwitchInProgress) {
@@ -288,8 +296,8 @@ final class EnhancedRadioService implements IRadioService {
           Logger.error(
               '🚨 STREAM INTERRUPTION: Stream unexpectedly stopped while we were playing');
 
-          // Wait 10 seconds to see if it recovers automatically
-          Timer(const Duration(seconds: 10), () {
+          // Wait 3 seconds to see if it recovers automatically
+          Timer(const Duration(seconds: 3), () {
             if (_currentState is! RadioStateConnected ||
                 _isConnectionInProgress ||
                 _isStreamSwitchInProgress) {
@@ -354,29 +362,35 @@ final class EnhancedRadioService implements IRadioService {
         if (isSignificantChange ||
             failover.audioState.runtimeType != audioState.runtimeType) {
           _updateState(newState);
+          
+          // Log only significant failover state changes
+          if (isSignificantChange) {
+            Logger.info('🚨 FAILOVER: Audio state changed to ${audioState.runtimeType}');
+          }
         } else {
           // Silently update internal state without triggering listeners
           _currentState = newState;
         }
 
-        // Add detailed logging for failover state changes
-        Logger.info(
-            '🚨 FAILOVER_DEBUG: ===== FAILOVER AUDIO STATE CHANGE =====');
-        Logger.info(
-            '🚨 FAILOVER_DEBUG: New audio state: ${audioState.runtimeType}');
-        Logger.info(
-            '🚨 FAILOVER_DEBUG: Previous failover audio state: ${failover.audioState.runtimeType}');
-
-        // If track ended naturally, try to restore LIVE stream first
-        // Track can end either Playing→Idle or Playing→Paused→Idle
         if (audioState is AudioStateIdle &&
             (failover.audioState is AudioStatePlaying ||
                 failover.audioState is AudioStatePaused)) {
           Logger.info(
               '🚨 FAILOVER_DEBUG: Failover track completed naturally (${failover.audioState.runtimeType} → Idle)');
           Logger.info(
-              '🚨 FAILOVER_DEBUG: Attempting to restore LIVE stream first...');
-          _tryRestoreAfterTrackEnd(failover);
+              '🚨 FAILOVER_DEBUG: Waiting 2s to confirm track end before restore attempt...');
+          
+          Timer(const Duration(seconds: 2), () {
+            if (_currentState is RadioStateFailover) {
+              final currentFailover = _currentState as RadioStateFailover;
+              if (currentFailover.audioState is AudioStateIdle) {
+                Logger.info('🚨 FAILOVER_DEBUG: Track end confirmed, attempting to restore LIVE stream');
+                _tryRestoreAfterTrackEnd(currentFailover);
+              } else {
+                Logger.info('🚨 FAILOVER_DEBUG: False track end - still playing, ignoring');
+              }
+            }
+          });
         } else if (audioState is AudioStateError && !audioState.isRetryable) {
           Logger.warning(
               '🚨 FAILOVER_DEBUG: Failover track failed with non-retryable error, attempting to restore LIVE stream');
@@ -503,24 +517,14 @@ final class EnhancedRadioService implements IRadioService {
     ));
 
     Logger.info('Attempting connection (attempt $attempt)');
-    Logger.info('🐛 DEBUG: About to set up connection timeout timer');
 
-    // Add timeout for connecting state to prevent infinite "Reconnecting"
-    // Reduced to 8s for faster response on all devices including TV boxes
-    final connectingTimeout = Timer(const Duration(seconds: 8), () {
-      Logger.error('🐛 DEBUG: Connection timeout timer FIRED after 8 seconds');
+    final connectingTimeout = Timer(const Duration(seconds: 20), () {
       if (_currentState is RadioStateConnecting && _isConnectionInProgress) {
-        Logger.error('Connection attempt timed out after 8 seconds');
-        _isConnectionInProgress = false; // Reset connection flag
+        Logger.error('Connection attempt timed out after 20 seconds');
+        _isConnectionInProgress = false;
         _scheduleRetry('Connection timeout - retrying');
-      } else {
-        Logger.error(
-            '🐛 DEBUG: Timeout fired but state changed: ${_currentState.runtimeType}, inProgress: $_isConnectionInProgress');
       }
     });
-
-    Logger.info(
-        '🐛 DEBUG: Connection timeout timer set up, about to call tryResultAsync');
 
     try {
       final result = await tryResultAsync(() async {
@@ -612,7 +616,7 @@ final class EnhancedRadioService implements IRadioService {
       final audioStartTime = DateTime.now();
 
       final playResult = await _audioService.playStream(config).timeout(
-        const Duration(seconds: 10), // Timeout for audio operations
+        const Duration(seconds: 30),
         onTimeout: () {
           final elapsed = DateTime.now().difference(audioStartTime);
           Logger.error(
@@ -732,10 +736,17 @@ final class EnhancedRadioService implements IRadioService {
       return;
     }
 
-    // Don't schedule if connection is in progress
     if (_isConnectionInProgress) {
       Logger.warning('Connection in progress, skipping retry scheduling');
       return;
+    }
+
+    if (_currentState is RadioStateFailover) {
+      final failover = _currentState as RadioStateFailover;
+      if (failover.audioState.isPlaying) {
+        Logger.info('Failover is playing successfully, ignoring retry request: $reason');
+        return;
+      }
     }
 
     // Check if this is a network error and we should activate failover instead of retry
@@ -1016,6 +1027,14 @@ final class EnhancedRadioService implements IRadioService {
       Logger.warning(
           '🚨 FAILOVER: Failover already in progress, ignoring duplicate request');
       return;
+    }
+
+    if (_currentState is RadioStateFailover) {
+      final failover = _currentState as RadioStateFailover;
+      if (failover.audioState.isPlaying) {
+        Logger.info('🚨 FAILOVER: Already in failover and playing, ignoring activation request');
+        return;
+      }
     }
 
     Logger.error('🚨 FAILOVER: Activating failover mode - $reason');

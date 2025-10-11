@@ -32,6 +32,20 @@ A Flutter application for Android and macOS that automatically plays online radi
 - **TV Remote Support**: Complete navigation with TV remote control
 - **Focus Management**: Optimized interface for TV screens
 
+### Just-audio version
+
+```
+v*-just-audio*
+```
+
+```
+git tag v1.0.6-just-audio
+git push origin v1.0.6-just-audio
+```
+
+example: v1.0.6-just-audio
+
+
 ## Installation
 
 ### Prerequisites

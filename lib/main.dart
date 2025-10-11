@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:media_kit/media_kit.dart';
 
 import 'core/service_locator.dart';
 import 'services/storage_service.dart';
@@ -12,13 +11,8 @@ import 'utils/logger.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Initialize platform info to get dynamic version
   await PlatformInfo.initialize();
 
-  // Initialize media_kit
-  MediaKit.ensureInitialized();
-
-  // Initialize services
   try {
     await ServiceLocator.initialize();
     Logger.info('Application services initialized successfully');
