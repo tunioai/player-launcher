@@ -177,8 +177,11 @@ final class EnhancedRadioService implements IRadioService {
       if (newAudioState is AudioStatePlaying &&
           currentAudioState is AudioStatePlaying) {
         // For failover, only consider buffer changes significant if they're substantial
-        final bufferDiff = (newAudioState.bufferSize.inSeconds - currentAudioState.bufferSize.inSeconds).abs();
-        return bufferDiff > 2; // Only update if buffer changed by more than 2 seconds
+        final bufferDiff = (newAudioState.bufferSize.inSeconds -
+                currentAudioState.bufferSize.inSeconds)
+            .abs();
+        return bufferDiff >
+            2; // Only update if buffer changed by more than 2 seconds
       }
     }
     return false;
@@ -187,8 +190,10 @@ final class EnhancedRadioService implements IRadioService {
   void _handleAudioStateChange(AudioState audioState) {
     // Only log significant state changes, not position updates
     final currentType = switch (_currentState) {
-      RadioStateConnected(:final AudioState audioState) => audioState.runtimeType,
-      RadioStateFailover(:final AudioState audioState) => audioState.runtimeType,
+      RadioStateConnected(:final AudioState audioState) =>
+        audioState.runtimeType,
+      RadioStateFailover(:final AudioState audioState) =>
+        audioState.runtimeType,
       _ => null,
     };
     final isSignificantChange = currentType != audioState.runtimeType ||
@@ -362,10 +367,11 @@ final class EnhancedRadioService implements IRadioService {
         if (isSignificantChange ||
             failover.audioState.runtimeType != audioState.runtimeType) {
           _updateState(newState);
-          
+
           // Log only significant failover state changes
           if (isSignificantChange) {
-            Logger.info('🚨 FAILOVER: Audio state changed to ${audioState.runtimeType}');
+            Logger.info(
+                '🚨 FAILOVER: Audio state changed to ${audioState.runtimeType}');
           }
         } else {
           // Silently update internal state without triggering listeners
@@ -379,15 +385,17 @@ final class EnhancedRadioService implements IRadioService {
               '🚨 FAILOVER_DEBUG: Failover track completed naturally (${failover.audioState.runtimeType} → Idle)');
           Logger.info(
               '🚨 FAILOVER_DEBUG: Waiting 2s to confirm track end before restore attempt...');
-          
+
           Timer(const Duration(seconds: 2), () {
             if (_currentState is RadioStateFailover) {
               final currentFailover = _currentState as RadioStateFailover;
               if (currentFailover.audioState is AudioStateIdle) {
-                Logger.info('🚨 FAILOVER_DEBUG: Track end confirmed, attempting to restore LIVE stream');
+                Logger.info(
+                    '🚨 FAILOVER_DEBUG: Track end confirmed, attempting to restore LIVE stream');
                 _tryRestoreAfterTrackEnd(currentFailover);
               } else {
-                Logger.info('🚨 FAILOVER_DEBUG: False track end - still playing, ignoring');
+                Logger.info(
+                    '🚨 FAILOVER_DEBUG: False track end - still playing, ignoring');
               }
             }
           });
@@ -744,7 +752,8 @@ final class EnhancedRadioService implements IRadioService {
     if (_currentState is RadioStateFailover) {
       final failover = _currentState as RadioStateFailover;
       if (failover.audioState.isPlaying) {
-        Logger.info('Failover is playing successfully, ignoring retry request: $reason');
+        Logger.info(
+            'Failover is playing successfully, ignoring retry request: $reason');
         return;
       }
     }
@@ -1032,7 +1041,8 @@ final class EnhancedRadioService implements IRadioService {
     if (_currentState is RadioStateFailover) {
       final failover = _currentState as RadioStateFailover;
       if (failover.audioState.isPlaying) {
-        Logger.info('🚨 FAILOVER: Already in failover and playing, ignoring activation request');
+        Logger.info(
+            '🚨 FAILOVER: Already in failover and playing, ignoring activation request');
         return;
       }
     }
