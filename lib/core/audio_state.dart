@@ -228,6 +228,7 @@ sealed class RadioState {
   String? get token => switch (this) {
         RadioStateConnected(:final token) => token,
         RadioStateFailover(:final token) => token,
+        RadioStateConnecting(:final token) => token,
         _ => null,
       };
 
@@ -255,10 +256,12 @@ final class RadioStateDisconnected extends RadioState {
 final class RadioStateConnecting extends RadioState {
   final String message;
   final int attempt;
+  final String? token;
 
   const RadioStateConnecting({
     this.message = 'Connecting...',
     this.attempt = 0,
+    this.token,
   });
 
   @override
@@ -266,10 +269,11 @@ final class RadioStateConnecting extends RadioState {
       identical(this, other) ||
       other is RadioStateConnecting &&
           message == other.message &&
-          attempt == other.attempt;
+          attempt == other.attempt &&
+          token == other.token;
 
   @override
-  int get hashCode => Object.hash(message, attempt);
+  int get hashCode => Object.hash(message, attempt, token);
 }
 
 final class RadioStateConnected extends RadioState {

@@ -336,12 +336,12 @@ final class EnhancedRadioService implements IRadioService {
               '🔄 STREAM SWITCH: Audio state changed during planned stream switch, not triggering failover');
         }
 
-      case RadioStateConnecting _:
+      case RadioStateConnecting connecting:
         // Check if we successfully started playing
         if (audioState.isPlaying) {
           // We should have config at this point
           final config = audioState.config;
-          final token = _getStoredToken();
+          final token = connecting.token ?? _getStoredToken();
           if (config != null && token != null) {
             _updateState(RadioStateConnected(
               token: token,
@@ -522,6 +522,7 @@ final class EnhancedRadioService implements IRadioService {
     _updateState(RadioStateConnecting(
       message: isRetry ? 'Reconnecting...' : 'Connecting...',
       attempt: attempt,
+      token: token,
     ));
 
     Logger.info('Attempting connection (attempt $attempt)');

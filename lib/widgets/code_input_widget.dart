@@ -30,6 +30,7 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
   late List<String> _digits;
   late FocusNode _focusNode;
   late TextEditingController _textController;
+  bool _hasAutoSubmitted = false;
 
   // Detect if we're on mobile platform
   bool get _isMobile =>
@@ -61,6 +62,10 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
     final value = widget.value.replaceAll(RegExp(r'\D'), '');
     for (int i = 0; i < value.length && i < _codeLength; i++) {
       _digits[i] = value[i];
+    }
+    // Reset auto-submit flag when value changes externally (e.g., cleared)
+    if (value.length < _codeLength) {
+      _hasAutoSubmitted = false;
     }
     // Update text controller and position cursor at the end
     if (_textController.text != value) {
@@ -98,7 +103,8 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
 
       widget.onChanged(cleanText);
 
-      if (cleanText.length == _codeLength) {
+      if (cleanText.length == _codeLength && !_hasAutoSubmitted) {
+        _hasAutoSubmitted = true;
         widget.onSubmitted?.call();
       }
     } else {
@@ -111,6 +117,7 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
   }
 
   Widget _buildMobileInput() {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     return Column(
       children: [
         Text(
@@ -134,20 +141,22 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
                   color: _digits[index].isNotEmpty
                       ? (_focusNode.hasFocus
                           ? TunioColors.primary
-                          : Colors.grey[600]!)
+                          : (isDark ? Colors.grey[600]! : Colors.grey[600]!))
                       : (_focusNode.hasFocus
                           ? TunioColors.primary
-                          : Colors.grey[300]!),
+                          : (isDark ? Colors.grey[700]! : Colors.grey[300]!)),
                   width: _focusNode.hasFocus ? 3 : 2,
                 ),
                 borderRadius: BorderRadius.circular(8),
                 color: _digits[index].isNotEmpty
                     ? (_focusNode.hasFocus
                         ? TunioColors.primary.withValues(alpha: 0.1)
-                        : Colors.grey[50])
+                        : (isDark
+                            ? Colors.grey[850]
+                            : Colors.grey[50]))
                     : (_focusNode.hasFocus
                         ? TunioColors.primary.withValues(alpha: 0.05)
-                        : Colors.white),
+                        : (isDark ? Colors.grey[900] : Colors.white)),
               ),
               child: Center(
                 child: Text(
@@ -157,7 +166,7 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
                     fontWeight: FontWeight.bold,
                     color: widget.enabled
                         ? (_digits[index].isNotEmpty
-                            ? Colors.black
+                            ? (isDark ? Colors.white : Colors.black)
                             : Colors.grey[400])
                         : Colors.grey,
                   ),
@@ -181,9 +190,8 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
             ],
             onChanged: _onTextChanged,
             onSubmitted: (_) {
-              if (_digits.join('').length == _codeLength) {
-                widget.onSubmitted?.call();
-              }
+              // Don't resubmit if already auto-submitted
+              // This prevents double submission when pressing Enter after typing 6 digits
             },
             decoration: const InputDecoration(
               border: InputBorder.none,
@@ -207,15 +215,17 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
               border: Border.all(
                 color: _focusNode.hasFocus
                     ? TunioColors.primary
-                    : Colors.grey[300]!,
+                    : (isDark ? Colors.grey[700]! : Colors.grey[300]!),
                 width: _focusNode.hasFocus ? 3 : 2,
               ),
               borderRadius: BorderRadius.circular(8),
               color: widget.enabled
                   ? (_focusNode.hasFocus
                       ? TunioColors.primary.withValues(alpha: 0.1)
-                      : TunioColors.primary.withValues(alpha: 0.05))
-                  : Colors.grey[100],
+                      : (isDark
+                          ? Colors.grey[900]
+                          : TunioColors.primary.withValues(alpha: 0.05)))
+                  : (isDark ? Colors.grey[850] : Colors.grey[100]),
             ),
             child: Text(
               _focusNode.hasFocus
@@ -226,8 +236,8 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
                 fontSize: 14,
                 color: widget.enabled
                     ? (_focusNode.hasFocus
-                        ? TunioColors.primaryDark
-                        : TunioColors.primary)
+                        ? (isDark ? Colors.white : TunioColors.primaryDark)
+                        : (isDark ? Colors.white70 : TunioColors.primary))
                     : Colors.grey,
                 fontWeight:
                     _focusNode.hasFocus ? FontWeight.w600 : FontWeight.w500,
@@ -240,6 +250,7 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
   }
 
   Widget _buildDesktopInput() {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     return Container(
       constraints: const BoxConstraints(maxWidth: 400),
       child: Column(
@@ -265,9 +276,8 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
             onChanged: _onTextChanged,
             onTap: widget.onTap,
             onSubmitted: (_) {
-              if (_digits.join('').length == _codeLength) {
-                widget.onSubmitted?.call();
-              }
+              // Don't resubmit if already auto-submitted
+              // This prevents double submission when pressing Enter after typing 6 digits
             },
             decoration: InputDecoration(
               labelText: 'PIN Code',
@@ -302,10 +312,11 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
                   : null,
             ),
             textAlign: TextAlign.center,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 20,
               fontWeight: FontWeight.bold,
               letterSpacing: 6,
+              color: isDark ? Colors.white : Colors.black,
             ),
             maxLength: _codeLength,
             autofocus: true,
@@ -317,8 +328,9 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
                 : 'Click to focus and enter digits',
             style: TextStyle(
               fontSize: 12,
-              color:
-                  _focusNode.hasFocus ? TunioColors.primary : Colors.grey[600],
+              color: _focusNode.hasFocus
+                  ? (isDark ? Colors.white : TunioColors.primary)
+                  : (isDark ? Colors.grey[400] : Colors.grey[600]),
               fontWeight:
                   _focusNode.hasFocus ? FontWeight.w500 : FontWeight.normal,
             ),
