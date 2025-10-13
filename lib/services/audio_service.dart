@@ -63,6 +63,7 @@ final class EnhancedAudioService implements IAudioService {
   bool _isInitialized = false;
   bool _isDisposed = false;
   bool _isPlayingStream = false;
+  bool _isPlayStreamInProgress = false; // Prevent concurrent playStream calls
   String? _currentStreamUrl;
 
   static const Duration _loadingTimeout = Duration(seconds: 60);
@@ -550,6 +551,13 @@ final class EnhancedAudioService implements IAudioService {
           '🎵 AUDIO_DEBUG: Current _isPlayingStream: $_isPlayingStream');
       Logger.info('🎵 AUDIO_DEBUG: Current stream URL: $_currentStreamUrl');
 
+      // Prevent concurrent playStream calls
+      if (_isPlayStreamInProgress) {
+        Logger.warning(
+            '🎵 AUDIO_DEBUG: ⚠️ playStream already in progress, ignoring duplicate call');
+        return;
+      }
+
       if (_isPlayingStream && _currentStreamUrl == config.streamUrl) {
         Logger.warning(
             '🎵 AUDIO_DEBUG: ⚠️ Already playing the same stream, ignoring duplicate call');
@@ -562,6 +570,7 @@ final class EnhancedAudioService implements IAudioService {
         _isPlayingStream = false;
       }
 
+      _isPlayStreamInProgress = true;
       _isPlayingStream = true;
       _currentStreamUrl = config.streamUrl;
       Logger.info('🎵 AUDIO_DEBUG: Set _isPlayingStream = true');
@@ -651,9 +660,15 @@ final class EnhancedAudioService implements IAudioService {
 
         Logger.info(
             '🎵 AUDIO_DEBUG: ===== PLAYBACK STARTED SUCCESSFULLY =====');
-      } finally {
+      } catch (e) {
+        // On error, clean up state
+        Logger.error('🎵 AUDIO_DEBUG: Playback failed, cleaning up: $e');
         _isPlayingStream = false;
-        Logger.info('🎵 AUDIO_DEBUG: Set _isPlayingStream = false');
+        _currentStreamUrl = null;
+        rethrow;
+      } finally {
+        _isPlayStreamInProgress = false;
+        Logger.info('🎵 AUDIO_DEBUG: playStream operation completed');
       }
     });
   }
@@ -676,12 +691,21 @@ final class EnhancedAudioService implements IAudioService {
         throw Exception('Local file not found: $filePath');
       }
 
+      // Prevent concurrent playLocalFile calls
+      if (_isPlayStreamInProgress) {
+        Logger.warning(
+            '🎵 FAILOVER: ⚠️ Another playback operation in progress, waiting...');
+        // Give some time for the other operation to complete
+        await Future.delayed(const Duration(milliseconds: 500));
+      }
+
       if (_isPlayingStream) {
         Logger.info('🎵 FAILOVER: Stopping current stream for failover');
         await _audioPlayer.stop();
         _isPlayingStream = false;
       }
 
+      _isPlayStreamInProgress = true;
       _isPlayingStream = true;
       _currentStreamUrl = null;
 
@@ -734,8 +758,14 @@ final class EnhancedAudioService implements IAudioService {
 
         Logger.info(
             '🎵 FAILOVER: ===== LOCAL FILE PLAYBACK STARTED SUCCESSFULLY =====');
-      } finally {
+      } catch (e) {
+        // On error, clean up state
+        Logger.error('🎵 FAILOVER: Playback failed, cleaning up: $e');
         _isPlayingStream = false;
+        _currentStreamUrl = null;
+        rethrow;
+      } finally {
+        _isPlayStreamInProgress = false;
       }
     });
   }
@@ -759,12 +789,21 @@ final class EnhancedAudioService implements IAudioService {
   @override
   Future<Result<void>> stop() async {
     return tryResultAsync(() async {
+      Logger.info('🎵 AUDIO_DEBUG: Stopping playback...');
       _cancelTimeouts();
+      
+      // Wait for any in-progress playback operation to complete
+      if (_isPlayStreamInProgress) {
+        Logger.warning('🎵 AUDIO_DEBUG: Waiting for in-progress playback operation...');
+        await Future.delayed(const Duration(milliseconds: 200));
+      }
+      
       await _audioPlayer.stop();
 
       _currentConfig = null;
       _streamStartTime = null;
       _isPlayingStream = false;
+      _isPlayStreamInProgress = false;
       _currentStreamUrl = null;
 
       _currentState = const AudioStateIdle();

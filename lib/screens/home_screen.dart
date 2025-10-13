@@ -357,7 +357,7 @@ class _HomeScreenState extends State<HomeScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // TIP Card - более компактная версия
+            // TIP Card - compact version
             Card(
               color: Colors.grey[300],
               child: InkWell(
@@ -395,7 +395,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             const SizedBox(height: 12),
 
-            // Connection Card - компактная версия
+            // Connection Card - compact version
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(12.0),
