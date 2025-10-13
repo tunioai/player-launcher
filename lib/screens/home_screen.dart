@@ -41,7 +41,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // State
   String _currentCode = '';
-  bool _isUserEditingCode = false; // Flag to prevent auto-updating during user input
+  bool _isUserEditingCode =
+      false; // Flag to prevent auto-updating during user input
   RadioState _radioState = const RadioStateDisconnected();
   NetworkState _networkState = const NetworkState();
   int? _currentPing;
@@ -407,13 +408,15 @@ class _HomeScreenState extends State<HomeScreen> {
                       onChanged: (code) {
                         setState(() {
                           _currentCode = code;
-                          _isUserEditingCode = true; // Mark that user is editing
+                          _isUserEditingCode =
+                              true; // Mark that user is editing
                         });
                       },
                       onTap: () {
                         setState(() {
                           _currentCode = '';
-                          _isUserEditingCode = true; // Mark that user is editing
+                          _isUserEditingCode =
+                              true; // Mark that user is editing
                         });
                       },
                       onSubmitted: () {

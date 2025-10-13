@@ -151,9 +151,7 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
                 color: _digits[index].isNotEmpty
                     ? (_focusNode.hasFocus
                         ? TunioColors.primary.withValues(alpha: 0.1)
-                        : (isDark
-                            ? Colors.grey[850]
-                            : Colors.grey[50]))
+                        : (isDark ? Colors.grey[850] : Colors.grey[50]))
                     : (_focusNode.hasFocus
                         ? TunioColors.primary.withValues(alpha: 0.05)
                         : (isDark ? Colors.grey[900] : Colors.white)),

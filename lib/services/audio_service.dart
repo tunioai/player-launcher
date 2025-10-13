@@ -791,13 +791,14 @@ final class EnhancedAudioService implements IAudioService {
     return tryResultAsync(() async {
       Logger.info('🎵 AUDIO_DEBUG: Stopping playback...');
       _cancelTimeouts();
-      
+
       // Wait for any in-progress playback operation to complete
       if (_isPlayStreamInProgress) {
-        Logger.warning('🎵 AUDIO_DEBUG: Waiting for in-progress playback operation...');
+        Logger.warning(
+            '🎵 AUDIO_DEBUG: Waiting for in-progress playback operation...');
         await Future.delayed(const Duration(milliseconds: 200));
       }
-      
+
       await _audioPlayer.stop();
 
       _currentConfig = null;
