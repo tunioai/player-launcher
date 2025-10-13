@@ -73,6 +73,10 @@ final class EnhancedRadioService implements IRadioService {
       _currentConnectionStage; // Track which stage we're in for better diagnostics
   int _consecutiveHealthFailures = 0;
   static const int _healthFailureThreshold = 3;
+  DateTime?
+      _lastFailoverRestoreTime; // Track when we last restored from failover
+  DateTime?
+      _lastPlayingTime; // Track when stream was last playing to prevent false failovers
 
   // Auto-start and reconnection
   bool _autoReconnectEnabled = false;
@@ -218,9 +222,23 @@ final class EnhancedRadioService implements IRadioService {
         if (isSignificantChange ||
             connected.audioState.runtimeType != audioState.runtimeType) {
           _updateState(newState);
+
+          // If we successfully restored from failover, log it
+          if (connected.audioState is AudioStateLoading &&
+              audioState.isPlaying) {
+            Logger.info(
+                '✅ RESTORE: Live stream is now playing after restore from failover');
+            Logger.info(
+                '✅ RESTORE: State updated from AudioStateLoading to AudioStatePlaying');
+          }
         } else {
           // Silently update internal state without triggering listeners
           _currentState = newState;
+        }
+
+        // Track when stream is playing to prevent false failovers
+        if (audioState.isPlaying) {
+          _lastPlayingTime = DateTime.now();
         }
 
         // Handle error states - faster detection for stream loss
@@ -261,8 +279,8 @@ final class EnhancedRadioService implements IRadioService {
             return;
           }
 
-          // Wait 5 seconds before activating failover to allow stream to recover
-          Timer(const Duration(seconds: 5), () {
+          // Wait 8 seconds before activating failover to allow stream to recover (increased from 5s)
+          Timer(const Duration(seconds: 8), () {
             if (_currentState is! RadioStateConnected ||
                 _isConnectionInProgress ||
                 _isStreamSwitchInProgress) {
@@ -271,6 +289,14 @@ final class EnhancedRadioService implements IRadioService {
 
             final latest = _currentState as RadioStateConnected;
             final currentAudioState = latest.audioState;
+
+            // ✅ CRITICAL: Check if stream is actually playing before failover
+            if (_audioService.currentState.isPlaying) {
+              Logger.info(
+                  'Stream is actually playing, ignoring error state - no failover needed');
+              return;
+            }
+
             if (currentAudioState is AudioStateError) {
               Logger.warning(
                   'Stream still in error after delay, attempting restart');
@@ -301,8 +327,8 @@ final class EnhancedRadioService implements IRadioService {
           Logger.error(
               '🚨 STREAM INTERRUPTION: Stream unexpectedly stopped while we were playing');
 
-          // Wait 3 seconds to see if it recovers automatically
-          Timer(const Duration(seconds: 3), () {
+          // Wait 5 seconds to see if it recovers automatically (increased from 3s)
+          Timer(const Duration(seconds: 5), () {
             if (_currentState is! RadioStateConnected ||
                 _isConnectionInProgress ||
                 _isStreamSwitchInProgress) {
@@ -311,6 +337,14 @@ final class EnhancedRadioService implements IRadioService {
 
             final latest = _currentState as RadioStateConnected;
             final currentAudioState = latest.audioState;
+
+            // ✅ CRITICAL: Check if stream is actually playing before failover
+            if (_audioService.currentState.isPlaying) {
+              Logger.info(
+                  'Stream is actually playing, ignoring idle state - no failover needed');
+              return;
+            }
+
             if (currentAudioState is AudioStateIdle ||
                 currentAudioState is AudioStatePaused) {
               Logger.warning(
@@ -353,6 +387,7 @@ final class EnhancedRadioService implements IRadioService {
             _startPinging(config.streamUrl);
           }
         }
+        break;
 
       case RadioStateFailover failover:
         final newState = RadioStateFailover(
@@ -403,10 +438,8 @@ final class EnhancedRadioService implements IRadioService {
           Logger.warning(
               '🚨 FAILOVER_DEBUG: Failover track failed with non-retryable error, attempting to restore LIVE stream');
           _tryRestoreAfterTrackEnd(failover);
-        } else {
-          Logger.info(
-              '🚨 FAILOVER_DEBUG: No restore needed - ${audioState.runtimeType} from ${failover.audioState.runtimeType}');
         }
+      // Removed spammy logging: No restore needed
 
       default:
         // Other states don't need audio state updates
@@ -625,11 +658,21 @@ final class EnhancedRadioService implements IRadioService {
       final audioStartTime = DateTime.now();
 
       final playResult = await _audioService.playStream(config).timeout(
-        const Duration(seconds: 30),
+        const Duration(
+            seconds:
+                35), // Increased from 30s to 35s to let internal timeout with player check complete first
         onTimeout: () {
           final elapsed = DateTime.now().difference(audioStartTime);
+
+          // Check if actually playing despite timeout
+          if (_audioService.currentState.isPlaying) {
+            Logger.warning(
+                '🔄 CONNECTION: External playStream timeout after ${elapsed.inSeconds}s BUT audio is actually playing - ignoring timeout');
+            return Success(null);
+          }
+
           Logger.error(
-              '🔄 CONNECTION: Audio playback timed out after ${elapsed.inSeconds}s');
+              '🔄 CONNECTION: Audio playback timed out after ${elapsed.inSeconds}s and NOT playing');
           Logger.error('🐛 DEBUG: Audio playback timeout exception thrown');
           throw TimeoutException('Audio playback timed out');
         },
@@ -639,7 +682,15 @@ final class EnhancedRadioService implements IRadioService {
           '🐛 DEBUG: _audioService.playStream() completed successfully');
 
       if (playResult.isFailure) {
-        throw Exception('Failed to start audio: ${playResult.error}');
+        // Check if audio is actually playing despite the failure
+        final currentAudioState = _audioService.currentState;
+        if (currentAudioState.isPlaying) {
+          Logger.warning(
+              '🔄 CONNECTION: playStream returned failure but audio is playing - ignoring timeout error');
+          Logger.warning('🔄 CONNECTION: Error was: ${playResult.error}');
+        } else {
+          throw Exception('Failed to start audio: ${playResult.error}');
+        }
       }
 
       final audioDuration = DateTime.now().difference(audioStartTime);
@@ -1013,6 +1064,28 @@ final class EnhancedRadioService implements IRadioService {
     RadioStateConnected connected,
     String reason,
   ) async {
+    // Give live stream time to stabilize after restore from failover
+    if (_lastFailoverRestoreTime != null) {
+      final timeSinceRestore =
+          DateTime.now().difference(_lastFailoverRestoreTime!);
+      if (timeSinceRestore.inSeconds < 60) {
+        // Increased from 30s to 60s
+        Logger.info(
+            'Health check failure ignored - within 60s grace period after failover restore');
+        return;
+      }
+    }
+
+    // ✅ Additional protection: if stream was recently playing, give more time
+    if (_lastPlayingTime != null) {
+      final timeSincePlaying = DateTime.now().difference(_lastPlayingTime!);
+      if (timeSincePlaying.inSeconds < 30) {
+        Logger.info(
+            'Health check failure ignored - stream was playing recently (${timeSincePlaying.inSeconds}s ago)');
+        return;
+      }
+    }
+
     _consecutiveHealthFailures++;
     Logger.warning(
         'Health check failure #$_consecutiveHealthFailures: $reason');
@@ -1213,6 +1286,8 @@ final class EnhancedRadioService implements IRadioService {
         if (playResult.isSuccess) {
           Logger.info('✅ RESTORE: Successfully restored live stream!');
           _resetHealthFailures();
+          _lastFailoverRestoreTime =
+              DateTime.now(); // Mark restore time for grace period
 
           _recordFailoverEvent(
             direction: FailoverEventDirection.restore,
@@ -1224,16 +1299,23 @@ final class EnhancedRadioService implements IRadioService {
           );
 
           // Restore normal connected state
+          Logger.info(
+              '✅ RESTORE: Changing state from RadioStateFailover to RadioStateConnected');
           _updateState(RadioStateConnected(
             token: failover.token,
             config: config,
             audioState: AudioStateLoading(config: config),
           ));
+          Logger.info(
+              '✅ RESTORE: State changed to RadioStateConnected, UI should update now');
 
           // Resume normal operations
           _startConfigPolling();
           _startPinging(config.streamUrl);
+          _startStateMonitoring(); // Restart state monitoring after restore
           _isFailoverOperationInProgress = false;
+          _lastFailoverRestoreTime =
+              DateTime.now(); // Mark restore time for grace period
         } else {
           Logger.warning(
               '🔄 RESTORE: Live stream restore failed: ${playResult.error}, playing next failover track');
@@ -1323,10 +1405,16 @@ final class EnhancedRadioService implements IRadioService {
         if (_currentState is RadioStateConnected &&
             !_isConnectionInProgress &&
             !_audioService.currentState.isPlaying) {
-          // Only if audio is also not playing
-          Logger.warning(
-              '🔍 PING FAIL: Ping failed and audio not playing - checking stream health');
-          _checkStreamHealth();
+          // ✅ Give more time for stream to start playing after ping failure
+          Timer(const Duration(seconds: 15), () {
+            if (_currentState is RadioStateConnected &&
+                !_audioService.currentState.isPlaying &&
+                !_isConnectionInProgress) {
+              Logger.warning(
+                  '🔍 PING FAIL: Ping failed and audio still not playing after 15s - checking stream health');
+              _checkStreamHealth();
+            }
+          });
         }
       }
     }));
@@ -1346,6 +1434,7 @@ final class EnhancedRadioService implements IRadioService {
 
     if (_audioService.currentState.isPlaying) {
       _resetHealthFailures();
+      _lastPlayingTime = DateTime.now(); // Track last playing time
       return;
     }
 

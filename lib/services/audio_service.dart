@@ -56,6 +56,10 @@ final class EnhancedAudioService implements IAudioService {
   DateTime? _lastBufferUpdate;
   Duration _currentBufferSize = Duration.zero;
 
+  // Ghost playback detection for live streams
+  Duration _lastBufferSize = Duration.zero;
+  int _stuckBufferCount = 0;
+
   Timer? _loadingTimeoutTimer;
   Timer? _hangDetectionTimer;
 
@@ -336,6 +340,40 @@ final class EnhancedAudioService implements IAudioService {
     if (bufferedPosition == null) return;
 
     final currentPosition = _audioPlayer.position;
+
+    // Ghost playback detection: check if buffer is stuck at same value
+    if (_audioPlayer.playing && _currentState.isPlaying) {
+      final bufferSize = bufferedPosition - currentPosition;
+
+      // Track buffer changes - for live stream, buffer should fluctuate
+      if (bufferSize == _lastBufferSize) {
+        _stuckBufferCount++;
+
+        // If buffer hasn't changed for 30 updates (~15 seconds),
+        // this might be ghost playback (playing but no actual sound output)
+        if (_stuckBufferCount >= 30) {
+          Logger.error(
+              '🚨 GHOST PLAYBACK DETECTED: UI shows playing, buffer at ${bufferSize.inSeconds}s but NOT changing for 15s');
+          Logger.error(
+              '🚨 GHOST: Player state: playing=${_audioPlayer.playing}, processingState=${_audioPlayer.processingState}');
+          Logger.error(
+              '🚨 GHOST: Volume: ${_audioPlayer.volume}, Current position: ${currentPosition.inSeconds}s');
+          Logger.error(
+              '🚨 GHOST: This indicates silent playback - buffer loaded but no audio output');
+
+          // Try to recover by stopping and letting radio service restart
+          Logger.warning('🚨 GHOST: Attempting recovery by triggering error');
+          _handlePlayerError(Exception(
+              'Ghost playback detected - buffer stuck at ${bufferSize.inSeconds}s'));
+          _stuckBufferCount = 0;
+          return;
+        }
+      } else {
+        // Buffer is changing - playback is healthy
+        _stuckBufferCount = 0;
+      }
+      _lastBufferSize = bufferSize;
+    }
     final rawBufferAhead = bufferedPosition - currentPosition;
 
     final timePlaying = _streamStartTime != null
@@ -639,23 +677,38 @@ final class EnhancedAudioService implements IAudioService {
         try {
           final playStartTime = DateTime.now();
           await _audioPlayer.play().timeout(
-            const Duration(seconds: 10),
+            const Duration(seconds: 30),
             onTimeout: () {
               final elapsed = DateTime.now().difference(playStartTime);
+
+              // Check if actually playing despite timeout
+              if (_audioPlayer.playing) {
+                Logger.warning(
+                    '🎵 AUDIO_DEBUG: play() call timed out after ${elapsed.inSeconds}s BUT player is actually playing - ignoring timeout');
+                return;
+              }
+
               Logger.error(
-                  '🎵 AUDIO_DEBUG: play() timed out after ${elapsed.inSeconds}s');
+                  '🎵 AUDIO_DEBUG: play() timed out after ${elapsed.inSeconds}s and player NOT playing');
               throw TimeoutException('play operation timed out');
             },
           );
           final playDuration = DateTime.now().difference(playStartTime);
           Logger.info(
-              '🎵 AUDIO_DEBUG: play() completed successfully in ${playDuration.inMilliseconds}ms');
+              '🎵 AUDIO_DEBUG: play() completed in ${playDuration.inMilliseconds}ms');
           Logger.info(
               '🎵 AUDIO_DEBUG: Player state after play(): ${_audioPlayer.playing}');
         } catch (e, stackTrace) {
-          Logger.error('🎵 AUDIO_DEBUG: play() FAILED: $e');
-          Logger.error('🎵 AUDIO_DEBUG: Stack trace: $stackTrace');
-          rethrow;
+          // Re-check if actually playing before failing
+          if (_audioPlayer.playing) {
+            Logger.warning(
+                '🎵 AUDIO_DEBUG: play() threw error BUT player is actually playing - ignoring error');
+            Logger.warning('🎵 AUDIO_DEBUG: Error was: $e');
+          } else {
+            Logger.error('🎵 AUDIO_DEBUG: play() FAILED: $e');
+            Logger.error('🎵 AUDIO_DEBUG: Stack trace: $stackTrace');
+            rethrow;
+          }
         }
 
         Logger.info(
@@ -803,6 +856,10 @@ final class EnhancedAudioService implements IAudioService {
 
       _currentConfig = null;
       _streamStartTime = null;
+
+      // Reset ghost playback detection
+      _stuckBufferCount = 0;
+      _lastBufferSize = Duration.zero;
       _isPlayingStream = false;
       _isPlayStreamInProgress = false;
       _currentStreamUrl = null;

@@ -703,9 +703,12 @@ class _HomeScreenState extends State<HomeScreen> {
       // Playback mode indicator
       if (_radioState.isConnected) ...[
         _buildSimpleLabel(
-          icon: _radioState.isFailover ? Icons.offline_bolt : Icons.live_tv,
-          value: _radioState.isFailover ? 'Failover' : 'Live',
-          color: _radioState.isFailover ? Colors.orange : Colors.green,
+          icon: _radioState is RadioStateFailover
+              ? Icons.offline_bolt
+              : Icons.live_tv,
+          value: _radioState is RadioStateFailover ? 'Failover' : 'Live',
+          color:
+              _radioState is RadioStateFailover ? Colors.orange : Colors.green,
         ),
         const SizedBox(width: 12),
       ],
@@ -746,20 +749,25 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildMetricsChips() {
+    // ✅ Check if live stream is actually playing despite failover state
+    final audioState = _getAudioState();
+    final isFailoverPlaying =
+        _radioState is RadioStateFailover && audioState?.isPlaying == true;
+
     return Wrap(
       spacing: 8,
       runSpacing: 8,
       children: [
         // Network status - show "Offline Mode" during failover
         _buildStatusChip(
-          icon: _radioState.isFailover
+          icon: isFailoverPlaying
               ? Icons.offline_bolt
               : (_networkState.isConnected ? Icons.wifi : Icons.wifi_off),
           label: 'Network',
-          value: _radioState.isFailover
+          value: isFailoverPlaying
               ? 'Offline Mode'
               : (_networkState.isConnected ? 'Connected' : 'Disconnected'),
-          color: _radioState.isFailover
+          color: isFailoverPlaying
               ? Colors.orange
               : (_networkState.isConnected ? Colors.green : Colors.red),
         ),
