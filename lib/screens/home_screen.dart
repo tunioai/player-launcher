@@ -131,7 +131,7 @@ class _HomeScreenState extends State<HomeScreen> {
             // Update volume from config
             final config = state.config;
             if (config != null) {
-              _volume = config.volume;
+              _volume = config.failoverVolume;
             }
           });
         }
@@ -719,7 +719,7 @@ class _HomeScreenState extends State<HomeScreen> {
           onTap: _showVolumeInfo,
           child: _buildSimpleLabel(
             icon: Icons.volume_up,
-            value: '${(_volume * 100).round()}%',
+            value: 'Music ${(_volume * 100).round()}%',
             color: Colors.blue,
           ),
         ),

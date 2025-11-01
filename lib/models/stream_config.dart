@@ -4,6 +4,7 @@ import 'current_track.dart';
 class StreamConfig {
   final String streamUrl;
   final double volume;
+  final double? musicVolume;
   final String? title;
   final String? description;
   final CurrentTrack? current;
@@ -11,16 +12,31 @@ class StreamConfig {
   const StreamConfig({
     required this.streamUrl,
     this.volume = 1.0,
+    this.musicVolume,
     this.title,
     this.description,
     this.current,
   });
 
+  /// Returns the volume value scaled for failover playback.
+  ///
+  /// The backend may provide a dedicated `music_volume` which represents
+  /// the relative loudness of music within the master mix. When present we
+  /// multiply the master `volume` by this value so that cached tracks match
+  /// the perceived loudness of the live broadcast. If the field is missing we
+  /// fall back to the legacy behaviour of using the master volume directly.
+  double get failoverVolume {
+    final master = volume.clamp(0.0, 1.0);
+    final music = (musicVolume ?? 1.0).clamp(0.0, 1.0);
+    return (master * music).clamp(0.0, 1.0);
+  }
+
   factory StreamConfig.fromJson(Map<String, dynamic> json) {
     Logger.debug('Parsing StreamConfig from JSON: $json', 'StreamConfig');
 
     final streamUrl = json['stream_url'] ?? json['url'] ?? '';
-    final volume = (json['volume'] ?? 1.0).toDouble();
+    final volume = _parseVolume(json['volume']);
+    final parsedMusicVolume = _parseOptionalVolume(json['music_volume']);
     final title = json['title'];
     final description = json['description'];
 
@@ -43,6 +59,7 @@ class StreamConfig {
     return StreamConfig(
       streamUrl: streamUrl,
       volume: volume,
+      musicVolume: parsedMusicVolume,
       title: title,
       description: description,
       current: current,
@@ -53,6 +70,7 @@ class StreamConfig {
     return {
       'stream_url': streamUrl,
       'volume': volume,
+      if (musicVolume != null) 'music_volume': musicVolume,
       'title': title,
       'description': description,
       'current': current?.toJson(),
@@ -64,9 +82,36 @@ class StreamConfig {
     if (identical(this, other)) return true;
     return other is StreamConfig &&
         other.streamUrl == streamUrl &&
-        other.volume == volume;
+        other.volume == volume &&
+        other.musicVolume == musicVolume;
   }
 
   @override
-  int get hashCode => streamUrl.hashCode ^ volume.hashCode;
+  int get hashCode => Object.hash(streamUrl, volume, musicVolume);
+
+  static double _parseVolume(dynamic raw, [double defaultValue = 1.0]) {
+    if (raw == null) return defaultValue;
+
+    if (raw is num) {
+      final value = raw.toDouble();
+      if (value.isNaN) return defaultValue;
+      return value.clamp(0.0, 1.0);
+    }
+
+    if (raw is String) {
+      final parsed = double.tryParse(raw);
+      if (parsed != null && !parsed.isNaN) {
+        return parsed.clamp(0.0, 1.0);
+      }
+    }
+
+    return defaultValue;
+  }
+
+  static double? _parseOptionalVolume(dynamic raw) {
+    if (raw == null) return null;
+
+    final parsed = _parseVolume(raw);
+    return parsed;
+  }
 }

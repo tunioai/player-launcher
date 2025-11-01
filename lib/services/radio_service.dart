@@ -609,7 +609,9 @@ final class EnhancedRadioService implements IRadioService {
       Logger.info('🐛 DEBUG: About to call _apiService.getStreamConfig()');
       final apiStartTime = DateTime.now();
 
-      final config = await _apiService.getStreamConfig(token).timeout(
+      final config = await _apiService
+          .getStreamConfig(token, currentPing: _currentPing)
+          .timeout(
         const Duration(
             seconds: 20), // Increased to match ApiService timeout + buffer
         onTimeout: () {
@@ -648,7 +650,7 @@ final class EnhancedRadioService implements IRadioService {
       _currentConnectionStage = 'SAVING_CONFIG';
       Logger.info('🔄 CONNECTION: STAGE 2 - Saving configuration...');
       await _storageService.saveToken(token);
-      await _storageService.saveLastVolume(config.volume);
+      await _storageService.saveLastVolume(config.failoverVolume);
       Logger.info('🔄 CONNECTION: STAGE 2 COMPLETED - Configuration saved');
 
       // STAGE 3: Start audio playback with detailed monitoring
@@ -881,7 +883,8 @@ final class EnhancedRadioService implements IRadioService {
 
         final newConfig = await Future(() async {
           // This ensures the API call runs asynchronously
-          return await _apiService.getStreamConfig(connected.token);
+          return await _apiService.getStreamConfig(connected.token,
+              currentPing: _currentPing);
         });
 
         if (newConfig != null && newConfig != connected.config) {
@@ -897,20 +900,13 @@ final class EnhancedRadioService implements IRadioService {
               newConfig.streamUrl != connected.config.streamUrl;
 
           // Handle volume change separately without restarting stream
-          final volumeChanged = newConfig.volume != connected.config.volume;
+          final failoverVolumeChanged =
+              newConfig.failoverVolume != connected.config.failoverVolume;
 
-          if (volumeChanged) {
+          if (failoverVolumeChanged) {
             Logger.info(
-                'Volume changed from ${connected.config.volume} to ${newConfig.volume}');
-            // Apply new volume without restarting stream
-            final volumeResult =
-                await _audioService.setVolume(newConfig.volume);
-            if (volumeResult.isSuccess) {
-              Logger.info(
-                  'Successfully applied new volume: ${(newConfig.volume * 100).round()}%');
-            } else {
-              Logger.error('Failed to apply new volume: ${volumeResult.error}');
-            }
+                'Failover volume changed from ${connected.config.failoverVolume} to ${newConfig.failoverVolume}');
+            await _storageService.saveLastVolume(newConfig.failoverVolume);
           }
 
           if (needsRestart) {
@@ -947,7 +943,7 @@ final class EnhancedRadioService implements IRadioService {
             }
           } else {
             Logger.info(
-                'Configuration updated - ${volumeChanged ? 'volume and metadata' : 'metadata only'}, no restart needed');
+                'Configuration updated - ${failoverVolumeChanged ? 'failover volume and metadata' : 'metadata only'}, no restart needed');
             // Just update the state without restarting stream
             final updatedState = connected.copyWith(config: newConfig);
             _updateState(updatedState);
@@ -969,6 +965,37 @@ final class EnhancedRadioService implements IRadioService {
         }
       }
     }
+  }
+
+  double _resolveFailoverVolume(StreamConfig? config) {
+    if (config != null) {
+      final resolved = config.failoverVolume;
+      if (!resolved.isNaN) {
+        return resolved.clamp(0.0, 1.0);
+      }
+    }
+
+    final stored = _storageService.getLastVolume();
+    return stored.clamp(0.0, 1.0);
+  }
+
+  Future<double?> _applyFailoverVolume(StreamConfig? config,
+      {bool persist = false}) async {
+    final targetVolume = _resolveFailoverVolume(config);
+    Logger.info('🎵 FAILOVER: Applying failover volume: $targetVolume');
+
+    final result = await _audioService.setVolume(targetVolume);
+    if (result.isFailure) {
+      Logger.error(
+          '🎵 FAILOVER: Failed to apply failover volume: ${result.error}');
+      return null;
+    }
+
+    if (persist) {
+      await _storageService.saveLastVolume(targetVolume);
+    }
+
+    return targetVolume;
   }
 
   void _downloadTrackInBackground(CurrentTrack track) {
@@ -1151,6 +1178,8 @@ final class EnhancedRadioService implements IRadioService {
 
         Logger.info('🚨 FAILOVER: Playing failover track: ${randomTrack.path}');
 
+        await _applyFailoverVolume(connectedState.config);
+
         // Switch to failover state before playing
         _updateState(RadioStateFailover(
           token: connectedState.token,
@@ -1209,6 +1238,8 @@ final class EnhancedRadioService implements IRadioService {
         }
 
         Logger.info('🔄 FAILOVER: Playing next track: ${randomTrack.path}');
+
+        await _applyFailoverVolume(failoverState.originalConfig);
 
         // Update state with new track path
         _updateState(RadioStateFailover(
@@ -1269,7 +1300,8 @@ final class EnhancedRadioService implements IRadioService {
     unawaited(() async {
       try {
         // Attempt to get fresh config from server
-        final config = await _apiService.getStreamConfig(failover.token);
+        final config = await _apiService.getStreamConfig(failover.token,
+            currentPing: _currentPing);
         if (config == null) {
           Logger.warning(
               '🔄 RESTORE: Failed to get config, playing next failover track');
@@ -1280,6 +1312,8 @@ final class EnhancedRadioService implements IRadioService {
 
         Logger.info(
             '🔄 RESTORE: Got fresh config, attempting to restore live stream');
+
+        await _storageService.saveLastVolume(config.failoverVolume);
 
         // Try to play the live stream
         final playResult = await _audioService.playStream(config);
@@ -1444,7 +1478,7 @@ final class EnhancedRadioService implements IRadioService {
       try {
         Logger.info('🔍 STREAM HEALTH: Checking stream health...');
         final response = await _apiService
-            .getStreamConfig(connected.token)
+            .getStreamConfig(connected.token, currentPing: _currentPing)
             .timeout(const Duration(seconds: 5));
 
         if (response != null) {
@@ -1616,7 +1650,9 @@ final class EnhancedRadioService implements IRadioService {
           '🔄 FAILOVER BACKGROUND: Checking for config updates during failover');
 
       // Try to get fresh config from server
-      final config = await _apiService.getStreamConfig(failover.token).timeout(
+      final config = await _apiService
+          .getStreamConfig(failover.token, currentPing: _currentPing)
+          .timeout(
             const Duration(seconds: 10),
             onTimeout: () =>
                 throw TimeoutException('Background config check timeout'),
@@ -1625,6 +1661,8 @@ final class EnhancedRadioService implements IRadioService {
       if (config != null) {
         Logger.info(
             '🔄 FAILOVER BACKGROUND: Successfully retrieved config during failover');
+
+        await _storageService.saveLastVolume(config.failoverVolume);
 
         // Download current track for failover cache if available
         if (config.current != null && config.current!.isMusic) {
@@ -1635,18 +1673,16 @@ final class EnhancedRadioService implements IRadioService {
 
         // Update volume if changed - apply immediately during failover
         if (failover.originalConfig != null &&
-            config.volume != failover.originalConfig!.volume) {
+            config.failoverVolume != failover.originalConfig!.failoverVolume) {
           Logger.info(
-              '🔄 FAILOVER BACKGROUND: Volume changed from ${failover.originalConfig!.volume} to ${config.volume} - applying immediately');
+              '🔄 FAILOVER BACKGROUND: Failover volume changed from ${failover.originalConfig!.failoverVolume} to ${config.failoverVolume} - applying immediately');
 
-          // Apply the new volume immediately to the current playback
-          final volumeResult = await _audioService.setVolume(config.volume);
-          if (volumeResult.isSuccess) {
+          final appliedVolume =
+              await _applyFailoverVolume(config, persist: true);
+
+          if (appliedVolume != null) {
             Logger.info(
-                '🔄 FAILOVER BACKGROUND: Successfully applied new volume during failover: ${(config.volume * 100).round()}%');
-
-            // Save the volume to storage
-            await _storageService.saveLastVolume(config.volume);
+                '🔄 FAILOVER BACKGROUND: Successfully applied new failover volume: ${(appliedVolume * 100).round()}%');
 
             // Update the stored config with new volume
             final updatedFailover = RadioStateFailover(
@@ -1657,9 +1693,6 @@ final class EnhancedRadioService implements IRadioService {
               attemptCount: failover.attemptCount,
             );
             _updateState(updatedFailover);
-          } else {
-            Logger.error(
-                '🔄 FAILOVER BACKGROUND: Failed to apply new volume during failover: ${volumeResult.error}');
           }
         }
       } else {

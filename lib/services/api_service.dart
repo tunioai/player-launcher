@@ -12,7 +12,7 @@ class ApiService {
   static const String baseUrl = 'https://api.tunio.ai';
   static const Duration timeout = Duration(seconds: 15);
 
-  Future<StreamConfig?> getStreamConfig(String pin) async {
+  Future<StreamConfig?> getStreamConfig(String pin, {int? currentPing}) async {
     if (pin.isEmpty) return null;
 
     try {
@@ -25,7 +25,7 @@ class ApiService {
       Logger.debug(
           '🔄 API_DEBUG: Current timestamp: ${DateTime.now().toIso8601String()}',
           'ApiService');
-      final headers = PlatformInfo.apiHeaders;
+      final headers = PlatformInfo.getApiHeaders(ping: currentPing);
       Logger.debug('🔄 API_DEBUG: Request headers: $headers', 'ApiService');
       Logger.debug('🔄 API_DEBUG: Timeout duration: ${timeout.inSeconds}s',
           'ApiService');
@@ -103,6 +103,9 @@ class ApiService {
             'ApiService');
         Logger.debug(
             '🔄 API_DEBUG: StreamConfig volume: ${streamConfig.volume}',
+            'ApiService');
+        Logger.debug(
+            '🔄 API_DEBUG: StreamConfig music_volume: ${streamConfig.musicVolume}',
             'ApiService');
         Logger.debug(
             '🔄 API_DEBUG: API call completed successfully', 'ApiService');

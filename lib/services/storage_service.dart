@@ -44,12 +44,17 @@ class StorageService {
     Logger.debug('🔑 StorageService: Token cleared', 'StorageService');
   }
 
+  // Persist the last known failover/music volume so we can reuse it when
+  // entering failover without fresh config.
   Future<void> saveLastVolume(double volume) async {
-    await _prefs!.setDouble(_lastVolumeKey, volume);
+    final clamped = volume.clamp(0.0, 1.0);
+    await _prefs!.setDouble(_lastVolumeKey, clamped);
   }
 
   double getLastVolume() {
-    return _prefs!.getDouble(_lastVolumeKey) ?? 1.0;
+    final stored = _prefs!.getDouble(_lastVolumeKey);
+    if (stored == null) return 1.0;
+    return stored.clamp(0.0, 1.0);
   }
 
   Future<void> setAutoStartEnabled(bool enabled) async {

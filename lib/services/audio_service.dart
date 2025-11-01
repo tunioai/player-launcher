@@ -141,6 +141,29 @@ final class EnhancedAudioService implements IAudioService {
       onError: _handlePlayerError,
     );
 
+    // CRITICAL: Listen to playbackEventStream to catch native ExoPlayer errors
+    // that don't propagate through playerStateStream
+    _audioPlayer.playbackEventStream.listen(
+      (event) {
+        // Check for errors in playback event
+        if (event.processingState == ProcessingState.idle &&
+            _audioPlayer.playing &&
+            _currentConfig != null) {
+          Logger.error(
+              '🚨 CRITICAL: PlaybackEvent shows IDLE but player.playing=true - native error detected!');
+          Logger.error('🚨 CRITICAL: Event: $event');
+          _handlePlayerError(Exception(
+              'Native playback error detected - processingState=idle while playing'));
+        }
+      },
+      onError: (error, stackTrace) {
+        Logger.error(
+            '🚨 CRITICAL: PlaybackEvent stream error (native ExoPlayer error): $error');
+        Logger.error('🚨 CRITICAL: Stack trace: $stackTrace');
+        _handlePlayerError(error);
+      },
+    );
+
     _positionSubscription = _audioPlayer.positionStream.listen(
       _handlePositionUpdate,
       onError: (error) => Logger.error('Position stream error: $error'),
@@ -584,7 +607,8 @@ final class EnhancedAudioService implements IAudioService {
       Logger.info('🎵 AUDIO_DEBUG: ===== STARTING PLAYBACK =====');
       Logger.info('🎵 AUDIO_DEBUG: Title: ${config.title}');
       Logger.info('🎵 AUDIO_DEBUG: Stream URL: ${config.streamUrl}');
-      Logger.info('🎵 AUDIO_DEBUG: Volume: ${config.volume}');
+      Logger.info(
+          '🎵 AUDIO_DEBUG: Volume (master): ${config.volume}, failover: ${config.failoverVolume}');
       Logger.info(
           '🎵 AUDIO_DEBUG: Current _isPlayingStream: $_isPlayingStream');
       Logger.info('🎵 AUDIO_DEBUG: Current stream URL: $_currentStreamUrl');
@@ -662,11 +686,12 @@ final class EnhancedAudioService implements IAudioService {
           rethrow;
         }
 
+        const liveStreamVolume = 1.0;
         Logger.info(
-            '🎵 AUDIO_DEBUG: About to set volume to ${config.volume}...');
+            '🎵 AUDIO_DEBUG: Applying live stream volume override: $liveStreamVolume');
         try {
-          await setVolume(config.volume);
-          Logger.info('🎵 AUDIO_DEBUG: Volume set successfully');
+          await setVolume(liveStreamVolume);
+          Logger.info('🎵 AUDIO_DEBUG: Live stream volume set successfully');
         } catch (e, stackTrace) {
           Logger.error('🎵 AUDIO_DEBUG: setVolume FAILED: $e');
           Logger.error('🎵 AUDIO_DEBUG: Stack trace: $stackTrace');
