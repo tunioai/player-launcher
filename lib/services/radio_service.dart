@@ -57,6 +57,9 @@ final class EnhancedRadioService implements IRadioService {
   StreamSubscription<AudioState>? _audioStateSubscription;
   StreamSubscription<NetworkState>? _networkStateSubscription;
 
+  NetworkState _latestNetworkState =
+      const NetworkState(isConnected: false, type: ConnectionType.unknown);
+
   // Configuration polling
   Timer? _configPollingTimer;
   static const Duration _configPollingInterval = Duration(minutes: 1);
@@ -69,6 +72,8 @@ final class EnhancedRadioService implements IRadioService {
   Timer? _stateMonitorTimer;
   DateTime? _connectingStateStartTime;
   Timer? _forceRecoveryTimer;
+  Timer? _networkLossTimer;
+  bool _userPaused = false;
   String?
       _currentConnectionStage; // Track which stage we're in for better diagnostics
   int _consecutiveHealthFailures = 0;
@@ -168,6 +173,52 @@ final class EnhancedRadioService implements IRadioService {
     _startStateMonitoring();
   }
 
+  bool get _autoLogicEnabled => !_userPaused;
+
+  void _suspendAutoRecovery() {
+    if (_userPaused) return;
+
+    Logger.info('User pause detected - suspending auto recovery logic');
+    _userPaused = true;
+
+    _networkLossTimer?.cancel();
+    _networkLossTimer = null;
+    _retryTimer?.cancel();
+    _forceRecoveryTimer?.cancel();
+
+    _stopStateMonitoring();
+    _stopFailoverBackgroundMonitoring();
+  }
+
+  void _resumeAutoRecovery() {
+    if (!_userPaused) return;
+
+    Logger.info('User resume detected - re-enabling auto recovery');
+    _userPaused = false;
+
+    if (_isDisposed) {
+      return;
+    }
+
+    if (_currentState case RadioStateConnected(:final StreamConfig config)) {
+      _startStateMonitoring();
+      if (_latestNetworkState.isConnected) {
+        _startPinging(config.streamUrl);
+      }
+    } else if (_currentState case RadioStateFailover failover) {
+      _startStateMonitoring();
+      if (_latestNetworkState.isConnected) {
+        _startFailoverBackgroundMonitoring();
+      }
+      if (failover.originalConfig != null &&
+          _latestNetworkState.isConnected) {
+        _startPinging(failover.originalConfig!.streamUrl);
+      }
+    } else {
+      _startStateMonitoring();
+    }
+  }
+
   bool _isBufferChangeSignificant(AudioState newAudioState) {
     // Check buffer changes for both Connected and Failover states
     if (_currentState case RadioStateConnected connected) {
@@ -239,6 +290,10 @@ final class EnhancedRadioService implements IRadioService {
         // Track when stream is playing to prevent false failovers
         if (audioState.isPlaying) {
           _lastPlayingTime = DateTime.now();
+        }
+
+        if (!_autoLogicEnabled) {
+          return;
         }
 
         // Handle error states - faster detection for stream loss
@@ -416,6 +471,9 @@ final class EnhancedRadioService implements IRadioService {
         if (audioState is AudioStateIdle &&
             (failover.audioState is AudioStatePlaying ||
                 failover.audioState is AudioStatePaused)) {
+          if (!_autoLogicEnabled) {
+            return;
+          }
           Logger.info(
               '🚨 FAILOVER_DEBUG: Failover track completed naturally (${failover.audioState.runtimeType} → Idle)');
           Logger.info(
@@ -435,6 +493,9 @@ final class EnhancedRadioService implements IRadioService {
             }
           });
         } else if (audioState is AudioStateError && !audioState.isRetryable) {
+          if (!_autoLogicEnabled) {
+            return;
+          }
           Logger.warning(
               '🚨 FAILOVER_DEBUG: Failover track failed with non-retryable error, attempting to restore LIVE stream');
           _tryRestoreAfterTrackEnd(failover);
@@ -449,6 +510,24 @@ final class EnhancedRadioService implements IRadioService {
 
   void _handleNetworkStateChange(NetworkState networkState) {
     Logger.info('Network state changed: connected=${networkState.isConnected}');
+    _latestNetworkState = networkState;
+
+    if (!networkState.isConnected) {
+      if (_autoLogicEnabled) {
+        _handleNetworkLoss();
+      } else {
+        Logger.info(
+            'Network lost but auto recovery is suspended due to user pause');
+      }
+      return;
+    }
+
+    _networkLossTimer?.cancel();
+    _networkLossTimer = null;
+
+    if (!_autoLogicEnabled) {
+      return;
+    }
 
     if (networkState.isConnected && _autoReconnectEnabled) {
       // Network restored, attempt reconnection if needed
@@ -480,6 +559,58 @@ final class EnhancedRadioService implements IRadioService {
         _startFailoverBackgroundMonitoring();
       }
     }
+  }
+
+  void _handleNetworkLoss() {
+    // Avoid spamming timers if network toggles rapidly
+    if (_networkLossTimer != null) {
+      return;
+    }
+
+    if (!_autoLogicEnabled) {
+      Logger.info(
+          'Ignoring network loss failover trigger - auto recovery suspended');
+      return;
+    }
+
+    if (!_autoReconnectEnabled) {
+      return;
+    }
+
+    if (_currentState is! RadioStateConnected) {
+      Logger.info(
+          'Network lost but radio state is ${_currentState.runtimeType}, skipping immediate failover');
+      return;
+    }
+
+    if (_failoverService.cachedTracksCount == 0) {
+      Logger.warning(
+          'Network lost but no cached tracks available for failover');
+      return;
+    }
+
+    Logger.warning(
+        '🌐 NETWORK LOSS: Connectivity lost - scheduling quick failover');
+    _networkLossTimer = Timer(const Duration(seconds: 3), () {
+      _networkLossTimer = null;
+
+      if (_latestNetworkState.isConnected) {
+        Logger.info(
+            '🌐 NETWORK LOSS: Network restored before failover timer fired');
+        return;
+      }
+
+      if (_currentState is! RadioStateConnected) {
+        Logger.info(
+            '🌐 NETWORK LOSS: State changed from connected before timer fired');
+        return;
+      }
+
+      Logger.error(
+          '🚨 NETWORK LOSS: Triggering failover due to sustained connectivity loss');
+      final connected = _currentState as RadioStateConnected;
+      _activateFailover(connected, 'Network connection lost');
+    });
   }
 
   bool _isConnectingTooLong() {
@@ -535,6 +666,7 @@ final class EnhancedRadioService implements IRadioService {
 
     _retryManager.reset();
     _autoReconnectEnabled = true;
+    _resumeAutoRecovery();
 
     return _attemptConnect(token, isRetry: false);
   }
@@ -752,12 +884,26 @@ final class EnhancedRadioService implements IRadioService {
     final audioState = _audioService.currentState;
 
     if (audioState.isPlaying) {
-      return _audioService.pause();
+      final result = await _audioService.pause();
+      if (result.isSuccess) {
+        _suspendAutoRecovery();
+      }
+      return result;
     } else if (audioState case AudioStatePaused _) {
-      return _audioService.resume();
+      _resumeAutoRecovery();
+      final result = await _audioService.resume();
+      if (result.isFailure) {
+        _suspendAutoRecovery();
+      }
+      return result;
     } else if (_currentState case RadioStateConnected connected) {
-      // Restart playback
-      return _audioService.playStream(connected.config);
+      _resumeAutoRecovery();
+      final result =
+          await _audioService.playStream(connected.config, quickStart: true);
+      if (result.isFailure) {
+        _suspendAutoRecovery();
+      }
+      return result;
     } else {
       return const Failure('No active connection');
     }
@@ -784,6 +930,7 @@ final class EnhancedRadioService implements IRadioService {
 
     Logger.info('Manual reconnection requested');
     _retryManager.reset();
+    _resumeAutoRecovery();
 
     return _attemptConnect(token, isRetry: true);
   }
@@ -800,6 +947,12 @@ final class EnhancedRadioService implements IRadioService {
 
     if (_isConnectionInProgress) {
       Logger.warning('Connection in progress, skipping retry scheduling');
+      return;
+    }
+
+    if (!_autoLogicEnabled) {
+      Logger.info(
+          'Skipping retry scheduling because auto recovery is suspended');
       return;
     }
 
@@ -877,6 +1030,11 @@ final class EnhancedRadioService implements IRadioService {
 
   Future<void> _refreshConfig() async {
     if (_currentState case RadioStateConnected connected) {
+      if (!_autoLogicEnabled) {
+        Logger.debug('Config refresh skipped - auto recovery suspended');
+        return;
+      }
+
       try {
         // Run API call in background to prevent blocking audio thread
         Logger.debug('Starting background config refresh...');
@@ -902,11 +1060,24 @@ final class EnhancedRadioService implements IRadioService {
           // Handle volume change separately without restarting stream
           final failoverVolumeChanged =
               newConfig.failoverVolume != connected.config.failoverVolume;
+          final masterVolumeChanged =
+              newConfig.volume != connected.config.volume;
 
           if (failoverVolumeChanged) {
             Logger.info(
                 'Failover volume changed from ${connected.config.failoverVolume} to ${newConfig.failoverVolume}');
             await _storageService.saveLastVolume(newConfig.failoverVolume);
+          }
+
+          if (masterVolumeChanged && _autoLogicEnabled) {
+            final targetVolume = newConfig.volume.clamp(0.0, 1.0);
+            Logger.info(
+                'Master volume changed from ${connected.config.volume} to $targetVolume - applying to audio player');
+            final result = await _audioService.setVolume(targetVolume);
+            if (result.isFailure) {
+              Logger.error(
+                  'Failed to apply updated master volume: ${result.error}');
+            }
           }
 
           if (needsRestart) {
@@ -1052,6 +1223,12 @@ final class EnhancedRadioService implements IRadioService {
     RadioStateConnected connected,
     String reason,
   ) async {
+    if (!_autoLogicEnabled) {
+      Logger.info(
+          'Skipping live stream restart ($reason) - auto recovery suspended');
+      return false;
+    }
+
     if (_isConnectionInProgress) {
       Logger.warning(
           'Skipping stream restart ($reason) - connection already in progress');
@@ -1068,7 +1245,8 @@ final class EnhancedRadioService implements IRadioService {
         Logger.warning(
             'Stop before restart failed: ${stopResult.error}', 'RadioService');
       }
-      final result = await _audioService.playStream(connected.config);
+      final result =
+          await _audioService.playStream(connected.config, quickStart: true);
       if (result.isSuccess) {
         Logger.info('Live stream restart succeeded: $reason');
         _resetHealthFailures();
@@ -1091,6 +1269,12 @@ final class EnhancedRadioService implements IRadioService {
     RadioStateConnected connected,
     String reason,
   ) async {
+    if (!_autoLogicEnabled) {
+      Logger.info(
+          'Health check failure ignored - auto recovery suspended');
+      return;
+    }
+
     // Give live stream time to stabilize after restore from failover
     if (_lastFailoverRestoreTime != null) {
       final timeSinceRestore =
@@ -1136,6 +1320,12 @@ final class EnhancedRadioService implements IRadioService {
     if (_isFailoverOperationInProgress) {
       Logger.warning(
           '🚨 FAILOVER: Failover already in progress, ignoring duplicate request');
+      return;
+    }
+
+    if (!_autoLogicEnabled) {
+      Logger.info(
+          '🚨 FAILOVER: Activation skipped because auto recovery is suspended');
       return;
     }
 
@@ -1218,6 +1408,12 @@ final class EnhancedRadioService implements IRadioService {
   }
 
   void _playNextFailoverTrack(RadioStateFailover failoverState) {
+    if (!_autoLogicEnabled) {
+      Logger.info(
+          '🔄 FAILOVER: Skipping next track - auto recovery suspended');
+      return;
+    }
+
     if (_isFailoverOperationInProgress) {
       Logger.warning(
           '🔄 FAILOVER: Failover operation already in progress, ignoring next track request');
@@ -1284,6 +1480,11 @@ final class EnhancedRadioService implements IRadioService {
   }
 
   void _tryRestoreAfterTrackEnd(RadioStateFailover failover) {
+    if (!_autoLogicEnabled) {
+      Logger.info('🔄 RESTORE: Skipping auto-restore - auto recovery suspended');
+      return;
+    }
+
     if (_isFailoverOperationInProgress) {
       Logger.warning(
           '🔄 RESTORE: Restore operation already in progress, ignoring duplicate request');
@@ -1316,7 +1517,8 @@ final class EnhancedRadioService implements IRadioService {
         await _storageService.saveLastVolume(config.failoverVolume);
 
         // Try to play the live stream
-        final playResult = await _audioService.playStream(config);
+        final playResult =
+            await _audioService.playStream(config, quickStart: true);
         if (playResult.isSuccess) {
           Logger.info('✅ RESTORE: Successfully restored live stream!');
           _resetHealthFailures();
@@ -1366,6 +1568,12 @@ final class EnhancedRadioService implements IRadioService {
   }
 
   void _playNextFailoverTrackAfterDelay(RadioStateFailover failoverState) {
+    if (!_autoLogicEnabled) {
+      Logger.info(
+          '🔄 FAILOVER: Skipping delayed next track - auto recovery suspended');
+      return;
+    }
+
     Timer(const Duration(seconds: 3), () {
       if (_currentState is RadioStateFailover) {
         _playNextFailoverTrack(_currentState as RadioStateFailover);
@@ -1414,6 +1622,11 @@ final class EnhancedRadioService implements IRadioService {
   Future<void> _performPing(String host) async {
     // Run ping in background to prevent blocking audio thread
     unawaited(Future(() async {
+      if (!_autoLogicEnabled) {
+        Logger.debug('Ping skipped - auto recovery suspended');
+        return;
+      }
+
       try {
         final stopwatch = Stopwatch()..start();
 
@@ -1438,12 +1651,14 @@ final class EnhancedRadioService implements IRadioService {
         // But don't trigger health check too aggressively from ping failures
         if (_currentState is RadioStateConnected &&
             !_isConnectionInProgress &&
-            !_audioService.currentState.isPlaying) {
+            !_audioService.currentState.isPlaying &&
+            _autoLogicEnabled) {
           // ✅ Give more time for stream to start playing after ping failure
           Timer(const Duration(seconds: 15), () {
             if (_currentState is RadioStateConnected &&
                 !_audioService.currentState.isPlaying &&
-                !_isConnectionInProgress) {
+                !_isConnectionInProgress &&
+                _autoLogicEnabled) {
               Logger.warning(
                   '🔍 PING FAIL: Ping failed and audio still not playing after 15s - checking stream health');
               _checkStreamHealth();
@@ -1463,6 +1678,12 @@ final class EnhancedRadioService implements IRadioService {
 
   void _checkStreamHealth() {
     if (_currentState is! RadioStateConnected) {
+      return;
+    }
+
+    if (!_autoLogicEnabled) {
+      Logger.debug(
+          '🔍 STREAM HEALTH: Auto recovery suspended - skipping health check');
       return;
     }
 
@@ -1516,6 +1737,10 @@ final class EnhancedRadioService implements IRadioService {
   void _checkForHungState() {
     if (_isDisposed || !_autoReconnectEnabled) return;
 
+    if (!_autoLogicEnabled) {
+      return;
+    }
+
     final now = DateTime.now();
 
     // Check if we're stuck in connecting state
@@ -1554,6 +1779,12 @@ final class EnhancedRadioService implements IRadioService {
   void _forceConnectionRecovery(String reason) {
     Logger.error(
         '🔧 FORCE RECOVERY: $reason - initiating immediate reconnection');
+
+    if (!_autoLogicEnabled) {
+      Logger.info(
+          '🔧 FORCE RECOVERY: Skipping - auto recovery suspended');
+      return;
+    }
 
     final token = _getStoredToken();
     if (token == null) {
@@ -1618,6 +1849,12 @@ final class EnhancedRadioService implements IRadioService {
   Timer? _failoverBackgroundTimer;
 
   void _startFailoverBackgroundMonitoring() {
+    if (!_autoLogicEnabled) {
+      Logger.info(
+          '🔄 FAILOVER BACKGROUND: Not starting - auto recovery suspended');
+      return;
+    }
+
     _stopFailoverBackgroundMonitoring();
 
     Logger.info(
@@ -1642,6 +1879,12 @@ final class EnhancedRadioService implements IRadioService {
 
   Future<void> _performFailoverBackgroundCheck() async {
     if (_currentState is! RadioStateFailover) return;
+
+    if (!_autoLogicEnabled) {
+      Logger.info(
+          '🔄 FAILOVER BACKGROUND: Skipping background check - auto recovery suspended');
+      return;
+    }
 
     final failover = _currentState as RadioStateFailover;
 
@@ -1722,6 +1965,8 @@ final class EnhancedRadioService implements IRadioService {
     _retryTimer?.cancel();
     _configPollingTimer?.cancel();
     _stopPinging();
+    _networkLossTimer?.cancel();
+    _networkLossTimer = null;
 
     await _audioStateSubscription?.cancel();
     await _networkStateSubscription?.cancel();

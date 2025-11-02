@@ -18,7 +18,7 @@ abstract interface class IAudioService implements Disposable {
   AudioState get currentState;
 
   Future<Result<void>> initialize();
-  Future<Result<void>> playStream(StreamConfig config);
+  Future<Result<void>> playStream(StreamConfig config, {bool quickStart = false});
   Future<Result<void>> playLocalFile(String filePath,
       {StreamConfig? originalConfig});
   Future<Result<void>> pause();
@@ -70,9 +70,9 @@ final class EnhancedAudioService implements IAudioService {
   bool _isPlayStreamInProgress = false; // Prevent concurrent playStream calls
   String? _currentStreamUrl;
 
-  static const Duration _loadingTimeout = Duration(seconds: 60);
-  static const Duration _hangDetectionInterval = Duration(seconds: 30);
-  static const Duration _maxHangTime = Duration(seconds: 90);
+  static const Duration _loadingTimeout = Duration(seconds: 10);
+  static const Duration _hangDetectionInterval = Duration(seconds: 5);
+  static const Duration _maxHangTime = Duration(seconds: 20);
 
   @override
   Stream<AudioState> get stateStream => _stateController.stream;
@@ -440,7 +440,7 @@ final class EnhancedAudioService implements IAudioService {
       _ => ConnectionType.unknown,
     };
 
-    final isActuallyConnected = hasConnection || _currentState.isPlaying;
+    final isActuallyConnected = hasConnection;
 
     final previouslyConnected = _networkState.isConnected;
     if (isActuallyConnected != previouslyConnected) {
@@ -597,7 +597,8 @@ final class EnhancedAudioService implements IAudioService {
   }
 
   @override
-  Future<Result<void>> playStream(StreamConfig config) async {
+  Future<Result<void>> playStream(StreamConfig config,
+      {bool quickStart = false}) async {
     if (!_isInitialized) {
       final initResult = await initialize();
       if (initResult.isFailure) return initResult;
@@ -642,10 +643,14 @@ final class EnhancedAudioService implements IAudioService {
         _currentConfig = config;
         Logger.info('🎵 AUDIO_DEBUG: Stream start time and config set');
 
-        final prebufferDelay = await _calculateOptimalPrebufferDelay();
-        Logger.info(
-            '🎵 AUDIO_DEBUG: Pre-buffering for ${prebufferDelay.inSeconds}s for stable connection...');
-        await Future.delayed(prebufferDelay);
+        final prebufferDelay = quickStart
+            ? Duration.zero
+            : await _calculateOptimalPrebufferDelay();
+        if (prebufferDelay > Duration.zero) {
+          Logger.info(
+              '🎵 AUDIO_DEBUG: Pre-buffering for ${prebufferDelay.inMilliseconds}ms for stable connection...');
+          await Future.delayed(prebufferDelay);
+        }
 
         Logger.info('🎵 AUDIO_DEBUG: Setting audio source...');
 
@@ -668,7 +673,9 @@ final class EnhancedAudioService implements IAudioService {
             preload: true,
           )
               .timeout(
-            const Duration(seconds: 15),
+            quickStart
+                ? const Duration(seconds: 5)
+                : const Duration(seconds: 15),
             onTimeout: () {
               final elapsed = DateTime.now().difference(setSourceStartTime);
               Logger.error(
@@ -686,7 +693,7 @@ final class EnhancedAudioService implements IAudioService {
           rethrow;
         }
 
-        const liveStreamVolume = 1.0;
+        final liveStreamVolume = config.volume.clamp(0.0, 1.0);
         Logger.info(
             '🎵 AUDIO_DEBUG: Applying live stream volume override: $liveStreamVolume');
         try {
@@ -702,7 +709,9 @@ final class EnhancedAudioService implements IAudioService {
         try {
           final playStartTime = DateTime.now();
           await _audioPlayer.play().timeout(
-            const Duration(seconds: 30),
+            quickStart
+                ? const Duration(seconds: 5)
+                : const Duration(seconds: 30),
             onTimeout: () {
               final elapsed = DateTime.now().difference(playStartTime);
 
