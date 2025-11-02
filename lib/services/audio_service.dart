@@ -18,7 +18,8 @@ abstract interface class IAudioService implements Disposable {
   AudioState get currentState;
 
   Future<Result<void>> initialize();
-  Future<Result<void>> playStream(StreamConfig config, {bool quickStart = false});
+  Future<Result<void>> playStream(StreamConfig config,
+      {bool quickStart = false});
   Future<Result<void>> playLocalFile(String filePath,
       {StreamConfig? originalConfig});
   Future<Result<void>> pause();

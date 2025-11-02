@@ -210,8 +210,7 @@ final class EnhancedRadioService implements IRadioService {
       if (_latestNetworkState.isConnected) {
         _startFailoverBackgroundMonitoring();
       }
-      if (failover.originalConfig != null &&
-          _latestNetworkState.isConnected) {
+      if (failover.originalConfig != null && _latestNetworkState.isConnected) {
         _startPinging(failover.originalConfig!.streamUrl);
       }
     } else {
@@ -1271,8 +1270,7 @@ final class EnhancedRadioService implements IRadioService {
     String reason,
   ) async {
     if (!_autoLogicEnabled) {
-      Logger.info(
-          'Health check failure ignored - auto recovery suspended');
+      Logger.info('Health check failure ignored - auto recovery suspended');
       return;
     }
 
@@ -1410,8 +1408,7 @@ final class EnhancedRadioService implements IRadioService {
 
   void _playNextFailoverTrack(RadioStateFailover failoverState) {
     if (!_autoLogicEnabled) {
-      Logger.info(
-          '🔄 FAILOVER: Skipping next track - auto recovery suspended');
+      Logger.info('🔄 FAILOVER: Skipping next track - auto recovery suspended');
       return;
     }
 
@@ -1482,7 +1479,8 @@ final class EnhancedRadioService implements IRadioService {
 
   void _tryRestoreAfterTrackEnd(RadioStateFailover failover) {
     if (!_autoLogicEnabled) {
-      Logger.info('🔄 RESTORE: Skipping auto-restore - auto recovery suspended');
+      Logger.info(
+          '🔄 RESTORE: Skipping auto-restore - auto recovery suspended');
       return;
     }
 
@@ -1782,8 +1780,7 @@ final class EnhancedRadioService implements IRadioService {
         '🔧 FORCE RECOVERY: $reason - initiating immediate reconnection');
 
     if (!_autoLogicEnabled) {
-      Logger.info(
-          '🔧 FORCE RECOVERY: Skipping - auto recovery suspended');
+      Logger.info('🔧 FORCE RECOVERY: Skipping - auto recovery suspended');
       return;
     }
 
