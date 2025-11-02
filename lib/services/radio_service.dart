@@ -713,6 +713,7 @@ final class EnhancedRadioService implements IRadioService {
 
       // Schedule retry on failure
       if (_autoReconnectEnabled) {
+        _isConnectionInProgress = false;
         _scheduleRetry('Connection failed: $e');
       } else {
         _updateState(RadioStateError(
