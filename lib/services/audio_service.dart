@@ -207,8 +207,7 @@ final class EnhancedAudioService implements IAudioService {
 
         if (event.begin) {
           _awaitingInterruptionResume = true;
-          Logger.info(
-              '🎧 AUDIO_SESSION: Interruption began (${event.type})');
+          Logger.info('🎧 AUDIO_SESSION: Interruption began (${event.type})');
           if (_audioPlayer.playing &&
               (event.type == AudioInterruptionType.pause ||
                   event.type == AudioInterruptionType.unknown)) {
@@ -246,8 +245,7 @@ final class EnhancedAudioService implements IAudioService {
         }
       },
       onError: (error, stackTrace) {
-        Logger.error(
-            '🎧 AUDIO_SESSION: Interruption stream error: $error');
+        Logger.error('🎧 AUDIO_SESSION: Interruption stream error: $error');
         Logger.error('🎧 AUDIO_SESSION: $stackTrace');
       },
     );
@@ -664,14 +662,13 @@ final class EnhancedAudioService implements IAudioService {
 
     try {
       await _audioPlayer.stop().timeout(
-        const Duration(seconds: 5),
-      );
+            const Duration(seconds: 5),
+          );
     } on TimeoutException {
       Logger.error(
           '🎵 AUDIO_DEBUG: stop() timed out while handling $reason - continuing with stale player state');
     } catch (e, stackTrace) {
-      Logger.error(
-          '🎵 AUDIO_DEBUG: stop() threw while handling $reason: $e');
+      Logger.error('🎵 AUDIO_DEBUG: stop() threw while handling $reason: $e');
       Logger.error('🎵 AUDIO_DEBUG: Stack trace: $stackTrace');
     }
 
@@ -756,15 +753,18 @@ final class EnhancedAudioService implements IAudioService {
         );
 
         Logger.info('🎵 AUDIO_DEBUG: About to call setAudioSource...');
-        final setSourceTimeout =
-            quickStart ? const Duration(seconds: 5) : const Duration(seconds: 15);
+        final setSourceTimeout = quickStart
+            ? const Duration(seconds: 5)
+            : const Duration(seconds: 15);
         final setSourceStartTime = DateTime.now();
         try {
-          await _audioPlayer.setAudioSource(
-            audioSource,
-            initialPosition: Duration.zero,
-            preload: true,
-          ).timeout(setSourceTimeout);
+          await _audioPlayer
+              .setAudioSource(
+                audioSource,
+                initialPosition: Duration.zero,
+                preload: true,
+              )
+              .timeout(setSourceTimeout);
 
           final setSourceDuration =
               DateTime.now().difference(setSourceStartTime);
@@ -797,8 +797,9 @@ final class EnhancedAudioService implements IAudioService {
         }
 
         Logger.info('🎵 AUDIO_DEBUG: About to call play()...');
-        final playTimeout =
-            quickStart ? const Duration(seconds: 5) : const Duration(seconds: 30);
+        final playTimeout = quickStart
+            ? const Duration(seconds: 5)
+            : const Duration(seconds: 30);
         final playStartTime = DateTime.now();
         try {
           await _audioPlayer.play().timeout(playTimeout);
@@ -913,11 +914,13 @@ final class EnhancedAudioService implements IAudioService {
         const failoverSetSourceTimeout = Duration(seconds: 10);
         final failoverSetSourceStart = DateTime.now();
         try {
-          await _audioPlayer.setAudioSource(
-            audioSource,
-            initialPosition: Duration.zero,
-            preload: true,
-          ).timeout(failoverSetSourceTimeout);
+          await _audioPlayer
+              .setAudioSource(
+                audioSource,
+                initialPosition: Duration.zero,
+                preload: true,
+              )
+              .timeout(failoverSetSourceTimeout);
         } on TimeoutException catch (_) {
           final elapsed = DateTime.now().difference(failoverSetSourceStart);
           Logger.error('🎵 FAILOVER: setAudioSource timed out');

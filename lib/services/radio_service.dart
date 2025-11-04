@@ -1523,10 +1523,10 @@ final class EnhancedRadioService implements IRadioService {
         final config = await _apiService
             .getStreamConfig(failover.token, currentPing: _currentPing)
             .timeout(
-          const Duration(seconds: 5),
-          onTimeout: () =>
-              throw TimeoutException('Config request timeout', const Duration(seconds: 5)),
-        );
+              const Duration(seconds: 5),
+              onTimeout: () => throw TimeoutException(
+                  'Config request timeout', const Duration(seconds: 5)),
+            );
         if (config == null) {
           Logger.warning(
               '🔄 RESTORE: Failed to get config, playing next failover track');
@@ -1586,7 +1586,8 @@ final class EnhancedRadioService implements IRadioService {
         Logger.error(
             '🔄 RESTORE: Error during restore attempt: $e, playing next failover track');
         _isFailoverOperationInProgress = false;
-        _playNextFailoverTrackAfterDelay(failover, delay: const Duration(seconds: 1));
+        _playNextFailoverTrackAfterDelay(failover,
+            delay: const Duration(seconds: 1));
       }
     }());
   }
