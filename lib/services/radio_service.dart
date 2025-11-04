@@ -965,7 +965,7 @@ final class EnhancedRadioService implements IRadioService {
       }
     }
 
-    // Попробуем гарантированно закрыть прошлый поток перед новым коннектом
+    // Try to reliably close the previous stream before establishing a new connection
     unawaited(() async {
       final stopResult = await _audioService.stop();
       if (stopResult.isFailure) {
