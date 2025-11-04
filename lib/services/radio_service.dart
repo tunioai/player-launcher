@@ -965,6 +965,15 @@ final class EnhancedRadioService implements IRadioService {
       }
     }
 
+    // Попробуем гарантированно закрыть прошлый поток перед новым коннектом
+    unawaited(() async {
+      final stopResult = await _audioService.stop();
+      if (stopResult.isFailure) {
+        Logger.warning(
+            'Retry scheduler: stop before retry failed: ${stopResult.error}');
+      }
+    }());
+
     // Check if this is a network error and we should activate failover instead of retry
     final isNetworkError = reason.contains('No internet connection') ||
         reason.contains('Connection failed') ||
@@ -1172,14 +1181,16 @@ final class EnhancedRadioService implements IRadioService {
   void _downloadTrackInBackground(CurrentTrack track) {
     // Only download music tracks for failover - skip ads, jingles, etc.
     if (!track.isMusic) {
-      Logger.debug(
-          'Skipping download of non-music track for failover: ${track.artist} - ${track.title}');
+      Logger.info(
+          'Failover download skipped (non-music): ${track.artist} - ${track.title}');
       return;
     }
 
     // Don't block the main thread with downloading
     unawaited(() async {
       try {
+        Logger.info(
+            'Failover download queued: ${track.artist} - ${track.title} (${track.uuid})');
         await _failoverService.downloadTrack(track);
         Logger.info(
             'Successfully downloaded track for failover: ${track.artist} - ${track.title}');
@@ -1456,7 +1467,7 @@ final class EnhancedRadioService implements IRadioService {
               '🔄 FAILOVER: Failed to play next track: ${playResult.error}');
           _isFailoverOperationInProgress = false;
           // Try another track after delay
-          Timer(const Duration(seconds: 3), () {
+          Timer(const Duration(seconds: 1), () {
             if (_currentState is RadioStateFailover) {
               _playNextFailoverTrack(_currentState as RadioStateFailover);
             }
@@ -1468,7 +1479,7 @@ final class EnhancedRadioService implements IRadioService {
       } catch (e) {
         Logger.error('🔄 FAILOVER: Error playing next track: $e');
         _isFailoverOperationInProgress = false;
-        Timer(const Duration(seconds: 3), () {
+        Timer(const Duration(seconds: 1), () {
           if (_currentState is RadioStateFailover) {
             _playNextFailoverTrack(_currentState as RadioStateFailover);
           }
@@ -1499,9 +1510,23 @@ final class EnhancedRadioService implements IRadioService {
 
     unawaited(() async {
       try {
-        // Attempt to get fresh config from server
-        final config = await _apiService.getStreamConfig(failover.token,
-            currentPing: _currentPing);
+        // Avoid expensive restore attempts when we know the network is down
+        if (!_latestNetworkState.isConnected) {
+          Logger.info(
+              '🔄 RESTORE: Skipping restore attempt - network still offline');
+          _isFailoverOperationInProgress = false;
+          _playNextFailoverTrack(failover);
+          return;
+        }
+
+        // Attempt to get fresh config from server with a short timeout
+        final config = await _apiService
+            .getStreamConfig(failover.token, currentPing: _currentPing)
+            .timeout(
+          const Duration(seconds: 5),
+          onTimeout: () =>
+              throw TimeoutException('Config request timeout', const Duration(seconds: 5)),
+        );
         if (config == null) {
           Logger.warning(
               '🔄 RESTORE: Failed to get config, playing next failover track');
@@ -1561,19 +1586,20 @@ final class EnhancedRadioService implements IRadioService {
         Logger.error(
             '🔄 RESTORE: Error during restore attempt: $e, playing next failover track');
         _isFailoverOperationInProgress = false;
-        _playNextFailoverTrackAfterDelay(failover);
+        _playNextFailoverTrackAfterDelay(failover, delay: const Duration(seconds: 1));
       }
     }());
   }
 
-  void _playNextFailoverTrackAfterDelay(RadioStateFailover failoverState) {
+  void _playNextFailoverTrackAfterDelay(RadioStateFailover failoverState,
+      {Duration delay = const Duration(seconds: 1)}) {
     if (!_autoLogicEnabled) {
       Logger.info(
           '🔄 FAILOVER: Skipping delayed next track - auto recovery suspended');
       return;
     }
 
-    Timer(const Duration(seconds: 3), () {
+    Timer(delay, () {
       if (_currentState is RadioStateFailover) {
         _playNextFailoverTrack(_currentState as RadioStateFailover);
       }
@@ -1980,7 +2006,13 @@ final class EnhancedRadioService implements IRadioService {
 /// Retry management with fixed delay
 final class RetryManager {
   int _currentAttempt = 0;
-  static const Duration _fixedDelay = Duration(seconds: 5);
+  static const List<Duration> _backoffSchedule = [
+    Duration(seconds: 5),
+    Duration(seconds: 15),
+    Duration(seconds: 30),
+    Duration(minutes: 1),
+    Duration(minutes: 2),
+  ];
 
   int get currentAttempt => _currentAttempt;
 
@@ -1996,8 +2028,10 @@ final class RetryManager {
   }
 
   Duration getNextDelay() {
-    // Always return fixed 5 second delay
-    return _fixedDelay;
+    final index = _currentAttempt >= _backoffSchedule.length
+        ? _backoffSchedule.length - 1
+        : _currentAttempt;
+    return _backoffSchedule[index];
   }
 }
 

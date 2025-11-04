@@ -47,6 +47,7 @@ final class EnhancedAudioService implements IAudioService {
   StreamSubscription<Duration?>? _bufferSubscription;
   StreamSubscription<int?>? _currentIndexSubscription;
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
+  StreamSubscription<AudioInterruptionEvent>? _interruptionSubscription;
 
   StreamConfig? _currentConfig;
 
@@ -70,6 +71,8 @@ final class EnhancedAudioService implements IAudioService {
   bool _isPlayingStream = false;
   bool _isPlayStreamInProgress = false; // Prevent concurrent playStream calls
   String? _currentStreamUrl;
+  bool _userPaused = false;
+  bool _awaitingInterruptionResume = false;
 
   static const Duration _loadingTimeout = Duration(seconds: 10);
   static const Duration _hangDetectionInterval = Duration(seconds: 5);
@@ -130,6 +133,8 @@ final class EnhancedAudioService implements IAudioService {
       androidAudioFocusGainType: AndroidAudioFocusGainType.gain,
       androidWillPauseWhenDucked: false,
     ));
+
+    _observeAudioSessionInterruptions(session);
 
     Logger.info('🎵 INIT_DEBUG: AudioPlayer instance created');
     Logger.info('🎵 INIT_DEBUG: Audio session configured');
@@ -192,6 +197,60 @@ final class EnhancedAudioService implements IAudioService {
         );
 
     _checkInitialNetworkState();
+  }
+
+  void _observeAudioSessionInterruptions(AudioSession session) {
+    _interruptionSubscription?.cancel();
+    _interruptionSubscription = session.interruptionEventStream.listen(
+      (event) async {
+        if (_isDisposed) return;
+
+        if (event.begin) {
+          _awaitingInterruptionResume = true;
+          Logger.info(
+              '🎧 AUDIO_SESSION: Interruption began (${event.type})');
+          if (_audioPlayer.playing &&
+              (event.type == AudioInterruptionType.pause ||
+                  event.type == AudioInterruptionType.unknown)) {
+            try {
+              await _audioPlayer.pause();
+              Logger.info(
+                  '🎧 AUDIO_SESSION: Paused playback due to interruption');
+            } catch (e, stackTrace) {
+              Logger.error(
+                  '🎧 AUDIO_SESSION: Failed to pause during interruption: $e');
+              Logger.error('🎧 AUDIO_SESSION: $stackTrace');
+            }
+          }
+        } else {
+          Logger.info('🎧 AUDIO_SESSION: Interruption ended (${event.type})');
+          if (_awaitingInterruptionResume && !_userPaused) {
+            _awaitingInterruptionResume = false;
+            try {
+              await session.setActive(true);
+              if (!_audioPlayer.playing) {
+                await _audioPlayer.play();
+                Logger.info(
+                    '🎧 AUDIO_SESSION: Playback resumed after interruption');
+              }
+            } catch (e, stackTrace) {
+              Logger.error(
+                  '🎧 AUDIO_SESSION: Failed to resume after interruption: $e');
+              Logger.error('🎧 AUDIO_SESSION: $stackTrace');
+              _handlePlayerError(
+                  Exception('Resume after interruption failed: $e'));
+            }
+          } else {
+            _awaitingInterruptionResume = false;
+          }
+        }
+      },
+      onError: (error, stackTrace) {
+        Logger.error(
+            '🎧 AUDIO_SESSION: Interruption stream error: $error');
+        Logger.error('🎧 AUDIO_SESSION: $stackTrace');
+      },
+    );
   }
 
   Future<void> _checkInitialNetworkState() async {
@@ -590,6 +649,36 @@ final class EnhancedAudioService implements IAudioService {
     _loadingTimeoutTimer = null;
   }
 
+  Future<void> _handlePlayerOperationTimeout({
+    required String operation,
+    required Duration timeout,
+    required Duration elapsed,
+  }) async {
+    Logger.error(
+        '🎵 AUDIO_DEBUG: $operation timed out after ${elapsed.inSeconds}s (limit ${timeout.inSeconds}s) - forcing player stop');
+    await _forceStopPlayer('timeout during $operation');
+  }
+
+  Future<void> _forceStopPlayer(String reason) async {
+    Logger.warning('🎵 AUDIO_DEBUG: Force stopping player due to $reason');
+
+    try {
+      await _audioPlayer.stop().timeout(
+        const Duration(seconds: 5),
+      );
+    } on TimeoutException {
+      Logger.error(
+          '🎵 AUDIO_DEBUG: stop() timed out while handling $reason - continuing with stale player state');
+    } catch (e, stackTrace) {
+      Logger.error(
+          '🎵 AUDIO_DEBUG: stop() threw while handling $reason: $e');
+      Logger.error('🎵 AUDIO_DEBUG: Stack trace: $stackTrace');
+    }
+
+    _isPlayingStream = false;
+    _currentStreamUrl = null;
+  }
+
   void _updatePlaybackStats() {
     _playbackStats = _playbackStats.copyWith(
       reconnectCount: _playbackStats.reconnectCount + 1,
@@ -643,6 +732,8 @@ final class EnhancedAudioService implements IAudioService {
         _streamStartTime = DateTime.now();
         _currentConfig = config;
         Logger.info('🎵 AUDIO_DEBUG: Stream start time and config set');
+        _userPaused = false;
+        _awaitingInterruptionResume = false;
 
         final prebufferDelay = quickStart
             ? Duration.zero
@@ -665,29 +756,28 @@ final class EnhancedAudioService implements IAudioService {
         );
 
         Logger.info('🎵 AUDIO_DEBUG: About to call setAudioSource...');
+        final setSourceTimeout =
+            quickStart ? const Duration(seconds: 5) : const Duration(seconds: 15);
+        final setSourceStartTime = DateTime.now();
         try {
-          final setSourceStartTime = DateTime.now();
-          await _audioPlayer
-              .setAudioSource(
+          await _audioPlayer.setAudioSource(
             audioSource,
             initialPosition: Duration.zero,
             preload: true,
-          )
-              .timeout(
-            quickStart
-                ? const Duration(seconds: 5)
-                : const Duration(seconds: 15),
-            onTimeout: () {
-              final elapsed = DateTime.now().difference(setSourceStartTime);
-              Logger.error(
-                  '🎵 AUDIO_DEBUG: setAudioSource timed out after ${elapsed.inSeconds}s');
-              throw TimeoutException('setAudioSource operation timed out');
-            },
-          );
+          ).timeout(setSourceTimeout);
+
           final setSourceDuration =
               DateTime.now().difference(setSourceStartTime);
           Logger.info(
               '🎵 AUDIO_DEBUG: setAudioSource completed successfully in ${setSourceDuration.inMilliseconds}ms');
+        } on TimeoutException catch (_) {
+          final elapsed = DateTime.now().difference(setSourceStartTime);
+          await _handlePlayerOperationTimeout(
+            operation: 'setAudioSource',
+            timeout: setSourceTimeout,
+            elapsed: elapsed,
+          );
+          throw TimeoutException('setAudioSource operation timed out');
         } catch (e, stackTrace) {
           Logger.error('🎵 AUDIO_DEBUG: setAudioSource FAILED: $e');
           Logger.error('🎵 AUDIO_DEBUG: Stack trace: $stackTrace');
@@ -707,34 +797,34 @@ final class EnhancedAudioService implements IAudioService {
         }
 
         Logger.info('🎵 AUDIO_DEBUG: About to call play()...');
+        final playTimeout =
+            quickStart ? const Duration(seconds: 5) : const Duration(seconds: 30);
+        final playStartTime = DateTime.now();
         try {
-          final playStartTime = DateTime.now();
-          await _audioPlayer.play().timeout(
-            quickStart
-                ? const Duration(seconds: 5)
-                : const Duration(seconds: 30),
-            onTimeout: () {
-              final elapsed = DateTime.now().difference(playStartTime);
+          await _audioPlayer.play().timeout(playTimeout);
 
-              // Check if actually playing despite timeout
-              if (_audioPlayer.playing) {
-                Logger.warning(
-                    '🎵 AUDIO_DEBUG: play() call timed out after ${elapsed.inSeconds}s BUT player is actually playing - ignoring timeout');
-                return;
-              }
-
-              Logger.error(
-                  '🎵 AUDIO_DEBUG: play() timed out after ${elapsed.inSeconds}s and player NOT playing');
-              throw TimeoutException('play operation timed out');
-            },
-          );
           final playDuration = DateTime.now().difference(playStartTime);
           Logger.info(
               '🎵 AUDIO_DEBUG: play() completed in ${playDuration.inMilliseconds}ms');
           Logger.info(
               '🎵 AUDIO_DEBUG: Player state after play(): ${_audioPlayer.playing}');
+        } on TimeoutException catch (_) {
+          final elapsed = DateTime.now().difference(playStartTime);
+
+          if (_audioPlayer.playing) {
+            Logger.warning(
+                '🎵 AUDIO_DEBUG: play() call timed out after ${elapsed.inSeconds}s BUT player is actually playing - ignoring timeout');
+          } else {
+            Logger.error(
+                '🎵 AUDIO_DEBUG: play() timed out after ${elapsed.inSeconds}s and player NOT playing');
+            await _handlePlayerOperationTimeout(
+              operation: 'play()',
+              timeout: playTimeout,
+              elapsed: elapsed,
+            );
+            throw TimeoutException('play operation timed out');
+          }
         } catch (e, stackTrace) {
-          // Re-check if actually playing before failing
           if (_audioPlayer.playing) {
             Logger.warning(
                 '🎵 AUDIO_DEBUG: play() threw error BUT player is actually playing - ignoring error');
@@ -807,6 +897,8 @@ final class EnhancedAudioService implements IAudioService {
               description: 'Playing from local cache',
               volume: _currentVolume,
             );
+        _userPaused = false;
+        _awaitingInterruptionResume = false;
 
         Logger.info('🎵 FAILOVER: Creating audio source from local file...');
         final audioSource = AudioSource.file(
@@ -818,31 +910,60 @@ final class EnhancedAudioService implements IAudioService {
         );
 
         Logger.info('🎵 FAILOVER: Setting audio source...');
-        await _audioPlayer
-            .setAudioSource(
-          audioSource,
-          initialPosition: Duration.zero,
-          preload: true,
-        )
-            .timeout(
-          const Duration(seconds: 10),
-          onTimeout: () {
-            Logger.error('🎵 FAILOVER: setAudioSource timed out');
-            throw TimeoutException('setAudioSource operation timed out');
-          },
-        );
+        const failoverSetSourceTimeout = Duration(seconds: 10);
+        final failoverSetSourceStart = DateTime.now();
+        try {
+          await _audioPlayer.setAudioSource(
+            audioSource,
+            initialPosition: Duration.zero,
+            preload: true,
+          ).timeout(failoverSetSourceTimeout);
+        } on TimeoutException catch (_) {
+          final elapsed = DateTime.now().difference(failoverSetSourceStart);
+          Logger.error('🎵 FAILOVER: setAudioSource timed out');
+          await _handlePlayerOperationTimeout(
+            operation: 'failover setAudioSource',
+            timeout: failoverSetSourceTimeout,
+            elapsed: elapsed,
+          );
+          throw TimeoutException('setAudioSource operation timed out');
+        }
 
         Logger.info('🎵 FAILOVER: Setting volume...');
         await _audioPlayer.setVolume(_currentVolume);
 
         Logger.info('🎵 FAILOVER: Starting playback...');
-        await _audioPlayer.play().timeout(
-          const Duration(seconds: 5),
-          onTimeout: () {
-            Logger.error('🎵 FAILOVER: play() timed out');
+        const failoverPlayTimeout = Duration(seconds: 5);
+        final failoverPlayStart = DateTime.now();
+        try {
+          await _audioPlayer.play().timeout(failoverPlayTimeout);
+        } on TimeoutException catch (_) {
+          final elapsed = DateTime.now().difference(failoverPlayStart);
+
+          if (_audioPlayer.playing) {
+            Logger.warning(
+                '🎵 FAILOVER: play() call timed out after ${elapsed.inSeconds}s BUT player is actually playing - ignoring timeout');
+          } else {
+            Logger.error(
+                '🎵 FAILOVER: play() timed out after ${elapsed.inSeconds}s and player NOT playing');
+            await _handlePlayerOperationTimeout(
+              operation: 'failover play()',
+              timeout: failoverPlayTimeout,
+              elapsed: elapsed,
+            );
             throw TimeoutException('play operation timed out');
-          },
-        );
+          }
+        } catch (e, stackTrace) {
+          if (_audioPlayer.playing) {
+            Logger.warning(
+                '🎵 FAILOVER: play() threw error BUT player is actually playing - ignoring error');
+            Logger.warning('🎵 FAILOVER: Error was: $e');
+          } else {
+            Logger.error('🎵 FAILOVER: play() FAILED: $e');
+            Logger.error('🎵 FAILOVER: Stack trace: $stackTrace');
+            rethrow;
+          }
+        }
 
         Logger.info(
             '🎵 FAILOVER: ===== LOCAL FILE PLAYBACK STARTED SUCCESSFULLY =====');
@@ -861,6 +982,8 @@ final class EnhancedAudioService implements IAudioService {
   @override
   Future<Result<void>> pause() async {
     return tryResultAsync(() async {
+      _userPaused = true;
+      _awaitingInterruptionResume = false;
       await _audioPlayer.pause();
       Logger.info('Playback paused');
     });
@@ -869,6 +992,7 @@ final class EnhancedAudioService implements IAudioService {
   @override
   Future<Result<void>> resume() async {
     return tryResultAsync(() async {
+      _userPaused = false;
       await _audioPlayer.play();
       Logger.info('Playback resumed');
     });
@@ -891,6 +1015,8 @@ final class EnhancedAudioService implements IAudioService {
 
       _currentConfig = null;
       _streamStartTime = null;
+      _userPaused = false;
+      _awaitingInterruptionResume = false;
 
       // Reset ghost playback detection
       _stuckBufferCount = 0;
@@ -967,9 +1093,9 @@ final class EnhancedAudioService implements IAudioService {
     await _bufferSubscription?.cancel();
     await _currentIndexSubscription?.cancel();
     await _connectivitySubscription?.cancel();
+    await _interruptionSubscription?.cancel();
 
     await _audioPlayer.dispose();
-
     await _stateController.close();
     await _networkController.close();
 
