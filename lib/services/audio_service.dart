@@ -43,6 +43,7 @@ final class EnhancedAudioService implements IAudioService {
       const NetworkState(isConnected: false, type: ConnectionType.unknown);
 
   StreamSubscription<PlayerState>? _playerStateSubscription;
+  StreamSubscription<PlaybackEvent>? _playbackEventSubscription;
   StreamSubscription<Duration>? _positionSubscription;
   StreamSubscription<Duration?>? _bufferSubscription;
   StreamSubscription<int?>? _currentIndexSubscription;
@@ -73,6 +74,7 @@ final class EnhancedAudioService implements IAudioService {
   String? _currentStreamUrl;
   bool _userPaused = false;
   bool _awaitingInterruptionResume = false;
+  bool _connectivityInitialized = false;
 
   static const Duration _loadingTimeout = Duration(seconds: 10);
   static const Duration _hangDetectionInterval = Duration(seconds: 5);
@@ -142,6 +144,12 @@ final class EnhancedAudioService implements IAudioService {
   }
 
   void _setupSubscriptions() {
+    _setupPlayerSubscriptions();
+    _setupConnectivitySubscription();
+  }
+
+  void _setupPlayerSubscriptions() {
+    _playerStateSubscription?.cancel();
     _playerStateSubscription = _audioPlayer.playerStateStream.listen(
       _handlePlayerStateChange,
       onError: _handlePlayerError,
@@ -149,7 +157,8 @@ final class EnhancedAudioService implements IAudioService {
 
     // CRITICAL: Listen to playbackEventStream to catch native ExoPlayer errors
     // that don't propagate through playerStateStream
-    _audioPlayer.playbackEventStream.listen(
+    _playbackEventSubscription?.cancel();
+    _playbackEventSubscription = _audioPlayer.playbackEventStream.listen(
       (event) {
         // Check for errors in playback event
         if (event.processingState == ProcessingState.idle &&
@@ -170,16 +179,19 @@ final class EnhancedAudioService implements IAudioService {
       },
     );
 
+    _positionSubscription?.cancel();
     _positionSubscription = _audioPlayer.positionStream.listen(
       _handlePositionUpdate,
       onError: (error) => Logger.error('Position stream error: $error'),
     );
 
+    _bufferSubscription?.cancel();
     _bufferSubscription = _audioPlayer.bufferedPositionStream.listen(
       _handleBufferUpdate,
       onError: (error) => Logger.error('Buffer stream error: $error'),
     );
 
+    _currentIndexSubscription?.cancel();
     _currentIndexSubscription = _audioPlayer.currentIndexStream.listen(
       (index) {
         if (index == null && _currentConfig != null) {
@@ -190,13 +202,90 @@ final class EnhancedAudioService implements IAudioService {
       },
       onError: (error) => Logger.error('Current index stream error: $error'),
     );
+  }
+
+  void _setupConnectivitySubscription() {
+    if (_connectivityInitialized) {
+      return;
+    }
 
     _connectivitySubscription = Connectivity().onConnectivityChanged.listen(
-          _handleConnectivityChange,
-          onError: (error) => Logger.error('Connectivity stream error: $error'),
-        );
+      _handleConnectivityChange,
+      onError: (error) => Logger.error('Connectivity stream error: $error'),
+    );
 
+    _connectivityInitialized = true;
     _checkInitialNetworkState();
+  }
+
+  Future<void> _cancelPlayerSubscriptions() async {
+    await _playerStateSubscription?.cancel();
+    _playerStateSubscription = null;
+
+    await _playbackEventSubscription?.cancel();
+    _playbackEventSubscription = null;
+
+    await _positionSubscription?.cancel();
+    _positionSubscription = null;
+
+    await _bufferSubscription?.cancel();
+    _bufferSubscription = null;
+
+    await _currentIndexSubscription?.cancel();
+    _currentIndexSubscription = null;
+
+    await _interruptionSubscription?.cancel();
+    _interruptionSubscription = null;
+  }
+
+  Future<void> _resetAudioPlayer(String reason) async {
+    if (_isDisposed) return;
+
+    Logger.warning(
+        '🎵 AUDIO_DEBUG: Recreating AudioPlayer due to: $reason');
+
+    await _cancelPlayerSubscriptions();
+
+    try {
+      await _audioPlayer.dispose();
+      Logger.info('🎵 AUDIO_DEBUG: Old AudioPlayer disposed successfully');
+    } catch (e, stackTrace) {
+      Logger.error(
+          '🎵 AUDIO_DEBUG: Failed to dispose AudioPlayer during reset: $e');
+      Logger.error('🎵 AUDIO_DEBUG: Stack trace: $stackTrace');
+    }
+
+    await _initializeAudioPlayer();
+    _setupPlayerSubscriptions();
+
+    try {
+      await _audioPlayer.setVolume(_currentVolume);
+      Logger.info('🎵 AUDIO_DEBUG: Restored audio volume to $_currentVolume');
+    } catch (e, stackTrace) {
+      Logger.error(
+          '🎵 AUDIO_DEBUG: Failed to restore volume after player reset: $e');
+      Logger.error('🎵 AUDIO_DEBUG: Stack trace: $stackTrace');
+    }
+  }
+
+  Future<void> _stopPlayerSafely(String reason,
+      {Duration timeout = const Duration(seconds: 5)}) async {
+    if (_isDisposed) {
+      return;
+    }
+
+    try {
+      await _audioPlayer.stop().timeout(timeout);
+    } on TimeoutException {
+      Logger.error(
+          '🎵 AUDIO_DEBUG: stop() timed out after ${timeout.inSeconds}s ($reason)');
+      await _resetAudioPlayer('stop timeout while $reason');
+    } catch (e, stackTrace) {
+      Logger.error(
+          '🎵 AUDIO_DEBUG: stop() threw while $reason: $e');
+      Logger.error('🎵 AUDIO_DEBUG: Stack trace: $stackTrace');
+      await _resetAudioPlayer('stop error while $reason');
+    }
   }
 
   void _observeAudioSessionInterruptions(AudioSession session) {
@@ -659,19 +748,7 @@ final class EnhancedAudioService implements IAudioService {
 
   Future<void> _forceStopPlayer(String reason) async {
     Logger.warning('🎵 AUDIO_DEBUG: Force stopping player due to $reason');
-
-    try {
-      await _audioPlayer.stop().timeout(
-            const Duration(seconds: 5),
-          );
-    } on TimeoutException {
-      Logger.error(
-          '🎵 AUDIO_DEBUG: stop() timed out while handling $reason - continuing with stale player state');
-    } catch (e, stackTrace) {
-      Logger.error('🎵 AUDIO_DEBUG: stop() threw while handling $reason: $e');
-      Logger.error('🎵 AUDIO_DEBUG: Stack trace: $stackTrace');
-    }
-
+    await _stopPlayerSafely('force stop: $reason');
     _isPlayingStream = false;
     _currentStreamUrl = null;
   }
@@ -716,7 +793,8 @@ final class EnhancedAudioService implements IAudioService {
 
       if (_isPlayingStream && _currentStreamUrl != config.streamUrl) {
         Logger.info('🎵 AUDIO_DEBUG: Stopping current stream to play new one');
-        await _audioPlayer.stop();
+        await _stopPlayerSafely(
+            'stream switch to ${config.streamUrl}');
         _isPlayingStream = false;
       }
 
@@ -880,7 +958,7 @@ final class EnhancedAudioService implements IAudioService {
 
       if (_isPlayingStream) {
         Logger.info('🎵 FAILOVER: Stopping current stream for failover');
-        await _audioPlayer.stop();
+        await _stopPlayerSafely('failover switch to $filePath');
         _isPlayingStream = false;
       }
 
@@ -1014,7 +1092,7 @@ final class EnhancedAudioService implements IAudioService {
         await Future.delayed(const Duration(milliseconds: 200));
       }
 
-      await _audioPlayer.stop();
+      await _stopPlayerSafely('service stop()');
 
       _currentConfig = null;
       _streamStartTime = null;
@@ -1092,6 +1170,7 @@ final class EnhancedAudioService implements IAudioService {
     _hangDetectionTimer?.cancel();
 
     await _playerStateSubscription?.cancel();
+    await _playbackEventSubscription?.cancel();
     await _positionSubscription?.cancel();
     await _bufferSubscription?.cancel();
     await _currentIndexSubscription?.cancel();

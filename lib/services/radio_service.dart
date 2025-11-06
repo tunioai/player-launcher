@@ -639,7 +639,7 @@ final class EnhancedRadioService implements IRadioService {
           Logger.warning('Auto-reconnect failed: ${result.error}');
           // Only schedule retry if we're not already connected
           if (!_currentState.isConnected) {
-            _scheduleRetry('Auto-reconnect failed on startup');
+            unawaited(_scheduleRetry('Auto-reconnect failed on startup'));
           } else {
             Logger.info(
                 'Auto-reconnect reported failure but we are connected - ignoring');
@@ -695,7 +695,7 @@ final class EnhancedRadioService implements IRadioService {
       if (_currentState is RadioStateConnecting && _isConnectionInProgress) {
         Logger.error('Connection attempt timed out after 20 seconds');
         _isConnectionInProgress = false;
-        _scheduleRetry('Connection timeout - retrying');
+        unawaited(_scheduleRetry('Connection timeout - retrying'));
       }
     });
 
@@ -713,7 +713,7 @@ final class EnhancedRadioService implements IRadioService {
       // Schedule retry on failure
       if (_autoReconnectEnabled) {
         _isConnectionInProgress = false;
-        _scheduleRetry('Connection failed: $e');
+        unawaited(_scheduleRetry('Connection failed: $e'));
       } else {
         _updateState(RadioStateError(
           message: 'Connection failed',
@@ -935,7 +935,7 @@ final class EnhancedRadioService implements IRadioService {
     return _attemptConnect(token, isRetry: true);
   }
 
-  void _scheduleRetry(String reason) {
+  Future<void> _scheduleRetry(String reason) async {
     if (!_autoReconnectEnabled) return;
 
     final token = _getStoredToken();
@@ -966,13 +966,12 @@ final class EnhancedRadioService implements IRadioService {
     }
 
     // Try to reliably close the previous stream before establishing a new connection
-    unawaited(() async {
-      final stopResult = await _audioService.stop();
-      if (stopResult.isFailure) {
-        Logger.warning(
-            'Retry scheduler: stop before retry failed: ${stopResult.error}');
-      }
-    }());
+    final stopResult = await _audioService.stop();
+    if (stopResult.isFailure) {
+      Logger.warning(
+          'Retry scheduler: stop before retry failed: ${stopResult.error}');
+      return;
+    }
 
     // Check if this is a network error and we should activate failover instead of retry
     final isNetworkError = reason.contains('No internet connection') ||
@@ -1112,7 +1111,7 @@ final class EnhancedRadioService implements IRadioService {
               if (playResult.isFailure) {
                 Logger.error(
                     'Failed to restart with new config: ${playResult.error}');
-                _scheduleRetry('Failed to apply config update');
+                unawaited(_scheduleRetry('Failed to apply config update'));
               } else {
                 Logger.info(
                     '✅ STREAM SWITCH: Successfully switched to new stream URL');
@@ -1141,7 +1140,7 @@ final class EnhancedRadioService implements IRadioService {
         if (!_audioService.currentState.isPlaying) {
           Logger.warning(
               'Config refresh failed and audio not playing - may need retry');
-          _scheduleRetry('Config refresh failed with broken audio');
+          unawaited(_scheduleRetry('Config refresh failed with broken audio'));
         }
       }
     }
@@ -1372,7 +1371,7 @@ final class EnhancedRadioService implements IRadioService {
         if (randomTrack == null) {
           Logger.error('🚨 FAILOVER: No cached tracks available for failover');
           _isFailoverOperationInProgress = false;
-          _scheduleRetry('No failover tracks available');
+          unawaited(_scheduleRetry('No failover tracks available'));
           return;
         }
 
@@ -1403,7 +1402,7 @@ final class EnhancedRadioService implements IRadioService {
           Logger.error(
               '🚨 FAILOVER: Failed to play failover track: ${playResult.error}');
           _isFailoverOperationInProgress = false;
-          _scheduleRetry('Failover playback failed');
+          unawaited(_scheduleRetry('Failover playback failed'));
         } else {
           Logger.info('🚨 FAILOVER: Successfully started failover playback');
           _isFailoverOperationInProgress = false;
@@ -1412,7 +1411,7 @@ final class EnhancedRadioService implements IRadioService {
       } catch (e) {
         Logger.error('🚨 FAILOVER: Error activating failover: $e');
         _isFailoverOperationInProgress = false;
-        _scheduleRetry('Failover activation failed');
+        unawaited(_scheduleRetry('Failover activation failed'));
       }
     }());
   }
@@ -1438,7 +1437,7 @@ final class EnhancedRadioService implements IRadioService {
         if (randomTrack == null) {
           Logger.error('🔄 FAILOVER: No more cached tracks available');
           _isFailoverOperationInProgress = false;
-          _scheduleRetry('No more failover tracks');
+          unawaited(_scheduleRetry('No more failover tracks'));
           return;
         }
 
