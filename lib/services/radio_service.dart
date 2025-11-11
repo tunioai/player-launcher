@@ -92,6 +92,9 @@ final class EnhancedRadioService implements IRadioService {
   bool _isStreamSwitchInProgress =
       false; // Prevent failover during planned stream switches
 
+  DateTime? _failoverOperationStartTime;
+  String? _activeFailoverOperation;
+
   // Initialization
   final Completer<void> _initializationCompleter = Completer<void>();
   bool _isInitialized = false;
@@ -1325,6 +1328,38 @@ final class EnhancedRadioService implements IRadioService {
     _activateFailover(connected, 'Stream health check failed: $reason');
   }
 
+  void _startFailoverOperation(
+    String operation,
+    Future<void> Function() action,
+  ) {
+    _isFailoverOperationInProgress = true;
+    _failoverOperationStartTime = DateTime.now();
+    _activeFailoverOperation = operation;
+
+    unawaited(() async {
+      try {
+        await action();
+      } catch (e, stackTrace) {
+        Logger.error('🚨 FAILOVER: Unhandled error during $operation: $e',
+            'RadioService');
+        Logger.error('$stackTrace', 'RadioService');
+      } finally {
+        _releaseFailoverOperationLock();
+      }
+    }());
+  }
+
+  void _releaseFailoverOperationLock() {
+    if (_isFailoverOperationInProgress) {
+      Logger.debug(
+          '🚨 FAILOVER: Releasing operation lock (${_activeFailoverOperation ?? 'unknown'})');
+    }
+
+    _isFailoverOperationInProgress = false;
+    _failoverOperationStartTime = null;
+    _activeFailoverOperation = null;
+  }
+
   void _activateFailover(RadioStateConnected connectedState, String reason) {
     if (_isFailoverOperationInProgress) {
       Logger.warning(
@@ -1348,7 +1383,6 @@ final class EnhancedRadioService implements IRadioService {
     }
 
     Logger.error('🚨 FAILOVER: Activating failover mode - $reason');
-    _isFailoverOperationInProgress = true;
 
     _recordFailoverEvent(
       direction: FailoverEventDirection.failover,
@@ -1365,12 +1399,12 @@ final class EnhancedRadioService implements IRadioService {
     _configPollingTimer?.cancel();
     _stopPinging();
 
-    unawaited(() async {
+    _startFailoverOperation('activate', () async {
       try {
         final randomTrack = await _failoverService.getRandomTrack();
         if (randomTrack == null) {
           Logger.error('🚨 FAILOVER: No cached tracks available for failover');
-          _isFailoverOperationInProgress = false;
+          _releaseFailoverOperationLock();
           unawaited(_scheduleRetry('No failover tracks available'));
           return;
         }
@@ -1401,19 +1435,19 @@ final class EnhancedRadioService implements IRadioService {
         if (playResult.isFailure) {
           Logger.error(
               '🚨 FAILOVER: Failed to play failover track: ${playResult.error}');
-          _isFailoverOperationInProgress = false;
+          _releaseFailoverOperationLock();
           unawaited(_scheduleRetry('Failover playback failed'));
-        } else {
-          Logger.info('🚨 FAILOVER: Successfully started failover playback');
-          _isFailoverOperationInProgress = false;
-          // Don't schedule restoration here - wait for track to complete
+          return;
         }
+
+        Logger.info('🚨 FAILOVER: Successfully started failover playback');
+        // Don't schedule restoration here - wait for track to complete
       } catch (e) {
         Logger.error('🚨 FAILOVER: Error activating failover: $e');
-        _isFailoverOperationInProgress = false;
+        _releaseFailoverOperationLock();
         unawaited(_scheduleRetry('Failover activation failed'));
       }
-    }());
+    });
   }
 
   void _playNextFailoverTrack(RadioStateFailover failoverState) {
@@ -1429,14 +1463,12 @@ final class EnhancedRadioService implements IRadioService {
     }
 
     Logger.info('🔄 FAILOVER: Playing next random track');
-    _isFailoverOperationInProgress = true;
-
-    unawaited(() async {
+    _startFailoverOperation('next_track', () async {
       try {
         final randomTrack = await _failoverService.getRandomTrack();
         if (randomTrack == null) {
           Logger.error('🔄 FAILOVER: No more cached tracks available');
-          _isFailoverOperationInProgress = false;
+          _releaseFailoverOperationLock();
           unawaited(_scheduleRetry('No more failover tracks'));
           return;
         }
@@ -1464,27 +1496,27 @@ final class EnhancedRadioService implements IRadioService {
         if (playResult.isFailure) {
           Logger.error(
               '🔄 FAILOVER: Failed to play next track: ${playResult.error}');
-          _isFailoverOperationInProgress = false;
+          _releaseFailoverOperationLock();
           // Try another track after delay
           Timer(const Duration(seconds: 1), () {
             if (_currentState is RadioStateFailover) {
               _playNextFailoverTrack(_currentState as RadioStateFailover);
             }
           });
-        } else {
-          Logger.info('🔄 FAILOVER: Successfully started next track');
-          _isFailoverOperationInProgress = false;
+          return;
         }
+
+        Logger.info('🔄 FAILOVER: Successfully started next track');
       } catch (e) {
         Logger.error('🔄 FAILOVER: Error playing next track: $e');
-        _isFailoverOperationInProgress = false;
+        _releaseFailoverOperationLock();
         Timer(const Duration(seconds: 1), () {
           if (_currentState is RadioStateFailover) {
             _playNextFailoverTrack(_currentState as RadioStateFailover);
           }
         });
       }
-    }());
+    });
   }
 
   void _tryRestoreAfterTrackEnd(RadioStateFailover failover) {
@@ -1505,15 +1537,13 @@ final class EnhancedRadioService implements IRadioService {
     Logger.info(
         '🔄 RESTORE: Attempting to restore LIVE stream after failover track completion');
     Logger.info('🔄 RESTORE: Failover token: ${failover.token}');
-    _isFailoverOperationInProgress = true;
-
-    unawaited(() async {
+    _startFailoverOperation('restore', () async {
       try {
         // Avoid expensive restore attempts when we know the network is down
         if (!_latestNetworkState.isConnected) {
           Logger.info(
               '🔄 RESTORE: Skipping restore attempt - network still offline');
-          _isFailoverOperationInProgress = false;
+          _releaseFailoverOperationLock();
           _playNextFailoverTrack(failover);
           return;
         }
@@ -1529,7 +1559,7 @@ final class EnhancedRadioService implements IRadioService {
         if (config == null) {
           Logger.warning(
               '🔄 RESTORE: Failed to get config, playing next failover track');
-          _isFailoverOperationInProgress = false;
+          _releaseFailoverOperationLock();
           _playNextFailoverTrack(failover);
           return;
         }
@@ -1572,23 +1602,22 @@ final class EnhancedRadioService implements IRadioService {
           _startConfigPolling();
           _startPinging(config.streamUrl);
           _startStateMonitoring(); // Restart state monitoring after restore
-          _isFailoverOperationInProgress = false;
           _lastFailoverRestoreTime =
               DateTime.now(); // Mark restore time for grace period
         } else {
           Logger.warning(
               '🔄 RESTORE: Live stream restore failed: ${playResult.error}, playing next failover track');
-          _isFailoverOperationInProgress = false;
+          _releaseFailoverOperationLock();
           _playNextFailoverTrack(failover);
         }
       } catch (e) {
         Logger.error(
             '🔄 RESTORE: Error during restore attempt: $e, playing next failover track');
-        _isFailoverOperationInProgress = false;
+        _releaseFailoverOperationLock();
         _playNextFailoverTrackAfterDelay(failover,
             delay: const Duration(seconds: 1));
       }
-    }());
+    });
   }
 
   void _playNextFailoverTrackAfterDelay(RadioStateFailover failoverState,
@@ -1797,6 +1826,21 @@ final class EnhancedRadioService implements IRadioService {
         Logger.warning(
             'Detected error state without active retry - forcing retry');
         _forceConnectionRecovery('Error state without retry detected');
+      }
+    }
+
+    if (_isFailoverOperationInProgress &&
+        _failoverOperationStartTime != null &&
+        _activeFailoverOperation != null) {
+      final elapsed = now.difference(_failoverOperationStartTime!);
+
+      if (elapsed.inSeconds > 60) {
+        Logger.error(
+            '🚨 FAILOVER: Operation ${_activeFailoverOperation!} stuck for ${elapsed.inSeconds}s - releasing lock');
+        _releaseFailoverOperationLock();
+      } else if (elapsed.inSeconds > 30) {
+        Logger.warning(
+            '⚠️ FAILOVER: Operation ${_activeFailoverOperation!} running for ${elapsed.inSeconds}s');
       }
     }
   }

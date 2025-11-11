@@ -79,6 +79,7 @@ final class EnhancedAudioService implements IAudioService {
   static const Duration _loadingTimeout = Duration(seconds: 10);
   static const Duration _hangDetectionInterval = Duration(seconds: 5);
   static const Duration _maxHangTime = Duration(seconds: 20);
+  static const Duration _bufferStallThreshold = Duration(seconds: 20);
 
   @override
   Stream<AudioState> get stateStream => _stateController.stream;
@@ -210,9 +211,9 @@ final class EnhancedAudioService implements IAudioService {
     }
 
     _connectivitySubscription = Connectivity().onConnectivityChanged.listen(
-      _handleConnectivityChange,
-      onError: (error) => Logger.error('Connectivity stream error: $error'),
-    );
+          _handleConnectivityChange,
+          onError: (error) => Logger.error('Connectivity stream error: $error'),
+        );
 
     _connectivityInitialized = true;
     _checkInitialNetworkState();
@@ -241,8 +242,7 @@ final class EnhancedAudioService implements IAudioService {
   Future<void> _resetAudioPlayer(String reason) async {
     if (_isDisposed) return;
 
-    Logger.warning(
-        '🎵 AUDIO_DEBUG: Recreating AudioPlayer due to: $reason');
+    Logger.warning('🎵 AUDIO_DEBUG: Recreating AudioPlayer due to: $reason');
 
     await _cancelPlayerSubscriptions();
 
@@ -281,8 +281,7 @@ final class EnhancedAudioService implements IAudioService {
           '🎵 AUDIO_DEBUG: stop() timed out after ${timeout.inSeconds}s ($reason)');
       await _resetAudioPlayer('stop timeout while $reason');
     } catch (e, stackTrace) {
-      Logger.error(
-          '🎵 AUDIO_DEBUG: stop() threw while $reason: $e');
+      Logger.error('🎵 AUDIO_DEBUG: stop() threw while $reason: $e');
       Logger.error('🎵 AUDIO_DEBUG: Stack trace: $stackTrace');
       await _resetAudioPlayer('stop error while $reason');
     }
@@ -705,6 +704,26 @@ final class EnhancedAudioService implements IAudioService {
 
     final now = DateTime.now();
 
+    if (_currentState.isPlaying &&
+        _audioPlayer.playing &&
+        _currentStreamUrl != null &&
+        _lastBufferUpdate != null &&
+        _streamStartTime != null) {
+      final timeSinceStart = now.difference(_streamStartTime!);
+      final bufferStalledFor = now.difference(_lastBufferUpdate!);
+
+      if (timeSinceStart > _bufferStallThreshold &&
+          bufferStalledFor > _bufferStallThreshold) {
+        Logger.error(
+            'Detected buffer stall while playing: no buffer updates for ${bufferStalledFor.inSeconds}s (stream active for ${timeSinceStart.inSeconds}s)');
+        Logger.error(
+            'Treating this as ghost playback - forcing error to trigger recovery');
+        _handlePlayerError(TimeoutException(
+            'Buffer stalled during playback', _bufferStallThreshold));
+        return;
+      }
+    }
+
     if (_currentState case AudioStateLoading loading) {
       if (loading.elapsed > _maxHangTime && !_audioPlayer.playing) {
         Logger.error('Detected loading hang: ${loading.elapsed.inSeconds}s');
@@ -793,8 +812,7 @@ final class EnhancedAudioService implements IAudioService {
 
       if (_isPlayingStream && _currentStreamUrl != config.streamUrl) {
         Logger.info('🎵 AUDIO_DEBUG: Stopping current stream to play new one');
-        await _stopPlayerSafely(
-            'stream switch to ${config.streamUrl}');
+        await _stopPlayerSafely('stream switch to ${config.streamUrl}');
         _isPlayingStream = false;
       }
 
