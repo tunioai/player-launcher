@@ -8,6 +8,8 @@ class StreamConfig {
   final String? title;
   final String? description;
   final CurrentTrack? current;
+  final String? visualizerUrl;
+  final String? streamUuid;
 
   const StreamConfig({
     required this.streamUrl,
@@ -16,6 +18,8 @@ class StreamConfig {
     this.title,
     this.description,
     this.current,
+    this.visualizerUrl,
+    this.streamUuid,
   });
 
   /// Returns the volume value scaled for failover playback.
@@ -35,6 +39,7 @@ class StreamConfig {
     Logger.debug('Parsing StreamConfig from JSON: $json', 'StreamConfig');
 
     final streamUrl = json['stream_url'] ?? json['url'] ?? '';
+    final streamUuid = json['stream_uuid'] as String?;
     final volume = _parseVolume(json['volume']);
     final parsedMusicVolume = _parseOptionalVolume(json['music_volume']);
     final title = json['title'];
@@ -45,8 +50,15 @@ class StreamConfig {
       current = CurrentTrack.fromJson(json['current']);
     }
 
+    // TODO: DO NOT REMOVE!!!
+    // final visualizerUrl = "http://localhost:3000/";
+
+    final visualizerUrl = _parseOptionalUrl(
+      json['visualizer_url'] ?? json['visualizerUrl'],
+    );
+
     Logger.debug(
-        'Parsed values - streamUrl: $streamUrl, volume: $volume, title: $title, description: $description, current: $current',
+        'Parsed values - streamUrl: $streamUrl, volume: $volume, title: $title, description: $description, current: $current, visualizerUrl: $visualizerUrl',
         'StreamConfig');
 
     Logger.debug('📝 StreamConfig: Parsing JSON: $json', 'StreamConfig');
@@ -63,17 +75,21 @@ class StreamConfig {
       title: title,
       description: description,
       current: current,
+      visualizerUrl: visualizerUrl,
+      streamUuid: streamUuid,
     );
   }
 
   Map<String, dynamic> toJson() {
     return {
       'stream_url': streamUrl,
+      if (streamUuid != null) 'stream_uuid': streamUuid,
       'volume': volume,
       if (musicVolume != null) 'music_volume': musicVolume,
       'title': title,
       'description': description,
       'current': current?.toJson(),
+      if (visualizerUrl != null) 'visualizer_url': visualizerUrl,
     };
   }
 
@@ -83,11 +99,17 @@ class StreamConfig {
     return other is StreamConfig &&
         other.streamUrl == streamUrl &&
         other.volume == volume &&
-        other.musicVolume == musicVolume;
+        other.musicVolume == musicVolume &&
+        other.visualizerUrl == visualizerUrl &&
+        other.title == title &&
+        other.description == description &&
+        other.current == current &&
+        other.streamUuid == streamUuid;
   }
 
   @override
-  int get hashCode => Object.hash(streamUrl, volume, musicVolume);
+  int get hashCode => Object.hash(streamUrl, volume, musicVolume,
+      visualizerUrl, title, description, current, streamUuid);
 
   static double _parseVolume(dynamic raw, [double defaultValue = 1.0]) {
     if (raw == null) return defaultValue;
@@ -113,5 +135,19 @@ class StreamConfig {
 
     final parsed = _parseVolume(raw);
     return parsed;
+  }
+
+  // ignore: unused_element
+  static String? _parseOptionalUrl(dynamic raw) {
+    if (raw is! String || raw.isEmpty) {
+      return null;
+    }
+
+    final uri = Uri.tryParse(raw);
+    if (uri == null || uri.scheme.isEmpty) {
+      return null;
+    }
+
+    return raw;
   }
 }

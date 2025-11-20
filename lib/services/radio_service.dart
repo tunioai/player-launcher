@@ -4,6 +4,7 @@ import 'dart:io';
 import '../core/result.dart';
 import '../core/dependency_injection.dart';
 import '../core/audio_state.dart';
+import '../core/system_state.dart';
 import '../models/stream_config.dart';
 import '../models/api_error.dart';
 import '../services/api_service.dart';
@@ -684,6 +685,13 @@ final class EnhancedRadioService implements IRadioService {
 
     _isConnectionInProgress = true;
 
+    // Make sure any existing stream is stopped before starting a new one.
+    // When stream URLs change quickly some platforms keep the old HTTP
+    // connection around in a half-open state which shows up as “ghost”
+    // listeners on the Icecast server. Explicitly stop playback and timers
+    // so the transport is torn down before we begin another connection.
+    await _prepareForFreshConnection(isRetry: isRetry);
+
     final attempt = isRetry ? _retryManager.currentAttempt + 1 : 1;
 
     _updateState(RadioStateConnecting(
@@ -728,6 +736,34 @@ final class EnhancedRadioService implements IRadioService {
       return Failure('Connection failed: $e');
     } finally {
       _isConnectionInProgress = false;
+    }
+  }
+
+  Future<void> _prepareForFreshConnection({required bool isRetry}) async {
+    final audioState = _audioService.currentState;
+    final hasActiveAudio = audioState.isPlaying ||
+        audioState is AudioStateLoading ||
+        audioState is AudioStateBuffering;
+    final hadRadioSession = _currentState.isConnected ||
+        _currentState is RadioStateFailover ||
+        _currentState is RadioStateConnecting;
+
+    if (!hasActiveAudio && !hadRadioSession) {
+      return;
+    }
+
+    final contextLabel = isRetry ? 'retry' : 'manual connect';
+    Logger.info(
+        'Preparing fresh $contextLabel attempt - stopping existing playback and timers');
+
+    _configPollingTimer?.cancel();
+    _stopPinging();
+    _stopFailoverBackgroundMonitoring();
+
+    final stopResult = await _audioService.stop();
+    if (stopResult.isFailure) {
+      Logger.warning(
+          'Failed to stop playback before $contextLabel: ${stopResult.error}');
     }
   }
 
@@ -1526,6 +1562,13 @@ final class EnhancedRadioService implements IRadioService {
       return;
     }
 
+    if (SystemState.instance.offlineMode) {
+      Logger.info(
+          '🔄 RESTORE: Offline mode enabled - skipping restore and continuing failover playback');
+      _playNextFailoverTrack(failover);
+      return;
+    }
+
     if (_isFailoverOperationInProgress) {
       Logger.warning(
           '🔄 RESTORE: Restore operation already in progress, ignoring duplicate request');
@@ -1570,8 +1613,7 @@ final class EnhancedRadioService implements IRadioService {
         await _storageService.saveLastVolume(config.failoverVolume);
 
         // Try to play the live stream
-        final playResult =
-            await _audioService.playStream(config, quickStart: true);
+        final playResult = await _audioService.playStream(config);
         if (playResult.isSuccess) {
           Logger.info('✅ RESTORE: Successfully restored live stream!');
           _resetHealthFailures();

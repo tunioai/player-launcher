@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
+import '../core/system_state.dart';
 import '../models/failover_event.dart';
 import '../models/stream_config.dart';
 import '../models/api_error.dart';
@@ -78,6 +79,18 @@ class ApiService {
             statusCode: response.statusCode,
             isFromBackend: true,
           );
+        }
+
+        // Sync optional runtime configuration flags
+        final configData = data['config'];
+        if (configData is Map<String, dynamic>) {
+          final offlineFlag = configData['offline_mode'];
+          if (offlineFlag is bool) {
+            Logger.debug(
+                '🔄 API_DEBUG: Backend offline_mode flag: $offlineFlag',
+                'ApiService');
+            SystemState.instance.setOfflineMode(offlineFlag);
+          }
         }
 
         // Extract stream data

@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -5,8 +7,10 @@ import 'core/service_locator.dart';
 
 import 'screens/home_screen.dart';
 import 'utils/logger.dart';
+import 'utils/insecure_http_overrides.dart';
 
 void main() async {
+  HttpOverrides.global = InsecureHttpOverrides();
   WidgetsFlutterBinding.ensureInitialized();
 
   // Initialize services

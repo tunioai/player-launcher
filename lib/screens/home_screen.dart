@@ -1,11 +1,15 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'package:url_launcher/url_launcher.dart';
+import 'package:webview_flutter/webview_flutter.dart';
 
 import '../core/dependency_injection.dart';
 import '../core/service_locator.dart';
 import '../core/audio_state.dart';
+import '../core/result.dart';
 
 import '../services/radio_service.dart';
 import '../services/failover_service.dart';
@@ -38,6 +42,8 @@ class _HomeScreenState extends State<HomeScreen> {
   final FocusNode _connectButtonFocusNode = FocusNode();
   final FocusNode _playButtonFocusNode = FocusNode();
   final FocusNode _themeButtonFocusNode = FocusNode();
+  final FocusNode _visualizerButtonFocusNode = FocusNode();
+  final FocusNode _visualizerCloseButtonFocusNode = FocusNode();
 
   // State
   String _currentCode = '';
@@ -48,6 +54,14 @@ class _HomeScreenState extends State<HomeScreen> {
   int? _currentPing;
   double _volume = 1.0;
   int _cachedTracksCount = 0;
+  bool _isVisualizerVisible = false;
+  WebViewController? _visualizerController;
+  String? _loadedVisualizerUrl;
+  bool _visualizerReady = false;
+  bool _hasAutoOpenedVisualizer = false;
+  String? _currentVisualizerUrl;
+  String? _lastStreamUrl;
+  bool _initialPlayFocusRequested = false;
 
   // Subscriptions
   StreamSubscription<RadioState>? _radioStateSubscription;
@@ -72,6 +86,9 @@ class _HomeScreenState extends State<HomeScreen> {
     _connectButtonFocusNode.dispose();
     _playButtonFocusNode.dispose();
     _themeButtonFocusNode.dispose();
+    _visualizerButtonFocusNode.dispose();
+    _visualizerCloseButtonFocusNode.dispose();
+    _visualizerController = null;
     super.dispose();
   }
 
@@ -80,6 +97,8 @@ class _HomeScreenState extends State<HomeScreen> {
     _connectButtonFocusNode.addListener(() => setState(() {}));
     _playButtonFocusNode.addListener(() => setState(() {}));
     _themeButtonFocusNode.addListener(() => setState(() {}));
+    _visualizerButtonFocusNode.addListener(() => setState(() {}));
+    _visualizerCloseButtonFocusNode.addListener(() => setState(() {}));
   }
 
   void _initializeService() {
@@ -109,7 +128,25 @@ class _HomeScreenState extends State<HomeScreen> {
         if (token != null && token != _currentCode && !_isUserEditingCode) {
           _currentCode = token;
         }
+
+        _lastStreamUrl = currentRadioState.config?.streamUrl;
+
+        final initialVisualizerUrl = currentRadioState.config?.visualizerUrl;
+        if (initialVisualizerUrl == null || initialVisualizerUrl.isEmpty) {
+          _isVisualizerVisible = false;
+          _visualizerController = null;
+          _loadedVisualizerUrl = null;
+          _currentVisualizerUrl = null;
+          _hasAutoOpenedVisualizer = false;
+        }
+
+        if (!_radioState.isConnected) {
+          _hasAutoOpenedVisualizer = false;
+        }
       });
+
+      _scheduleVisualizerUpdate();
+      _maybeAutoOpenVisualizer();
 
       // Set up streams for future changes
       _radioStateSubscription = _radioService.stateStream.listen((state) {
@@ -133,7 +170,46 @@ class _HomeScreenState extends State<HomeScreen> {
             if (config != null) {
               _volume = config.failoverVolume;
             }
+
+            final newStreamUrl = state.config?.streamUrl;
+            final hasStreamChanged = newStreamUrl != null &&
+                newStreamUrl.isNotEmpty &&
+                newStreamUrl != _lastStreamUrl;
+            if (hasStreamChanged) {
+              _lastStreamUrl = newStreamUrl;
+              _isVisualizerVisible = false;
+              _visualizerController = null;
+              _loadedVisualizerUrl = null;
+              _currentVisualizerUrl = null;
+              _visualizerReady = false;
+              _hasAutoOpenedVisualizer = false;
+            }
+
+            final newVisualizerUrl = state.config?.visualizerUrl;
+            if (newVisualizerUrl == null || newVisualizerUrl.isEmpty) {
+              if (_isVisualizerVisible) {
+                _isVisualizerVisible = false;
+              }
+              _visualizerController = null;
+              _loadedVisualizerUrl = null;
+              _currentVisualizerUrl = null;
+              _hasAutoOpenedVisualizer = false;
+            } else if (_loadedVisualizerUrl != null &&
+                _currentVisualizerUrl != null &&
+                _currentVisualizerUrl != newVisualizerUrl) {
+              _visualizerController = null;
+              _loadedVisualizerUrl = null;
+              _currentVisualizerUrl = null;
+              _hasAutoOpenedVisualizer = false;
+            }
+
+            if (!_radioState.isConnected) {
+              _hasAutoOpenedVisualizer = false;
+            }
           });
+
+          _scheduleVisualizerUpdate();
+          _maybeAutoOpenVisualizer();
         }
       });
 
@@ -165,6 +241,7 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() {
         _serviceInitialized = true;
       });
+      _requestInitialPlayFocus();
 
       Logger.info('HomeScreen: Service initialized successfully');
     } catch (e) {
@@ -194,15 +271,299 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Future<void> _playPause() async {
+  Widget _buildVisualizerOverlay() {
+    final controller = _visualizerController;
+    if (controller == null) {
+      return const SizedBox.shrink();
+    }
+
+    return Positioned.fill(
+      child: FocusScope(
+        autofocus: true,
+        child: Shortcuts(
+          shortcuts: const {
+            SingleActivator(LogicalKeyboardKey.escape):
+                _DismissVisualizerIntent(),
+            SingleActivator(LogicalKeyboardKey.goBack):
+                _DismissVisualizerIntent(),
+            SingleActivator(LogicalKeyboardKey.gameButtonB):
+                _DismissVisualizerIntent(),
+            SingleActivator(LogicalKeyboardKey.backspace):
+                _DismissVisualizerIntent(),
+            SingleActivator(LogicalKeyboardKey.browserBack):
+                _DismissVisualizerIntent(),
+          },
+          child: Actions(
+            actions: {
+              _DismissVisualizerIntent:
+                  CallbackAction<_DismissVisualizerIntent>(
+                onInvoke: (intent) {
+                  _closeVisualizer();
+                  return null;
+                },
+              ),
+            },
+            child: Focus(
+              autofocus: true,
+              child: Material(
+                color: Colors.black.withValues(alpha: 0.92),
+                child: Stack(
+                  children: [
+                    Positioned.fill(
+                      child: WebViewWidget(controller: controller),
+                    ),
+                    Positioned(
+                      bottom: 32,
+                      right: 32,
+                      child: _buildVisualizerCloseButton(),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildVisualizerCloseButton() {
+    final hasFocus = _visualizerCloseButtonFocusNode.hasFocus;
+
+    return Focus(
+      autofocus: true,
+      focusNode: _visualizerCloseButtonFocusNode,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+        ),
+        child: RawMaterialButton(
+          onPressed: _closeVisualizer,
+          constraints: const BoxConstraints.tightFor(width: 44, height: 44),
+          shape: const CircleBorder(),
+          fillColor: Colors.black.withValues(alpha: 0.20),
+          elevation: 0,
+          child: Icon(
+            Icons.close,
+            size: 18,
+            color: hasFocus
+                ? Colors.white.withValues(alpha: 0.5)
+                : Colors.white.withValues(alpha: 0.3),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget? _buildVisualizerButton() {
+    if (_visualizerUrl == null) {
+      return null;
+    }
+
+    final backgroundColor =
+        Theme.of(context).colorScheme.surfaceContainerHighest;
+    final hasFocus = _visualizerButtonFocusNode.hasFocus;
+
+    return Focus(
+      focusNode: _visualizerButtonFocusNode,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          border: Border.all(
+            color: hasFocus ? TunioColors.primary : Colors.transparent,
+            width: 2,
+          ),
+        ),
+        child: Material(
+          color: backgroundColor,
+          shape: const CircleBorder(),
+          clipBehavior: Clip.antiAlias,
+          child: IconButton(
+            onPressed: _openVisualizer,
+            tooltip: 'Open visualizer',
+            icon: Icon(
+              Icons.graphic_eq,
+              color: _isVisualizerVisible ? TunioColors.primary : null,
+            ),
+            iconSize: 28,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<Result<void>> _playPause() async {
     final result = await _radioService.playPause();
     result.fold(
       (_) => Logger.info('HomeScreen: Play/pause successful'),
       (error) {
         Logger.error('HomeScreen: Play/pause failed: $error');
-        _showError(error);
+        if (error != 'No active connection') {
+          _showError(error);
+        }
       },
     );
+    return result;
+  }
+
+  void _openVisualizer() {
+    final url = _visualizerUrl;
+    if (url == null) {
+      return;
+    }
+
+    final uri = Uri.tryParse(url);
+    if (uri == null) {
+      _showError('Visualizer link is invalid');
+      return;
+    }
+
+    final queryParameters = Map<String, String>.from(uri.queryParameters);
+    queryParameters['embedded'] = '1';
+    final targetUri = uri.replace(queryParameters: queryParameters);
+
+    final needsNewController = _visualizerController == null ||
+        _loadedVisualizerUrl != targetUri.toString();
+
+    if (needsNewController) {
+      final controller = WebViewController()
+        ..setJavaScriptMode(JavaScriptMode.unrestricted)
+        ..setNavigationDelegate(
+          NavigationDelegate(
+            onPageFinished: (_) {
+              _visualizerReady = true;
+              _postVisualizerUpdate();
+            },
+          ),
+        )
+        ..loadRequest(targetUri);
+
+      setState(() {
+        _visualizerController = controller;
+        _loadedVisualizerUrl = targetUri.toString();
+        _currentVisualizerUrl = url;
+        _isVisualizerVisible = true;
+        _visualizerReady = false;
+      });
+    } else {
+      setState(() {
+        _isVisualizerVisible = true;
+      });
+    }
+
+    _focusVisualizerCloseButton();
+    _scheduleVisualizerUpdate();
+  }
+
+  void _closeVisualizer() {
+    if (!_isVisualizerVisible) {
+      return;
+    }
+
+    setState(() {
+      _isVisualizerVisible = false;
+    });
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      FocusScope.of(context).requestFocus(_visualizerButtonFocusNode);
+    });
+  }
+
+  void _requestInitialPlayFocus() {
+    if (_initialPlayFocusRequested || !_serviceInitialized) {
+      return;
+    }
+    _initialPlayFocusRequested = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      FocusScope.of(context).requestFocus(_playButtonFocusNode);
+    });
+  }
+
+  void _focusVisualizerCloseButton() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_isVisualizerVisible) return;
+      _visualizerCloseButtonFocusNode.requestFocus();
+    });
+  }
+
+  void _scheduleVisualizerUpdate() {
+    if (!mounted) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _postVisualizerUpdate();
+    });
+  }
+
+  Map<String, dynamic>? _buildVisualizerPayload() {
+    final config = _radioState.config;
+    if (config == null) return null;
+
+    final currentTrack = config.current;
+    final audioState = _getAudioState();
+
+    final trackArtist = currentTrack?.artist.trim();
+    final trackTitle = currentTrack?.title.trim();
+
+    return {
+      'artist': trackArtist != null && trackArtist.isNotEmpty
+          ? trackArtist
+          : (config.description ?? config.title ?? ''),
+      'title': trackTitle != null && trackTitle.isNotEmpty
+          ? trackTitle
+          : (config.title ?? 'Tunio Radio'),
+      'streamUrl': config.streamUrl,
+      'station': config.title ?? 'Tunio',
+      'isPlaying': audioState?.isPlaying ?? false,
+      'volume': _volume,
+      'timestamp': DateTime.now().toIso8601String(),
+      'showAudioVisualization': false,
+    };
+  }
+
+  Future<void> _postVisualizerUpdate() async {
+    if (!_visualizerReady) return;
+    final controller = _visualizerController;
+    if (controller == null) return;
+
+    final payload = _buildVisualizerPayload();
+    if (payload == null) return;
+
+    final message = jsonEncode({
+      'type': 'tunio-visualizer-update',
+      'payload': payload,
+    });
+
+    try {
+      await controller.runJavaScript('window.postMessage($message, "*");');
+    } catch (e) {
+      Logger.error('HomeScreen: Failed to send visualizer update: $e');
+    }
+  }
+
+  void _maybeAutoOpenVisualizer() {
+    if (!mounted) return;
+    if (_isVisualizerVisible) return;
+    if (!_radioState.isConnected) {
+      _hasAutoOpenedVisualizer = false;
+      return;
+    }
+
+    if (_hasAutoOpenedVisualizer) {
+      return;
+    }
+
+    final url = _visualizerUrl;
+    if (url == null || url.isEmpty) {
+      _hasAutoOpenedVisualizer = false;
+      return;
+    }
+
+    _hasAutoOpenedVisualizer = true;
+    _openVisualizer();
   }
 
   void _showError(String message) {
@@ -282,6 +643,37 @@ class _HomeScreenState extends State<HomeScreen> {
     return Icons.play_arrow;
   }
 
+  Future<void> _onPlayButtonPressed() async {
+    if (_radioState.isConnecting) {
+      return;
+    }
+
+    final audioState = _getAudioState();
+    final isPlaying = audioState?.isPlaying ?? false;
+
+    if (_radioState.isConnected && isPlaying) {
+      await _playPause();
+      return;
+    }
+
+    final reconnectResult = await _radioService.reconnect();
+    if (reconnectResult.isSuccess) {
+      return;
+    }
+
+    reconnectResult.fold(
+      (_) {},
+      (error) {
+        Logger.error('HomeScreen: Reconnect failed: $error');
+        if (error != 'No stored token available') {
+          _showError(error);
+        }
+      },
+    );
+
+    await _connect();
+  }
+
   AudioState? _getAudioState() {
     final audioState = switch (_radioState) {
       RadioStateConnected(:final audioState) => audioState,
@@ -292,6 +684,20 @@ class _HomeScreenState extends State<HomeScreen> {
     // Buffer value available for UI use
 
     return audioState;
+  }
+
+  String? get _visualizerUrl {
+    final url = _radioState.config?.visualizerUrl;
+    if (url == null || url.isEmpty) {
+      return null;
+    }
+
+    final uri = Uri.tryParse(url);
+    if (uri == null || uri.scheme.isEmpty) {
+      return null;
+    }
+
+    return url;
   }
 
   String _getStatusText() {
@@ -328,324 +734,357 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     }
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Tunio Spot'),
-        actions: [
-          Focus(
-            focusNode: _themeButtonFocusNode,
-            child: Container(
-              decoration: BoxDecoration(
-                border: Border.all(
-                  color: _themeButtonFocusNode.hasFocus
-                      ? TunioColors.primary
-                      : Colors.transparent,
-                  width: 2,
-                ),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: IconButton(
-                onPressed: widget.onThemeToggle,
-                icon: Icon(_getThemeIcon()),
-                tooltip: _getThemeTooltip(),
-              ),
-            ),
-          ),
-        ],
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(12.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // TIP Card - compact version
-            Card(
-              color: Colors.grey[300],
-              child: InkWell(
-                onTap: _launchPersonalCabinet,
-                borderRadius: BorderRadius.circular(8),
-                child: Padding(
-                  padding: const EdgeInsets.all(8.0),
-                  child: Row(
-                    children: [
-                      Icon(
-                        Icons.lightbulb_outline,
-                        color: TunioColors.primary,
-                        size: 18,
+    final visualizerButton = _buildVisualizerButton();
+
+    return PopScope(
+      canPop: !_isVisualizerVisible,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && _isVisualizerVisible) {
+          _closeVisualizer();
+        }
+      },
+      child: Stack(
+        children: [
+          Scaffold(
+            appBar: AppBar(
+              title: const Text('Tunio Spot'),
+              actions: [
+                Focus(
+                  focusNode: _themeButtonFocusNode,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      border: Border.all(
+                        color: _themeButtonFocusNode.hasFocus
+                            ? TunioColors.primary
+                            : Colors.transparent,
+                        width: 2,
                       ),
-                      const SizedBox(width: 6),
-                      Expanded(
-                        child: Text(
-                          'TIP: Get PIN code at cp.tunio.ai/spot-links',
-                          style: TextStyle(
-                            color: Colors.black87,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                      ),
-                      Icon(
-                        Icons.open_in_new,
-                        color: TunioColors.primary,
-                        size: 14,
-                      ),
-                    ],
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: IconButton(
+                      onPressed: widget.onThemeToggle,
+                      icon: Icon(_getThemeIcon()),
+                      tooltip: _getThemeTooltip(),
+                    ),
                   ),
                 ),
-              ),
+              ],
             ),
-            const SizedBox(height: 12),
+            body: _buildMainContent(visualizerButton),
+          ),
+          if (_isVisualizerVisible) _buildVisualizerOverlay(),
+        ],
+      ),
+    );
+  }
 
-            // Connection Card - compact version
-            Card(
+  Widget _buildMainContent(Widget? visualizerButton) {
+    return Padding(
+      padding: const EdgeInsets.all(12.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // TIP Card - compact version
+          Card(
+            color: Colors.grey[300],
+            child: InkWell(
+              onTap: _launchPersonalCabinet,
+              borderRadius: BorderRadius.circular(8),
               child: Padding(
-                padding: const EdgeInsets.all(12.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                padding: const EdgeInsets.all(8.0),
+                child: Row(
                   children: [
-                    CodeInputWidget(
-                      value: _currentCode,
-                      onChanged: (code) {
-                        setState(() {
-                          _currentCode = code;
-                          _isUserEditingCode =
-                              true; // Mark that user is editing
-                        });
-                      },
-                      onTap: () {
-                        setState(() {
-                          _currentCode = '';
-                          _isUserEditingCode =
-                              true; // Mark that user is editing
-                        });
-                      },
-                      onSubmitted: () {
-                        if (!_radioState.isConnecting) {
-                          _connect();
-                        }
-                      },
-                      enabled: !_radioState.isConnecting,
-                      focusNode: _codeFocusNode,
+                    Icon(
+                      Icons.lightbulb_outline,
+                      color: TunioColors.primary,
+                      size: 18,
                     ),
-                    const SizedBox(height: 12),
-                    Focus(
-                      focusNode: _connectButtonFocusNode,
-                      child: ElevatedButton.icon(
-                        onPressed: _radioState.isConnecting ? null : _connect,
-                        icon: _radioState.isConnecting
-                            ? const SizedBox(
-                                width: 16,
-                                height: 16,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  valueColor: AlwaysStoppedAnimation<Color>(
-                                      Colors.white),
-                                ),
-                              )
-                            : Icon(_radioState.isConnected
-                                ? Icons.sync
-                                : Icons.login),
-                        label: Text(_radioState.isConnecting
-                            ? 'Connecting...'
-                            : (_radioState.isConnected
-                                ? 'Change PIN & Reconnect'
-                                : 'Connect')),
-                        style: ElevatedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 10),
-                          backgroundColor: _radioState.isConnecting
-                              ? TunioColors.primary.withValues(alpha: 0.7)
-                              : TunioColors.primary,
-                          foregroundColor: Colors.white,
-                          disabledBackgroundColor:
-                              TunioColors.primary.withValues(alpha: 0.7),
-                          disabledForegroundColor: Colors.white,
-                          side: _connectButtonFocusNode.hasFocus
-                              ? BorderSide(color: TunioColors.primary, width: 2)
-                              : null,
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        'TIP: Get PIN code at cp.tunio.ai/spot-links',
+                        style: TextStyle(
+                          color: Colors.black87,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
                         ),
                       ),
                     ),
-
-                    // Show connected status if connected
-                    if (_radioState.isConnected)
-                      Container(
-                        margin: const EdgeInsets.only(top: 8),
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 8),
-                        decoration: BoxDecoration(
-                          color: Colors.green.withValues(alpha: 0.1),
-                          borderRadius: BorderRadius.circular(6),
-                          border: Border.all(
-                            color: Colors.green.withValues(alpha: 0.3),
-                          ),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(Icons.check_circle,
-                                color: Colors.green, size: 16),
-                            const SizedBox(width: 6),
-                            Text(
-                              'Connected - Running in Background',
-                              style: TextStyle(
-                                color: Colors.green,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
+                    Icon(
+                      Icons.open_in_new,
+                      color: TunioColors.primary,
+                      size: 14,
+                    ),
                   ],
                 ),
               ),
             ),
-            const SizedBox(height: 12),
+          ),
+          const SizedBox(height: 12),
 
-            // Player Card (compact layout)
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  children: [
-                    Text(
-                      _radioState.config?.title ?? '',
-                      style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
+          // Connection Card - compact version
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  CodeInputWidget(
+                    value: _currentCode,
+                    onChanged: (code) {
+                      setState(() {
+                        _currentCode = code;
+                        _isUserEditingCode = true; // Mark that user is editing
+                      });
+                    },
+                    onTap: () {
+                      setState(() {
+                        _currentCode = '';
+                        _isUserEditingCode = true; // Mark that user is editing
+                      });
+                    },
+                    onSubmitted: () {
+                      if (!_radioState.isConnecting) {
+                        _connect();
+                      }
+                    },
+                    enabled: !_radioState.isConnecting,
+                    focusNode: _codeFocusNode,
+                  ),
+                  const SizedBox(height: 12),
+                  Focus(
+                    focusNode: _connectButtonFocusNode,
+                    child: ElevatedButton.icon(
+                      onPressed: _radioState.isConnecting ? null : _connect,
+                      icon: _radioState.isConnecting
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                valueColor:
+                                    AlwaysStoppedAnimation<Color>(Colors.white),
+                              ),
+                            )
+                          : Icon(_radioState.isConnected
+                              ? Icons.sync
+                              : Icons.login),
+                      label: Text(_radioState.isConnecting
+                          ? 'Connecting...'
+                          : (_radioState.isConnected
+                              ? 'Change PIN & Reconnect'
+                              : 'Connect')),
+                      style: ElevatedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                        backgroundColor: _radioState.isConnecting
+                            ? TunioColors.primary.withValues(alpha: 0.7)
+                            : TunioColors.primary,
+                        foregroundColor: Colors.white,
+                        disabledBackgroundColor:
+                            TunioColors.primary.withValues(alpha: 0.7),
+                        disabledForegroundColor: Colors.white,
+                        side: _connectButtonFocusNode.hasFocus
+                            ? BorderSide(color: TunioColors.primary, width: 2)
+                            : null,
                       ),
                     ),
-                    const SizedBox(height: 16),
-                    Row(
+                  ),
+
+                  // Show connected status if connected
+                  if (_radioState.isConnected)
+                    Container(
+                      margin: const EdgeInsets.only(top: 8),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: Colors.green.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(
+                          color: Colors.green.withValues(alpha: 0.3),
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.check_circle,
+                              color: Colors.green, size: 16),
+                          const SizedBox(width: 6),
+                          Text(
+                            'Connected - Running in Background',
+                            style: TextStyle(
+                              color: Colors.green,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // Player Card (compact layout)
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                children: [
+                  Text(
+                    _radioState.config?.title ?? '',
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  FocusTraversalGroup(
+                    policy: WidgetOrderTraversalPolicy(),
+                    child: Row(
                       children: [
                         // Circular play/pause button
-                        Focus(
-                          focusNode: _playButtonFocusNode,
-                          child: ElevatedButton(
-                            onPressed:
-                                _radioState.isConnected ? _playPause : null,
-                            style: ElevatedButton.styleFrom(
-                              shape: const CircleBorder(),
-                              padding: const EdgeInsets.all(16),
-                              side: _playButtonFocusNode.hasFocus
-                                  ? BorderSide(
-                                      color: TunioColors.primary, width: 3)
-                                  : null,
-                            ),
-                            child: Icon(
-                              _getPlayPauseIcon(),
-                              size: 32,
+                        FocusTraversalOrder(
+                          order: const NumericFocusOrder(1),
+                          child: Focus(
+                            focusNode: _playButtonFocusNode,
+                            child: ElevatedButton(
+                              onPressed: _radioState.isConnecting
+                                  ? null
+                                  : () => _onPlayButtonPressed(),
+                              style: ElevatedButton.styleFrom(
+                                shape: const CircleBorder(),
+                                padding: const EdgeInsets.all(16),
+                                side: _playButtonFocusNode.hasFocus
+                                    ? BorderSide(
+                                        color: TunioColors.primary, width: 3)
+                                    : null,
+                              ),
+                              child: Icon(
+                                _getPlayPauseIcon(),
+                                size: 32,
+                              ),
                             ),
                           ),
                         ),
                         const SizedBox(width: 12),
 
-                        // Compact indicators
-                        ..._buildCompactIndicators(),
+                        if (visualizerButton != null) ...[
+                          FocusTraversalOrder(
+                            order: const NumericFocusOrder(2),
+                            child: visualizerButton,
+                          ),
+                          const SizedBox(width: 12),
+                        ],
+
+                        // Compact indicators wrap to multiple rows on small screens
+                        Expanded(
+                          child: _buildCompactIndicators(),
+                        ),
                       ],
                     ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
-
-            // Status indicator and metrics
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    final isMobile = constraints.maxWidth < 600;
-
-                    if (isMobile) {
-                      // Mobile layout: Column (status above, metrics below)
-                      return Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          // Status indicator
-                          StatusIndicator(
-                            audioState:
-                                _getAudioState() ?? const AudioStateIdle(),
-                            isConnected: _radioState.isConnected,
-                            statusMessage: _getStatusText(),
-                          ),
-                          const SizedBox(height: 16),
-
-                          // Metrics chips in wrapped layout
-                          _buildMetricsChips(),
-                        ],
-                      );
-                    } else {
-                      // Tablet/Desktop layout: Row (status left, metrics right)
-                      return Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          // Status indicator (left side) - takes only needed space
-                          StatusIndicator(
-                            audioState:
-                                _getAudioState() ?? const AudioStateIdle(),
-                            isConnected: _radioState.isConnected,
-                            statusMessage: _getStatusText(),
-                          ),
-
-                          // Metrics chips (right side) - aligned to right
-                          _buildMetricsChips(),
-                        ],
-                      );
-                    }
-                  },
-                ),
-              ),
-            ),
-
-            // Diagnostic indicator at the bottom
-            if (_radioState.isConnecting || _radioState is RadioStateError)
-              Container(
-                padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
-                margin: const EdgeInsets.only(top: 8),
-                decoration: BoxDecoration(
-                  color: _radioState.isConnecting
-                      ? Colors.blue.withValues(alpha: 0.1)
-                      : Colors.red.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(
-                    color: _radioState.isConnecting
-                        ? Colors.blue.withValues(alpha: 0.3)
-                        : Colors.red.withValues(alpha: 0.3),
                   ),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (_radioState.isConnecting)
-                      SizedBox(
-                        width: 12,
-                        height: 12,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          valueColor:
-                              AlwaysStoppedAnimation<Color>(Colors.blue),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // Status indicator and metrics
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final isMobile = constraints.maxWidth < 600;
+
+                  if (isMobile) {
+                    // Mobile layout: Column (status above, metrics below)
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Status indicator
+                        StatusIndicator(
+                          audioState:
+                              _getAudioState() ?? const AudioStateIdle(),
+                          isConnected: _radioState.isConnected,
+                          statusMessage: _getStatusText(),
                         ),
-                      )
-                    else
-                      Icon(Icons.error_outline, size: 12, color: Colors.red),
-                    const SizedBox(width: 6),
-                    Text(
-                      _getDiagnosticText(),
-                      style: TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w500,
-                        color:
-                            _radioState.isConnecting ? Colors.blue : Colors.red,
-                      ),
-                    ),
-                  ],
+                        const SizedBox(height: 16),
+
+                        // Metrics chips in wrapped layout
+                        _buildMetricsChips(),
+                      ],
+                    );
+                  } else {
+                    // Tablet/Desktop layout: Row (status left, metrics right)
+                    return Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        // Status indicator (left side) - takes only needed space
+                        StatusIndicator(
+                          audioState:
+                              _getAudioState() ?? const AudioStateIdle(),
+                          isConnected: _radioState.isConnected,
+                          statusMessage: _getStatusText(),
+                        ),
+
+                        // Metrics chips (right side) - aligned to right
+                        _buildMetricsChips(),
+                      ],
+                    );
+                  }
+                },
+              ),
+            ),
+          ),
+
+          // Diagnostic indicator at the bottom
+          if (_radioState.isConnecting || _radioState is RadioStateError)
+            Container(
+              padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+              margin: const EdgeInsets.only(top: 8),
+              decoration: BoxDecoration(
+                color: _radioState.isConnecting
+                    ? Colors.blue.withValues(alpha: 0.1)
+                    : Colors.red.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: _radioState.isConnecting
+                      ? Colors.blue.withValues(alpha: 0.3)
+                      : Colors.red.withValues(alpha: 0.3),
                 ),
               ),
-          ],
-        ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (_radioState.isConnecting)
+                    SizedBox(
+                      width: 12,
+                      height: 12,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
+                      ),
+                    )
+                  else
+                    Icon(Icons.error_outline, size: 12, color: Colors.red),
+                  const SizedBox(width: 6),
+                  Text(
+                    _getDiagnosticText(),
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w500,
+                      color:
+                          _radioState.isConnecting ? Colors.blue : Colors.red,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -683,8 +1122,8 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  List<Widget> _buildCompactIndicators() {
-    return [
+  Widget _buildCompactIndicators() {
+    final indicators = <Widget>[
       // Failover cache indicator (clickable to clear cache)
       GestureDetector(
         onTap: _clearFailoverCache,
@@ -698,10 +1137,11 @@ class _HomeScreenState extends State<HomeScreen> {
                   : Colors.red,
         ),
       ),
-      const SizedBox(width: 12),
+    ];
 
-      // Playback mode indicator
-      if (_radioState.isConnected) ...[
+    // Playback mode indicator
+    if (_radioState.isConnected) {
+      indicators.add(
         _buildSimpleLabel(
           icon: _radioState is RadioStateFailover
               ? Icons.offline_bolt
@@ -710,11 +1150,10 @@ class _HomeScreenState extends State<HomeScreen> {
           color:
               _radioState is RadioStateFailover ? Colors.orange : Colors.green,
         ),
-        const SizedBox(width: 12),
-      ],
+      );
 
       // Volume indicator (clickable with info)
-      if (_radioState.isConnected)
+      indicators.add(
         GestureDetector(
           onTap: _showVolumeInfo,
           child: _buildSimpleLabel(
@@ -723,7 +1162,15 @@ class _HomeScreenState extends State<HomeScreen> {
             color: Colors.blue,
           ),
         ),
-    ];
+      );
+    }
+
+    return Wrap(
+      spacing: 12,
+      runSpacing: 8,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: indicators,
+    );
   }
 
   Widget _buildSimpleLabel({
@@ -813,4 +1260,8 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     ];
   }
+}
+
+class _DismissVisualizerIntent extends Intent {
+  const _DismissVisualizerIntent();
 }
