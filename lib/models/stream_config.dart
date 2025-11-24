@@ -51,10 +51,10 @@ class StreamConfig {
     }
 
     // TODO: DO NOT REMOVE!!!
-    // final visualizerUrl = "http://localhost:3000/";
+    // final visualizerUrl = "http://localhost:3000/?embedded=1";
 
     final visualizerUrl = _parseOptionalUrl(
-      json['visualizer_url'] ?? json['visualizerUrl'],
+      json['visualizer_url'],
     );
 
     Logger.debug(

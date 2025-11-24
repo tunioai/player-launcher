@@ -54,6 +54,9 @@ class _HomeScreenState extends State<HomeScreen> {
   int? _currentPing;
   double _volume = 1.0;
   int _cachedTracksCount = 0;
+  static const Duration _visualizerHeartbeatInterval =
+      Duration(seconds: 10);
+
   bool _isVisualizerVisible = false;
   WebViewController? _visualizerController;
   String? _loadedVisualizerUrl;
@@ -62,6 +65,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _currentVisualizerUrl;
   String? _lastStreamUrl;
   bool _initialPlayFocusRequested = false;
+  Timer? _visualizerHeartbeatTimer;
 
   // Subscriptions
   StreamSubscription<RadioState>? _radioStateSubscription;
@@ -89,6 +93,8 @@ class _HomeScreenState extends State<HomeScreen> {
     _visualizerButtonFocusNode.dispose();
     _visualizerCloseButtonFocusNode.dispose();
     _visualizerController = null;
+    _visualizerHeartbeatTimer?.cancel();
+    _visualizerHeartbeatTimer = null;
     super.dispose();
   }
 
@@ -138,6 +144,8 @@ class _HomeScreenState extends State<HomeScreen> {
           _loadedVisualizerUrl = null;
           _currentVisualizerUrl = null;
           _hasAutoOpenedVisualizer = false;
+          _visualizerReady = false;
+          _stopVisualizerHeartbeat();
         }
 
         if (!_radioState.isConnected) {
@@ -183,6 +191,7 @@ class _HomeScreenState extends State<HomeScreen> {
               _currentVisualizerUrl = null;
               _visualizerReady = false;
               _hasAutoOpenedVisualizer = false;
+              _stopVisualizerHeartbeat();
             }
 
             final newVisualizerUrl = state.config?.visualizerUrl;
@@ -194,6 +203,8 @@ class _HomeScreenState extends State<HomeScreen> {
               _loadedVisualizerUrl = null;
               _currentVisualizerUrl = null;
               _hasAutoOpenedVisualizer = false;
+              _visualizerReady = false;
+              _stopVisualizerHeartbeat();
             } else if (_loadedVisualizerUrl != null &&
                 _currentVisualizerUrl != null &&
                 _currentVisualizerUrl != newVisualizerUrl) {
@@ -201,6 +212,8 @@ class _HomeScreenState extends State<HomeScreen> {
               _loadedVisualizerUrl = null;
               _currentVisualizerUrl = null;
               _hasAutoOpenedVisualizer = false;
+              _visualizerReady = false;
+              _stopVisualizerHeartbeat();
             }
 
             if (!_radioState.isConnected) {
@@ -342,7 +355,7 @@ class _HomeScreenState extends State<HomeScreen> {
           onPressed: _closeVisualizer,
           constraints: const BoxConstraints.tightFor(width: 44, height: 44),
           shape: const CircleBorder(),
-          fillColor: Colors.black.withValues(alpha: 0.20),
+          fillColor: Colors.black.withValues(alpha: 0.10),
           elevation: 0,
           child: Icon(
             Icons.close,
@@ -428,6 +441,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _loadedVisualizerUrl != targetUri.toString();
 
     if (needsNewController) {
+      _stopVisualizerHeartbeat();
       final controller = WebViewController()
         ..setJavaScriptMode(JavaScriptMode.unrestricted)
         ..setNavigationDelegate(
@@ -435,6 +449,7 @@ class _HomeScreenState extends State<HomeScreen> {
             onPageFinished: (_) {
               _visualizerReady = true;
               _postVisualizerUpdate();
+              _startVisualizerHeartbeat(forceRestart: true);
             },
           ),
         )
@@ -451,6 +466,7 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() {
         _isVisualizerVisible = true;
       });
+      _startVisualizerHeartbeat(forceRestart: true);
     }
 
     _focusVisualizerCloseButton();
@@ -465,6 +481,7 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _isVisualizerVisible = false;
     });
+    _stopVisualizerHeartbeat();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -498,6 +515,29 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
+  void _startVisualizerHeartbeat({bool forceRestart = false}) {
+    if (!_isVisualizerVisible || !_visualizerReady) {
+      return;
+    }
+    if (_visualizerController == null) {
+      return;
+    }
+    if (!forceRestart && _visualizerHeartbeatTimer?.isActive == true) {
+      return;
+    }
+
+    _visualizerHeartbeatTimer?.cancel();
+    _visualizerHeartbeatTimer = Timer.periodic(
+      _visualizerHeartbeatInterval,
+      (_) => _postVisualizerUpdate(),
+    );
+  }
+
+  void _stopVisualizerHeartbeat() {
+    _visualizerHeartbeatTimer?.cancel();
+    _visualizerHeartbeatTimer = null;
+  }
+
   Map<String, dynamic>? _buildVisualizerPayload() {
     final config = _radioState.config;
     if (config == null) return null;
@@ -518,6 +558,7 @@ class _HomeScreenState extends State<HomeScreen> {
       'streamUrl': config.streamUrl,
       'station': config.title ?? 'Tunio',
       'isPlaying': audioState?.isPlaying ?? false,
+      'isFailoverMode': _radioState is RadioStateFailover,
       'volume': _volume,
       'timestamp': DateTime.now().toIso8601String(),
       'showAudioVisualization': false,
