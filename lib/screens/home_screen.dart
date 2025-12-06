@@ -1,10 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'package:webview_flutter_android/webview_flutter_android.dart';
+import 'package:webview_flutter_wkwebview/webview_flutter_wkwebview.dart';
 
 import '../core/dependency_injection.dart';
 import '../core/service_locator.dart';
@@ -66,6 +70,8 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _lastStreamUrl;
   bool _initialPlayFocusRequested = false;
   Timer? _visualizerHeartbeatTimer;
+  static const MethodChannel _visualizerChannel =
+      MethodChannel('ai.tunio/visualizer');
 
   // Subscriptions
   StreamSubscription<RadioState>? _radioStateSubscription;
@@ -76,12 +82,18 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    if (_isAndroid) {
+      _visualizerChannel.setMethodCallHandler(_handleVisualizerChannelCall);
+    }
     _initializeService();
     _setupFocusNodes();
   }
 
   @override
   void dispose() {
+    if (_isAndroid) {
+      _visualizerChannel.setMethodCallHandler(null);
+    }
     _radioStateSubscription?.cancel();
     _networkStateSubscription?.cancel();
     _pingSubscription?.cancel();
@@ -98,6 +110,8 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
+  bool get _isAndroid => defaultTargetPlatform == TargetPlatform.android;
+
   void _setupFocusNodes() {
     _codeFocusNode.addListener(() => setState(() {}));
     _connectButtonFocusNode.addListener(() => setState(() {}));
@@ -105,6 +119,47 @@ class _HomeScreenState extends State<HomeScreen> {
     _themeButtonFocusNode.addListener(() => setState(() {}));
     _visualizerButtonFocusNode.addListener(() => setState(() {}));
     _visualizerCloseButtonFocusNode.addListener(() => setState(() {}));
+  }
+
+  void _resetVisualizerState({bool closeNative = false}) {
+    if (closeNative && _isAndroid && _isVisualizerVisible) {
+      _visualizerChannel.invokeMethod('closeVisualizer');
+    }
+    _isVisualizerVisible = false;
+    _visualizerController = null;
+    _loadedVisualizerUrl = null;
+    _currentVisualizerUrl = null;
+    _visualizerReady = false;
+    _hasAutoOpenedVisualizer = false;
+    _stopVisualizerHeartbeat();
+  }
+
+  Future<void> _handleVisualizerChannelCall(MethodCall call) async {
+    if (!_isAndroid) {
+      return;
+    }
+
+    switch (call.method) {
+      case 'visualizerReady':
+        setState(() {
+          _visualizerReady = true;
+        });
+        _postVisualizerUpdate();
+        _startVisualizerHeartbeat(forceRestart: true);
+        break;
+      case 'visualizerClosed':
+        _handleVisualizerClosed();
+        break;
+      case 'visualizerError':
+        final message = call.arguments as String?;
+        if (message != null && message.isNotEmpty) {
+          _showError(message);
+        }
+        _handleVisualizerClosed();
+        break;
+      default:
+        break;
+    }
   }
 
   void _initializeService() {
@@ -139,13 +194,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
         final initialVisualizerUrl = currentRadioState.config?.visualizerUrl;
         if (initialVisualizerUrl == null || initialVisualizerUrl.isEmpty) {
-          _isVisualizerVisible = false;
-          _visualizerController = null;
-          _loadedVisualizerUrl = null;
-          _currentVisualizerUrl = null;
-          _hasAutoOpenedVisualizer = false;
-          _visualizerReady = false;
-          _stopVisualizerHeartbeat();
+          _resetVisualizerState(closeNative: true);
         }
 
         if (!_radioState.isConnected) {
@@ -185,35 +234,16 @@ class _HomeScreenState extends State<HomeScreen> {
                 newStreamUrl != _lastStreamUrl;
             if (hasStreamChanged) {
               _lastStreamUrl = newStreamUrl;
-              _isVisualizerVisible = false;
-              _visualizerController = null;
-              _loadedVisualizerUrl = null;
-              _currentVisualizerUrl = null;
-              _visualizerReady = false;
-              _hasAutoOpenedVisualizer = false;
-              _stopVisualizerHeartbeat();
+              _resetVisualizerState(closeNative: true);
             }
 
             final newVisualizerUrl = state.config?.visualizerUrl;
             if (newVisualizerUrl == null || newVisualizerUrl.isEmpty) {
-              if (_isVisualizerVisible) {
-                _isVisualizerVisible = false;
-              }
-              _visualizerController = null;
-              _loadedVisualizerUrl = null;
-              _currentVisualizerUrl = null;
-              _hasAutoOpenedVisualizer = false;
-              _visualizerReady = false;
-              _stopVisualizerHeartbeat();
+              _resetVisualizerState(closeNative: true);
             } else if (_loadedVisualizerUrl != null &&
                 _currentVisualizerUrl != null &&
                 _currentVisualizerUrl != newVisualizerUrl) {
-              _visualizerController = null;
-              _loadedVisualizerUrl = null;
-              _currentVisualizerUrl = null;
-              _hasAutoOpenedVisualizer = false;
-              _visualizerReady = false;
-              _stopVisualizerHeartbeat();
+              _resetVisualizerState(closeNative: true);
             }
 
             if (!_radioState.isConnected) {
@@ -323,7 +353,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: Stack(
                   children: [
                     Positioned.fill(
-                      child: WebViewWidget(controller: controller),
+                      child: _buildVisualizerWebView(controller),
                     ),
                     Positioned(
                       bottom: 32,
@@ -338,6 +368,25 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
     );
+  }
+
+  Widget _buildVisualizerWebView(WebViewController controller) {
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      final params = PlatformWebViewWidgetCreationParams(
+        controller: controller.platform,
+        layoutDirection: TextDirection.ltr,
+        gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
+      );
+      final androidParams =
+          AndroidWebViewWidgetCreationParams.fromPlatformWebViewWidgetCreationParams(
+        params,
+        // Hybrid composition is required so the GPU visualizer renders instead
+        // of showing a black SurfaceTexture.
+        displayWithHybridComposition: true,
+      );
+      return WebViewWidget.fromPlatformCreationParams(params: androidParams);
+    }
+    return WebViewWidget(controller: controller);
   }
 
   Widget _buildVisualizerCloseButton() {
@@ -421,7 +470,7 @@ class _HomeScreenState extends State<HomeScreen> {
     return result;
   }
 
-  void _openVisualizer() {
+  void _openVisualizer() async {
     final url = _visualizerUrl;
     if (url == null) {
       return;
@@ -437,13 +486,19 @@ class _HomeScreenState extends State<HomeScreen> {
     queryParameters['embedded'] = '1';
     final targetUri = uri.replace(queryParameters: queryParameters);
 
+    if (_isAndroid) {
+      _stopVisualizerHeartbeat();
+      await _openNativeVisualizer(targetUri, url);
+      _scheduleVisualizerUpdate();
+      return;
+    }
+
     final needsNewController = _visualizerController == null ||
         _loadedVisualizerUrl != targetUri.toString();
 
     if (needsNewController) {
       _stopVisualizerHeartbeat();
-      final controller = WebViewController()
-        ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      final controller = _createVisualizerWebViewController()
         ..setNavigationDelegate(
           NavigationDelegate(
             onPageFinished: (_) {
@@ -473,14 +528,78 @@ class _HomeScreenState extends State<HomeScreen> {
     _scheduleVisualizerUpdate();
   }
 
+  Future<void> _openNativeVisualizer(Uri targetUri, String originalUrl) async {
+    try {
+      await _visualizerChannel.invokeMethod('openVisualizer', {
+        'url': targetUri.toString(),
+      });
+      setState(() {
+        _visualizerController = null;
+        _loadedVisualizerUrl = targetUri.toString();
+        _currentVisualizerUrl = originalUrl;
+        _isVisualizerVisible = true;
+        _visualizerReady = false;
+      });
+    } catch (e) {
+      Logger.error('HomeScreen: Failed to open native visualizer: $e');
+      _showError('Failed to open visualizer');
+    }
+  }
+
+  WebViewController _createVisualizerWebViewController() {
+    PlatformWebViewControllerCreationParams params =
+        const PlatformWebViewControllerCreationParams();
+
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      params = AndroidWebViewControllerCreationParams();
+    } else if (defaultTargetPlatform == TargetPlatform.iOS ||
+        defaultTargetPlatform == TargetPlatform.macOS) {
+      params = WebKitWebViewControllerCreationParams(
+        allowsInlineMediaPlayback: true,
+        mediaTypesRequiringUserAction: const <PlaybackMediaTypes>{},
+      );
+    }
+
+    final controller = WebViewController.fromPlatformCreationParams(params)
+      ..setJavaScriptMode(JavaScriptMode.unrestricted);
+
+    if (defaultTargetPlatform != TargetPlatform.macOS) {
+      controller.setBackgroundColor(Colors.transparent);
+    }
+
+    if (controller.platform is AndroidWebViewController) {
+      final androidController =
+          controller.platform as AndroidWebViewController;
+      androidController.setMediaPlaybackRequiresUserGesture(false);
+    }
+
+    return controller;
+  }
+
   void _closeVisualizer() {
     if (!_isVisualizerVisible) {
       return;
     }
 
-    setState(() {
+    if (_isAndroid) {
+      _visualizerChannel.invokeMethod('closeVisualizer');
+    }
+
+    _handleVisualizerClosed();
+  }
+
+  void _handleVisualizerClosed() {
+    final wasVisible = _isVisualizerVisible;
+
+    if (wasVisible) {
+      setState(() {
+        _isVisualizerVisible = false;
+      });
+    } else {
       _isVisualizerVisible = false;
-    });
+    }
+
+    _visualizerReady = false;
     _stopVisualizerHeartbeat();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -501,6 +620,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _focusVisualizerCloseButton() {
+    if (_isAndroid) {
+      return;
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_isVisualizerVisible) return;
       _visualizerCloseButtonFocusNode.requestFocus();
@@ -519,7 +641,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (!_isVisualizerVisible || !_visualizerReady) {
       return;
     }
-    if (_visualizerController == null) {
+    if (!_isAndroid && _visualizerController == null) {
       return;
     }
     if (!forceRestart && _visualizerHeartbeatTimer?.isActive == true) {
@@ -577,9 +699,16 @@ class _HomeScreenState extends State<HomeScreen> {
       'type': 'tunio-visualizer-update',
       'payload': payload,
     });
+    final script = 'window.postMessage($message, "*");';
 
     try {
-      await controller.runJavaScript('window.postMessage($message, "*");');
+      if (_isAndroid) {
+        await _visualizerChannel.invokeMethod('updateVisualizer', {
+          'script': script,
+        });
+      } else {
+        await controller.runJavaScript(script);
+      }
     } catch (e) {
       Logger.error('HomeScreen: Failed to send visualizer update: $e');
     }

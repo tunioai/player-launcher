@@ -113,6 +113,15 @@ final class EnhancedAudioService implements IAudioService {
     });
   }
 
+  bool _isHlsStream(String url) {
+    final uri = Uri.parse(url);
+    final path = uri.path.toLowerCase();
+    return path.endsWith('.m3u8') || 
+          path.contains('.m3u8?') ||
+          path.endsWith('.m3u') ||
+          url.contains('playlist.m3u8');
+  }
+
   Future<void> _initializeAudioPlayer() async {
     Logger.info('🎵 INIT_DEBUG: ===== INITIALIZING AUDIO PLAYER =====');
     Logger.info('🎵 INIT_DEBUG: User agent: ${AudioConfig.userAgent}');
@@ -509,62 +518,80 @@ final class EnhancedAudioService implements IAudioService {
     if (bufferedPosition == null) return;
 
     final currentPosition = _audioPlayer.position;
-
-    // Ghost playback detection: check if buffer is stuck at same value
-    if (_audioPlayer.playing && _currentState.isPlaying) {
-      final bufferSize = bufferedPosition - currentPosition;
-
-      // Track buffer changes - for live stream, buffer should fluctuate
-      if (bufferSize == _lastBufferSize) {
-        _stuckBufferCount++;
-
-        // If buffer hasn't changed for 30 updates (~15 seconds),
-        // this might be ghost playback (playing but no actual sound output)
-        if (_stuckBufferCount >= 30) {
-          Logger.error(
-              '🚨 GHOST PLAYBACK DETECTED: UI shows playing, buffer at ${bufferSize.inSeconds}s but NOT changing for 15s');
-          Logger.error(
-              '🚨 GHOST: Player state: playing=${_audioPlayer.playing}, processingState=${_audioPlayer.processingState}');
-          Logger.error(
-              '🚨 GHOST: Volume: ${_audioPlayer.volume}, Current position: ${currentPosition.inSeconds}s');
-          Logger.error(
-              '🚨 GHOST: This indicates silent playback - buffer loaded but no audio output');
-
-          // Try to recover by stopping and letting radio service restart
-          Logger.warning('🚨 GHOST: Attempting recovery by triggering error');
-          _handlePlayerError(Exception(
-              'Ghost playback detected - buffer stuck at ${bufferSize.inSeconds}s'));
-          _stuckBufferCount = 0;
-          return;
-        }
-      } else {
-        // Buffer is changing - playback is healthy
-        _stuckBufferCount = 0;
-      }
-      _lastBufferSize = bufferSize;
-    }
     final rawBufferAhead = bufferedPosition - currentPosition;
-
-    final timePlaying = _streamStartTime != null
-        ? DateTime.now().difference(_streamStartTime!)
-        : Duration.zero;
-
-    if (rawBufferAhead.inSeconds <= 2) {
-      if (timePlaying.inSeconds < 5) {
-        _currentBufferSize = Duration(seconds: 3);
-      } else {
-        _currentBufferSize = Duration(seconds: 5);
+    
+    if (_currentStreamUrl != null && _isHlsStream(_currentStreamUrl!)) {
+      Logger.info('📊 HLS NATIVE BUFFER: ${rawBufferAhead.inSeconds}s buffered ahead');
+    }
+  
+    // Определяем тип стрима
+    final isHls = _currentStreamUrl != null && _isHlsStream(_currentStreamUrl!);
+    
+    if (isHls) {
+      // ✅ HLS: Разрешаем полную буферизацию без искусственных ограничений
+      _currentBufferSize = rawBufferAhead;
+      
+      Logger.info('🎵 HLS BUFFER: ${rawBufferAhead.inSeconds}s ahead (unrestricted)');
+      
+      // HLS ghost playback detection - более мягкий подход
+      if (_audioPlayer.playing && _currentState.isPlaying) {
+        // Для HLS проверяем только критическое зависание (60+ секунд без изменений)
+        if (rawBufferAhead == _lastBufferSize) {
+          _stuckBufferCount++;
+          
+          // Только после 2 минут полной неподвижности - это реальная проблема
+          if (_stuckBufferCount >= 120) { // 120 обновлений = ~60 секунд
+            Logger.error('🚨 HLS CRITICAL: Buffer completely stuck for 60s at ${rawBufferAhead.inSeconds}s');
+            _handlePlayerError(Exception('HLS buffer critically stuck'));
+            _stuckBufferCount = 0;
+            return;
+          }
+        } else {
+          _stuckBufferCount = 0;
+        }
+        _lastBufferSize = rawBufferAhead;
       }
     } else {
-      _currentBufferSize =
-          Duration(seconds: rawBufferAhead.inSeconds.clamp(0, 8));
+      // ✅ Regular stream: Адаптивная буферизация для обычных потоков
+      final timePlaying = _streamStartTime != null
+          ? DateTime.now().difference(_streamStartTime!)
+          : Duration.zero;
+
+      // Для обычных стримов используем умеренное ограничение
+      if (rawBufferAhead.inSeconds <= 2) {
+        if (timePlaying.inSeconds < 5) {
+          _currentBufferSize = Duration(seconds: 3);
+        } else {
+          _currentBufferSize = Duration(seconds: 5);
+        }
+      } else {
+        // Позволяем до 20 секунд для обычных стримов (компромисс)
+        _currentBufferSize = Duration(seconds: rawBufferAhead.inSeconds.clamp(0, 20));
+      }
+      
+      // Более строгая ghost detection для обычных стримов
+      if (_audioPlayer.playing && _currentState.isPlaying) {
+        if (rawBufferAhead == _lastBufferSize) {
+          _stuckBufferCount++;
+          
+          if (_stuckBufferCount >= 30) { // 15 секунд для обычных стримов
+            Logger.error('🚨 STREAM GHOST: Buffer stuck at ${rawBufferAhead.inSeconds}s');
+            _handlePlayerError(Exception('Stream buffer stuck'));
+            _stuckBufferCount = 0;
+            return;
+          }
+        } else {
+          _stuckBufferCount = 0;
+        }
+        _lastBufferSize = rawBufferAhead;
+      }
     }
 
     _lastBufferUpdate = DateTime.now();
 
+    // Обновляем состояние с корректным размером буфера
     if (_currentState case AudioStatePlaying playing) {
       final newState = playing.copyWith(bufferSize: _currentBufferSize);
-
       _currentState = newState;
       _stateController.add(_currentState);
     } else if (_currentState case AudioStateBuffering buffering) {
@@ -703,27 +730,33 @@ final class EnhancedAudioService implements IAudioService {
     }
 
     final now = DateTime.now();
+    final isHls = _currentStreamUrl != null && _isHlsStream(_currentStreamUrl!);
 
     if (_currentState.isPlaying &&
         _audioPlayer.playing &&
         _currentStreamUrl != null &&
         _lastBufferUpdate != null &&
         _streamStartTime != null) {
+      
       final timeSinceStart = now.difference(_streamStartTime!);
       final bufferStalledFor = now.difference(_lastBufferUpdate!);
 
-      if (timeSinceStart > _bufferStallThreshold &&
-          bufferStalledFor > _bufferStallThreshold) {
+      // Для HLS используем более мягкие таймауты
+      final stallThreshold = isHls 
+          ? const Duration(seconds: 60)  // HLS: 60 секунд
+          : _bufferStallThreshold;       // Regular: 20 секунд
+
+      if (timeSinceStart > stallThreshold &&
+          bufferStalledFor > stallThreshold) {
         Logger.error(
-            'Detected buffer stall while playing: no buffer updates for ${bufferStalledFor.inSeconds}s (stream active for ${timeSinceStart.inSeconds}s)');
-        Logger.error(
-            'Treating this as ghost playback - forcing error to trigger recovery');
+            '${isHls ? "HLS" : "STREAM"} STALL: No buffer updates for ${bufferStalledFor.inSeconds}s');
         _handlePlayerError(TimeoutException(
-            'Buffer stalled during playback', _bufferStallThreshold));
+            'Buffer stalled during playback', stallThreshold));
         return;
       }
     }
 
+    // Остальная логика hang detection остается прежней...
     if (_currentState case AudioStateLoading loading) {
       if (loading.elapsed > _maxHangTime && !_audioPlayer.playing) {
         Logger.error('Detected loading hang: ${loading.elapsed.inSeconds}s');
@@ -732,21 +765,10 @@ final class EnhancedAudioService implements IAudioService {
       }
     } else if (_currentState case AudioStateBuffering buffering) {
       if (buffering.elapsed > _maxHangTime && !_audioPlayer.playing) {
-        Logger.error(
-            'Detected buffering hang: ${buffering.elapsed.inSeconds}s');
+        Logger.error('Detected buffering hang: ${buffering.elapsed.inSeconds}s');
         _handlePlayerError(
             TimeoutException('Buffering hang detected', _maxHangTime));
       }
-    }
-
-    if (_lastBufferUpdate != null &&
-        _currentState.isPlaying &&
-        !_audioPlayer.playing &&
-        now.difference(_lastBufferUpdate!) > Duration(minutes: 2) &&
-        _audioPlayer.position.inSeconds == 0) {
-      Logger.error('Buffer update hang detected (position also stuck)');
-      _handlePlayerError(
-          TimeoutException('Buffer update hang', Duration(minutes: 2)));
     }
   }
 

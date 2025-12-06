@@ -11,6 +11,7 @@ import io.flutter.plugin.common.MethodChannel
 
 class MainActivity: FlutterActivity() {
     private val CHANNEL = "com.example.tunio_radio_player/autostart"
+    private val VISUALIZER_CHANNEL = "ai.tunio/visualizer"
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -80,6 +81,38 @@ class MainActivity: FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+
+        val visualizerChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            VISUALIZER_CHANNEL,
+        )
+        VisualizerController.channel = visualizerChannel
+        visualizerChannel.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "openVisualizer" -> {
+                    val url = call.argument<String>("url")
+                    if (url.isNullOrEmpty()) {
+                        result.error("INVALID_URL", "Visualizer URL is missing", null)
+                    } else {
+                        VisualizerController.open(this, url)
+                        result.success(null)
+                    }
+                }
+                "updateVisualizer" -> {
+                    val script = call.argument<String>("script")
+                    if (script.isNullOrEmpty()) {
+                        result.error("INVALID_SCRIPT", "JavaScript payload is empty", null)
+                    } else {
+                        VisualizerController.update(script)
+                        result.success(null)
+                    }
+                }
+                "closeVisualizer" -> {
+                    VisualizerController.close()
+                    result.success(null)
+                }
+                else -> result.notImplemented()
+            }
+        }
     }
 }
-

@@ -67,6 +67,16 @@
                 <category android:name="android.intent.category.DEFAULT"/>
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".VisualizerActivity"
+            android:exported="false"
+            android:theme="@style/NormalTheme"
+            android:hardwareAccelerated="true"
+            android:launchMode="singleTop"
+            android:excludeFromRecents="true"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:screenOrientation="sensor" />
         
         <!-- Boot receiver for auto-start -->
         <receiver android:name=".BootReceiver"

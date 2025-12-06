@@ -38,7 +38,7 @@ class StreamConfig {
   factory StreamConfig.fromJson(Map<String, dynamic> json) {
     Logger.debug('Parsing StreamConfig from JSON: $json', 'StreamConfig');
 
-    final streamUrl = json['stream_url'] ?? json['url'] ?? '';
+    final streamUrl = 'https://region-ru4.tunio.ai/hls/main/playlist.m3u8'; //json['stream_url'] ?? json['url'] ?? '';
     final streamUuid = json['stream_uuid'] as String?;
     final volume = _parseVolume(json['volume']);
     final parsedMusicVolume = _parseOptionalVolume(json['music_volume']);
@@ -51,7 +51,7 @@ class StreamConfig {
     }
 
     // TODO: DO NOT REMOVE!!!
-    // final visualizerUrl = "http://localhost:3000/?embedded=1";
+    // final visualizerUrl = "http://localhost:3000/?embedded=1&live=1";
 
     final visualizerUrl = _parseOptionalUrl(
       json['visualizer_url'],
