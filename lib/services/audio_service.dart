@@ -11,6 +11,7 @@ import '../core/audio_state.dart';
 import '../models/stream_config.dart';
 import '../utils/logger.dart';
 import '../utils/audio_config.dart';
+import 'audio/hls_stream_audio_source.dart';
 
 abstract interface class IAudioService implements Disposable {
   Stream<AudioState> get stateStream;
@@ -31,7 +32,7 @@ abstract interface class IAudioService implements Disposable {
 }
 
 final class EnhancedAudioService implements IAudioService {
-  late final AudioPlayer _audioPlayer;
+  late AudioPlayer _audioPlayer;
 
   final StreamController<AudioState> _stateController =
       StreamController<AudioState>.broadcast();
@@ -65,7 +66,6 @@ final class EnhancedAudioService implements IAudioService {
 
   Timer? _loadingTimeoutTimer;
   Timer? _hangDetectionTimer;
-
   final Completer<void> _initializationCompleter = Completer<void>();
   bool _isInitialized = false;
   bool _isDisposed = false;
@@ -75,6 +75,12 @@ final class EnhancedAudioService implements IAudioService {
   bool _userPaused = false;
   bool _awaitingInterruptionResume = false;
   bool _connectivityInitialized = false;
+  bool _isCurrentLoadConfigurationHls = false;
+  HlsStreamAudioSource? _activeHlsSource;
+  Duration? _currentHlsPlaylistWindow;
+  Duration _lastRawHlsBuffer = Duration.zero;
+  Duration _lastPlaybackPosition = Duration.zero;
+  Duration _hlsBufferedDuration = Duration.zero;
 
   static const Duration _loadingTimeout = Duration(seconds: 10);
   static const Duration _hangDetectionInterval = Duration(seconds: 5);
@@ -116,19 +122,22 @@ final class EnhancedAudioService implements IAudioService {
   bool _isHlsStream(String url) {
     final uri = Uri.parse(url);
     final path = uri.path.toLowerCase();
-    return path.endsWith('.m3u8') || 
-          path.contains('.m3u8?') ||
-          path.endsWith('.m3u') ||
-          url.contains('playlist.m3u8');
+    return path.endsWith('.m3u8') ||
+        path.contains('.m3u8?') ||
+        path.endsWith('.m3u') ||
+        url.contains('playlist.m3u8');
   }
 
-  Future<void> _initializeAudioPlayer() async {
+  Future<void> _initializeAudioPlayer({bool isHls = false}) async {
     Logger.info('🎵 INIT_DEBUG: ===== INITIALIZING AUDIO PLAYER =====');
     Logger.info('🎵 INIT_DEBUG: User agent: ${AudioConfig.userAgent}');
 
     _audioPlayer = AudioPlayer(
       userAgent: AudioConfig.userAgent,
+      audioLoadConfiguration: AudioConfig.buildLoadConfiguration(isHls: isHls),
+      useProxyForRequestHeaders: false,
     );
+    _isCurrentLoadConfigurationHls = isHls;
 
     final session = await AudioSession.instance;
     await session.configure(const AudioSessionConfiguration(
@@ -248,12 +257,13 @@ final class EnhancedAudioService implements IAudioService {
     _interruptionSubscription = null;
   }
 
-  Future<void> _resetAudioPlayer(String reason) async {
+  Future<void> _resetAudioPlayer(String reason, {bool? isHlsOverride}) async {
     if (_isDisposed) return;
 
     Logger.warning('🎵 AUDIO_DEBUG: Recreating AudioPlayer due to: $reason');
 
     await _cancelPlayerSubscriptions();
+    await _disposeActiveHlsSource();
 
     try {
       await _audioPlayer.dispose();
@@ -264,7 +274,8 @@ final class EnhancedAudioService implements IAudioService {
       Logger.error('🎵 AUDIO_DEBUG: Stack trace: $stackTrace');
     }
 
-    await _initializeAudioPlayer();
+    final isHls = isHlsOverride ?? _isCurrentLoadConfigurationHls;
+    await _initializeAudioPlayer(isHls: isHls);
     _setupPlayerSubscriptions();
 
     try {
@@ -404,6 +415,12 @@ final class EnhancedAudioService implements IAudioService {
         '🎵 STATE_DEBUG: Processing state: ${playerState.processingState}');
     Logger.info('🎵 STATE_DEBUG: Player position: ${_audioPlayer.position}');
 
+    if (playerState.processingState == ProcessingState.buffering &&
+        !playerState.playing) {
+      _currentBufferSize = Duration.zero;
+      _lastRawHlsBuffer = Duration.zero;
+    }
+
     final newAudioState = _computeAudioState(playerState);
     Logger.info(
         '🎵 STATE_DEBUG: Computed new audio state: ${newAudioState.runtimeType}');
@@ -508,8 +525,29 @@ final class EnhancedAudioService implements IAudioService {
 
   void _handlePositionUpdate(Duration position) {
     if (_currentState is AudioStatePlaying) {
+      final delta = position - _lastPlaybackPosition;
+      if (_isCurrentLoadConfigurationHls) {
+        Logger.debug(
+            '🎵 HLS POSITION: pos=${position.inMilliseconds}ms delta=${delta.inMilliseconds}ms buffer=${_currentBufferSize.inMilliseconds}ms isPlaying=${_audioPlayer.playing}');
+      }
+      if (_isCurrentLoadConfigurationHls &&
+          delta > Duration.zero &&
+          _currentBufferSize > Duration.zero) {
+        final remaining = _currentBufferSize - delta;
+        _currentBufferSize = remaining.isNegative ? Duration.zero : remaining;
+        _hlsBufferedDuration = _currentBufferSize;
+        final newRaw = _lastRawHlsBuffer - delta;
+        _lastRawHlsBuffer = newRaw.isNegative ? Duration.zero : newRaw;
+        Logger.debug(
+            '🎵 HLS BUFFER UPDATE: position=${position.inMilliseconds}ms, delta=${delta.inMilliseconds}ms, remaining=${_currentBufferSize.inMilliseconds}ms');
+      }
+      _lastPlaybackPosition = position;
+
       final playing = _currentState as AudioStatePlaying;
-      _currentState = playing.copyWith(position: position);
+      _currentState = playing.copyWith(
+        position: position,
+        bufferSize: _currentBufferSize,
+      );
       _stateController.add(_currentState);
     }
   }
@@ -519,29 +557,33 @@ final class EnhancedAudioService implements IAudioService {
 
     final currentPosition = _audioPlayer.position;
     final rawBufferAhead = bufferedPosition - currentPosition;
-    
-    if (_currentStreamUrl != null && _isHlsStream(_currentStreamUrl!)) {
-      Logger.info('📊 HLS NATIVE BUFFER: ${rawBufferAhead.inSeconds}s buffered ahead');
-    }
-  
-    // Определяем тип стрима
+
     final isHls = _currentStreamUrl != null && _isHlsStream(_currentStreamUrl!);
-    
+
     if (isHls) {
-      // ✅ HLS: Разрешаем полную буферизацию без искусственных ограничений
-      _currentBufferSize = rawBufferAhead;
-      
-      Logger.info('🎵 HLS BUFFER: ${rawBufferAhead.inSeconds}s ahead (unrestricted)');
-      
-      // HLS ghost playback detection - более мягкий подход
+      if (rawBufferAhead > _lastRawHlsBuffer) {
+        _hlsBufferedDuration += rawBufferAhead - _lastRawHlsBuffer;
+      }
+      _lastRawHlsBuffer = rawBufferAhead;
+
+      final playlistWindow =
+          _currentHlsPlaylistWindow ?? AudioConfig.hlsTargetForwardBuffer;
+      if (_hlsBufferedDuration > playlistWindow) {
+        _hlsBufferedDuration = playlistWindow;
+      }
+      _currentBufferSize = _hlsBufferedDuration;
+
+      // HLS ghost playback detection - softer approach
       if (_audioPlayer.playing && _currentState.isPlaying) {
-        // Для HLS проверяем только критическое зависание (60+ секунд без изменений)
+        // For HLS we only check for critical stalls (60+ seconds without changes)
         if (rawBufferAhead == _lastBufferSize) {
           _stuckBufferCount++;
-          
-          // Только после 2 минут полной неподвижности - это реальная проблема
-          if (_stuckBufferCount >= 120) { // 120 обновлений = ~60 секунд
-            Logger.error('🚨 HLS CRITICAL: Buffer completely stuck for 60s at ${rawBufferAhead.inSeconds}s');
+
+          // Only after 2 minutes of no movement do we treat it as a real problem
+          if (_stuckBufferCount >= 120) {
+            // 120 updates ≈ 60 seconds
+            Logger.error(
+                '🚨 HLS CRITICAL: Buffer completely stuck for 60s at ${rawBufferAhead.inSeconds}s');
             _handlePlayerError(Exception('HLS buffer critically stuck'));
             _stuckBufferCount = 0;
             return;
@@ -552,12 +594,12 @@ final class EnhancedAudioService implements IAudioService {
         _lastBufferSize = rawBufferAhead;
       }
     } else {
-      // ✅ Regular stream: Адаптивная буферизация для обычных потоков
+      // Regular stream: Adaptive buffering for typical streams
       final timePlaying = _streamStartTime != null
           ? DateTime.now().difference(_streamStartTime!)
           : Duration.zero;
 
-      // Для обычных стримов используем умеренное ограничение
+      // Use a moderate cap for regular streams
       if (rawBufferAhead.inSeconds <= 2) {
         if (timePlaying.inSeconds < 5) {
           _currentBufferSize = Duration(seconds: 3);
@@ -565,17 +607,20 @@ final class EnhancedAudioService implements IAudioService {
           _currentBufferSize = Duration(seconds: 5);
         }
       } else {
-        // Позволяем до 20 секунд для обычных стримов (компромисс)
-        _currentBufferSize = Duration(seconds: rawBufferAhead.inSeconds.clamp(0, 20));
+        // Allow up to 20 seconds for regular streams (compromise)
+        _currentBufferSize =
+            Duration(seconds: rawBufferAhead.inSeconds.clamp(0, 20));
       }
-      
-      // Более строгая ghost detection для обычных стримов
+
+      // Stricter ghost detection for regular streams
       if (_audioPlayer.playing && _currentState.isPlaying) {
         if (rawBufferAhead == _lastBufferSize) {
           _stuckBufferCount++;
-          
-          if (_stuckBufferCount >= 30) { // 15 секунд для обычных стримов
-            Logger.error('🚨 STREAM GHOST: Buffer stuck at ${rawBufferAhead.inSeconds}s');
+
+          if (_stuckBufferCount >= 30) {
+            // 15 seconds for regular streams
+            Logger.error(
+                '🚨 STREAM GHOST: Buffer stuck at ${rawBufferAhead.inSeconds}s');
             _handlePlayerError(Exception('Stream buffer stuck'));
             _stuckBufferCount = 0;
             return;
@@ -589,7 +634,10 @@ final class EnhancedAudioService implements IAudioService {
 
     _lastBufferUpdate = DateTime.now();
 
-    // Обновляем состояние с корректным размером буфера
+    _updateBufferSizeState();
+  }
+
+  void _updateBufferSizeState() {
     if (_currentState case AudioStatePlaying playing) {
       final newState = playing.copyWith(bufferSize: _currentBufferSize);
       _currentState = newState;
@@ -597,7 +645,18 @@ final class EnhancedAudioService implements IAudioService {
     } else if (_currentState case AudioStateBuffering buffering) {
       _currentState = buffering.copyWith(bufferSize: _currentBufferSize);
       _stateController.add(_currentState);
+    } else if (_currentState case AudioStatePaused paused) {
+      _currentState = paused.copyWith(bufferSize: _currentBufferSize);
+      _stateController.add(_currentState);
     }
+  }
+
+  void _resetHlsTracking() {
+    _hlsBufferedDuration = Duration.zero;
+    _currentHlsPlaylistWindow = null;
+    _currentBufferSize = Duration.zero;
+    _lastRawHlsBuffer = Duration.zero;
+    _lastPlaybackPosition = Duration.zero;
   }
 
   void _handleConnectivityChange(List<ConnectivityResult> results) {
@@ -737,26 +796,25 @@ final class EnhancedAudioService implements IAudioService {
         _currentStreamUrl != null &&
         _lastBufferUpdate != null &&
         _streamStartTime != null) {
-      
       final timeSinceStart = now.difference(_streamStartTime!);
       final bufferStalledFor = now.difference(_lastBufferUpdate!);
 
-      // Для HLS используем более мягкие таймауты
-      final stallThreshold = isHls 
-          ? const Duration(seconds: 60)  // HLS: 60 секунд
-          : _bufferStallThreshold;       // Regular: 20 секунд
+      // Use softer timeouts for HLS
+      final stallThreshold = isHls
+          ? const Duration(seconds: 60) // HLS: 60 seconds
+          : _bufferStallThreshold; // Regular: 20 seconds
 
       if (timeSinceStart > stallThreshold &&
           bufferStalledFor > stallThreshold) {
         Logger.error(
             '${isHls ? "HLS" : "STREAM"} STALL: No buffer updates for ${bufferStalledFor.inSeconds}s');
-        _handlePlayerError(TimeoutException(
-            'Buffer stalled during playback', stallThreshold));
+        _handlePlayerError(
+            TimeoutException('Buffer stalled during playback', stallThreshold));
         return;
       }
     }
 
-    // Остальная логика hang detection остается прежней...
+    // The rest of the hang detection logic stays the same...
     if (_currentState case AudioStateLoading loading) {
       if (loading.elapsed > _maxHangTime && !_audioPlayer.playing) {
         Logger.error('Detected loading hang: ${loading.elapsed.inSeconds}s');
@@ -765,7 +823,8 @@ final class EnhancedAudioService implements IAudioService {
       }
     } else if (_currentState case AudioStateBuffering buffering) {
       if (buffering.elapsed > _maxHangTime && !_audioPlayer.playing) {
-        Logger.error('Detected buffering hang: ${buffering.elapsed.inSeconds}s');
+        Logger.error(
+            'Detected buffering hang: ${buffering.elapsed.inSeconds}s');
         _handlePlayerError(
             TimeoutException('Buffering hang detected', _maxHangTime));
       }
@@ -792,6 +851,8 @@ final class EnhancedAudioService implements IAudioService {
     await _stopPlayerSafely('force stop: $reason');
     _isPlayingStream = false;
     _currentStreamUrl = null;
+    await _disposeActiveHlsSource();
+    _resetHlsTracking();
   }
 
   void _updatePlaybackStats() {
@@ -849,10 +910,20 @@ final class EnhancedAudioService implements IAudioService {
         Logger.info('🎵 AUDIO_DEBUG: Stream start time and config set');
         _userPaused = false;
         _awaitingInterruptionResume = false;
+        _lastPlaybackPosition = Duration.zero;
+
+        final isHls = _isHlsStream(config.streamUrl);
+        _resetHlsTracking();
+        if (_isCurrentLoadConfigurationHls != isHls) {
+          Logger.info(
+              '🎵 AUDIO_DEBUG: Rebuilding audio player for ${isHls ? 'HLS' : 'live'} buffering profile');
+          await _resetAudioPlayer('load profile switch', isHlsOverride: isHls);
+        }
+        _isCurrentLoadConfigurationHls = isHls;
 
         final prebufferDelay = quickStart
             ? Duration.zero
-            : await _calculateOptimalPrebufferDelay();
+            : await _calculateOptimalPrebufferDelay(isHls: isHls);
         if (prebufferDelay > Duration.zero) {
           Logger.info(
               '🎵 AUDIO_DEBUG: Pre-buffering for ${prebufferDelay.inMilliseconds}ms for stable connection...');
@@ -861,14 +932,29 @@ final class EnhancedAudioService implements IAudioService {
 
         Logger.info('🎵 AUDIO_DEBUG: Setting audio source...');
 
-        final audioSource = AudioSource.uri(
-          Uri.parse(config.streamUrl),
-          headers: AudioConfig.getStreamingHeaders(),
-          tag: {
-            'title': config.title ?? 'Live Stream',
-            'artist': config.description ?? '',
-          },
-        );
+        await _disposeActiveHlsSource();
+
+        final audioSource = isHls
+            ? (_activeHlsSource = HlsStreamAudioSource(
+                playlistUri: Uri.parse(config.streamUrl),
+                headers: AudioConfig.getStreamingHeaders(),
+                onPlaylistInfo: (info) {
+                  final total = info.totalDuration;
+                  _currentHlsPlaylistWindow = total;
+                },
+                tag: {
+                  'title': config.title ?? 'Live Stream',
+                  'artist': config.description ?? '',
+                },
+              ))
+            : AudioSource.uri(
+                Uri.parse(config.streamUrl),
+                headers: AudioConfig.getStreamingHeaders(),
+                tag: {
+                  'title': config.title ?? 'Live Stream',
+                  'artist': config.description ?? '',
+                },
+              );
 
         Logger.info('🎵 AUDIO_DEBUG: About to call setAudioSource...');
         final setSourceTimeout = quickStart
@@ -962,6 +1048,7 @@ final class EnhancedAudioService implements IAudioService {
         Logger.error('🎵 AUDIO_DEBUG: Playback failed, cleaning up: $e');
         _isPlayingStream = false;
         _currentStreamUrl = null;
+        _resetHlsTracking();
         rethrow;
       } finally {
         _isPlayStreamInProgress = false;
@@ -1018,6 +1105,8 @@ final class EnhancedAudioService implements IAudioService {
             );
         _userPaused = false;
         _awaitingInterruptionResume = false;
+        _lastPlaybackPosition = Duration.zero;
+        _resetHlsTracking();
 
         Logger.info('🎵 FAILOVER: Creating audio source from local file...');
         final audioSource = AudioSource.file(
@@ -1093,6 +1182,7 @@ final class EnhancedAudioService implements IAudioService {
         Logger.error('🎵 FAILOVER: Playback failed, cleaning up: $e');
         _isPlayingStream = false;
         _currentStreamUrl = null;
+        _resetHlsTracking();
         rethrow;
       } finally {
         _isPlayStreamInProgress = false;
@@ -1145,6 +1235,8 @@ final class EnhancedAudioService implements IAudioService {
       _isPlayingStream = false;
       _isPlayStreamInProgress = false;
       _currentStreamUrl = null;
+      await _disposeActiveHlsSource();
+      _lastPlaybackPosition = Duration.zero;
 
       _currentState = const AudioStateIdle();
       _stateController.add(_currentState);
@@ -1161,7 +1253,14 @@ final class EnhancedAudioService implements IAudioService {
     });
   }
 
-  Future<Duration> _calculateOptimalPrebufferDelay() async {
+  Future<Duration> _calculateOptimalPrebufferDelay(
+      {required bool isHls}) async {
+    if (isHls) {
+      // For HLS we rely on playlist buffering rather than delaying start.
+      Logger.info(
+          '🎯 HLS BUFFER: Skipping artificial prebuffer delay for HLS stream');
+      return Duration.zero;
+    }
     try {
       final stopwatch = Stopwatch()..start();
 
@@ -1199,6 +1298,21 @@ final class EnhancedAudioService implements IAudioService {
     return const Duration(seconds: 3);
   }
 
+  Future<void> _disposeActiveHlsSource() async {
+    if (_activeHlsSource == null) {
+      return;
+    }
+    try {
+      await _activeHlsSource!.close();
+    } catch (e, stackTrace) {
+      Logger.warning('Failed to dispose active HLS source: $e');
+      Logger.debug('$stackTrace');
+    } finally {
+      _activeHlsSource = null;
+      _resetHlsTracking();
+    }
+  }
+
   @override
   Future<void> dispose() async {
     if (_isDisposed) return;
@@ -1218,6 +1332,7 @@ final class EnhancedAudioService implements IAudioService {
     await _interruptionSubscription?.cancel();
 
     await _audioPlayer.dispose();
+    await _disposeActiveHlsSource();
     await _stateController.close();
     await _networkController.close();
 
@@ -1250,5 +1365,18 @@ extension AudioStateBufferingCopyWith on AudioStateBuffering {
         config: config ?? this.config,
         bufferSize: bufferSize ?? this.bufferSize,
         elapsed: elapsed ?? this.elapsed,
+      );
+}
+
+extension AudioStatePausedCopyWith on AudioStatePaused {
+  AudioStatePaused copyWith({
+    StreamConfig? config,
+    Duration? position,
+    Duration? bufferSize,
+  }) =>
+      AudioStatePaused(
+        config: config ?? this.config,
+        position: position ?? this.position,
+        bufferSize: bufferSize ?? this.bufferSize,
       );
 }

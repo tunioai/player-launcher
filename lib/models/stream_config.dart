@@ -38,7 +38,10 @@ class StreamConfig {
   factory StreamConfig.fromJson(Map<String, dynamic> json) {
     Logger.debug('Parsing StreamConfig from JSON: $json', 'StreamConfig');
 
-    final streamUrl = 'https://region-ru4.tunio.ai/hls/main/playlist.m3u8'; //json['stream_url'] ?? json['url'] ?? '';
+    final hlsUrl = json['stream_hls_url'];
+    final streamUrl = (hlsUrl is String && hlsUrl.isNotEmpty)
+        ? hlsUrl
+        : (json['stream_url'] ?? '');
     final streamUuid = json['stream_uuid'] as String?;
     final volume = _parseVolume(json['volume']);
     final parsedMusicVolume = _parseOptionalVolume(json['music_volume']);
@@ -62,9 +65,11 @@ class StreamConfig {
         'StreamConfig');
 
     Logger.debug('📝 StreamConfig: Parsing JSON: $json', 'StreamConfig');
+    Logger.debug(
+        '📝 StreamConfig: Found stream_hls_url: ${json['stream_hls_url']}',
+        'StreamConfig');
     Logger.debug('📝 StreamConfig: Found stream_url: ${json['stream_url']}',
         'StreamConfig');
-    Logger.debug('📝 StreamConfig: Found url: ${json['url']}', 'StreamConfig');
     Logger.debug(
         '📝 StreamConfig: Final streamUrl: $streamUrl', 'StreamConfig');
 
@@ -108,8 +113,8 @@ class StreamConfig {
   }
 
   @override
-  int get hashCode => Object.hash(streamUrl, volume, musicVolume,
-      visualizerUrl, title, description, current, streamUuid);
+  int get hashCode => Object.hash(streamUrl, volume, musicVolume, visualizerUrl,
+      title, description, current, streamUuid);
 
   static double _parseVolume(dynamic raw, [double defaultValue = 1.0]) {
     if (raw == null) return defaultValue;

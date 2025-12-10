@@ -1,3 +1,5 @@
+import 'package:just_audio/just_audio.dart';
+
 import '../utils/logger.dart';
 import '../utils/platform_info.dart';
 
@@ -18,6 +20,20 @@ class AudioConfig {
       Duration(seconds: 30); // iOS/macOS
   static const Duration backBufferDuration = Duration(seconds: 5);
 
+  // Specialized targets for different stream types
+  static const Duration hlsTargetForwardBuffer = Duration(seconds: 35);
+  static const Duration hlsMinBufferDuration = Duration(seconds: 28);
+  static const Duration hlsMaxBufferDuration = Duration(seconds: 60);
+  static const Duration hlsPlaybackStartBuffer = Duration(seconds: 1);
+  static const Duration hlsRebufferStartBuffer = Duration(seconds: 5);
+
+  static const Duration liveMinBufferDuration = Duration(seconds: 5);
+  static const Duration liveMaxBufferDuration = Duration(seconds: 15);
+  static const Duration livePlaybackStartBuffer = Duration(milliseconds: 1500);
+  static const Duration liveRebufferStartBuffer = Duration(seconds: 3);
+  static const Duration livePreferredForwardBufferDuration =
+      Duration(seconds: 8);
+
   // Android-specific prebuffer delay
   static const Duration androidPrebufferDelay =
       Duration(seconds: 5); // Android workaround
@@ -26,6 +42,7 @@ class AudioConfig {
   static const Duration androidSlowPrebuffer =
       Duration(seconds: 5); // Slow devices/poor network
   static const Duration androidTVPrebuffer = Duration(seconds: 4); // TV devices
+  static const int hlsTargetBufferBytes = 12 * 1024 * 1024;
 
   // Network and quality settings - Optimized for live radio streams
   static const int targetBufferBytes = 4 *
@@ -36,6 +53,7 @@ class AudioConfig {
   static const int tvTargetBufferBytes =
       12 * 1024 * 1024; // Increased to 12MB for TV
   static const int maxBitRate = 320000; // 320 kbps
+  static const double maxBitRateDouble = 320000.0;
   // Use platform-aware user agent
   static String get userAgent => PlatformInfo.userAgent;
 
@@ -108,5 +126,53 @@ class AudioConfig {
     Logger.info(
         '📊 AudioConfig: Using $configName - targetBufferBytes: ${androidTargetBufferBytes ~/ (1024 * 1024)}MB, maxBuffer: ${maxBufferDuration.inSeconds}s',
         'AudioConfig');
+  }
+
+  static AudioLoadConfiguration buildLoadConfiguration({
+    required bool isHls,
+  }) {
+    if (isHls) {
+      Logger.info(
+          '🎯 AudioConfig: Building HLS load configuration (target ${hlsTargetForwardBuffer.inSeconds}s buffer)',
+          'AudioConfig');
+      return AudioLoadConfiguration(
+        darwinLoadControl: const DarwinLoadControl(
+          automaticallyWaitsToMinimizeStalling: false,
+          preferredForwardBufferDuration: hlsTargetForwardBuffer,
+          canUseNetworkResourcesForLiveStreamingWhilePaused: true,
+          preferredPeakBitRate: maxBitRateDouble,
+        ),
+        androidLoadControl: const AndroidLoadControl(
+          minBufferDuration: hlsMinBufferDuration,
+          maxBufferDuration: hlsMaxBufferDuration,
+          bufferForPlaybackDuration: hlsPlaybackStartBuffer,
+          bufferForPlaybackAfterRebufferDuration: hlsRebufferStartBuffer,
+          targetBufferBytes: hlsTargetBufferBytes,
+          prioritizeTimeOverSizeThresholds: true,
+          backBufferDuration: backBufferDuration,
+        ),
+      );
+    }
+
+    Logger.info(
+        '🎯 AudioConfig: Building live stream load configuration (target ${liveMinBufferDuration.inSeconds}s buffer)',
+        'AudioConfig');
+    return AudioLoadConfiguration(
+      darwinLoadControl: const DarwinLoadControl(
+        automaticallyWaitsToMinimizeStalling: false,
+        preferredForwardBufferDuration: livePreferredForwardBufferDuration,
+        canUseNetworkResourcesForLiveStreamingWhilePaused: false,
+        preferredPeakBitRate: maxBitRateDouble,
+      ),
+      androidLoadControl: const AndroidLoadControl(
+        minBufferDuration: liveMinBufferDuration,
+        maxBufferDuration: liveMaxBufferDuration,
+        bufferForPlaybackDuration: livePlaybackStartBuffer,
+        bufferForPlaybackAfterRebufferDuration: liveRebufferStartBuffer,
+        targetBufferBytes: androidTargetBufferBytes,
+        prioritizeTimeOverSizeThresholds: false,
+        backBufferDuration: backBufferDuration,
+      ),
+    );
   }
 }

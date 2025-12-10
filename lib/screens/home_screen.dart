@@ -58,8 +58,7 @@ class _HomeScreenState extends State<HomeScreen> {
   int? _currentPing;
   double _volume = 1.0;
   int _cachedTracksCount = 0;
-  static const Duration _visualizerHeartbeatInterval =
-      Duration(seconds: 10);
+  static const Duration _visualizerHeartbeatInterval = Duration(seconds: 10);
 
   bool _isVisualizerVisible = false;
   WebViewController? _visualizerController;
@@ -377,8 +376,8 @@ class _HomeScreenState extends State<HomeScreen> {
         layoutDirection: TextDirection.ltr,
         gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
       );
-      final androidParams =
-          AndroidWebViewWidgetCreationParams.fromPlatformWebViewWidgetCreationParams(
+      final androidParams = AndroidWebViewWidgetCreationParams
+          .fromPlatformWebViewWidgetCreationParams(
         params,
         // Hybrid composition is required so the GPU visualizer renders instead
         // of showing a black SurfaceTexture.
@@ -568,8 +567,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     if (controller.platform is AndroidWebViewController) {
-      final androidController =
-          controller.platform as AndroidWebViewController;
+      final androidController = controller.platform as AndroidWebViewController;
       androidController.setMediaPlaybackRequiresUserGesture(false);
     }
 
@@ -1311,12 +1309,17 @@ class _HomeScreenState extends State<HomeScreen> {
 
     // Playback mode indicator
     if (_radioState.isConnected) {
+      final isHlsStream = _isHlsStream(_radioState.config?.streamUrl);
       indicators.add(
         _buildSimpleLabel(
           icon: _radioState is RadioStateFailover
               ? Icons.offline_bolt
               : Icons.live_tv,
-          value: _radioState is RadioStateFailover ? 'Failover' : 'Live',
+          value: _radioState is RadioStateFailover
+              ? 'Failover'
+              : isHlsStream
+                  ? 'Live (HLS)'
+                  : 'Live',
           color:
               _radioState is RadioStateFailover ? Colors.orange : Colors.green,
         ),
@@ -1341,6 +1344,14 @@ class _HomeScreenState extends State<HomeScreen> {
       crossAxisAlignment: WrapCrossAlignment.center,
       children: indicators,
     );
+  }
+
+  bool _isHlsStream(String? url) {
+    if (url == null || url.isEmpty) return false;
+    final lower = url.toLowerCase();
+    return lower.endsWith('.m3u8') ||
+        lower.contains('.m3u8?') ||
+        lower.endsWith('.m3u');
   }
 
   Widget _buildSimpleLabel({

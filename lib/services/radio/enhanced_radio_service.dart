@@ -69,6 +69,11 @@ final class EnhancedRadioService implements IRadioService {
       _lastFailoverRestoreTime; // Track when we last restored from failover
   DateTime?
       _lastPlayingTime; // Track when stream was last playing to prevent false failovers
+  bool _isCurrentStreamHls = false;
+  bool _isHlsStream(String url) {
+    final lower = url.toLowerCase();
+    return lower.contains('.m3u8') || lower.endsWith('.m3u');
+  }
 
   // Auto-start and reconnection
   bool _autoReconnectEnabled = false;
@@ -209,6 +214,11 @@ final class EnhancedRadioService implements IRadioService {
   }
 
   bool _isBufferChangeSignificant(AudioState newAudioState) {
+    // Always propagate buffer changes for HLS so UI can display countdown.
+    if (_isCurrentStreamHls && newAudioState is AudioStatePlaying) {
+      return true;
+    }
+
     // Check buffer changes for both Connected and Failover states
     if (_currentState case RadioStateConnected connected) {
       final currentAudioState = connected.audioState;
@@ -240,12 +250,13 @@ final class EnhancedRadioService implements IRadioService {
         audioState.runtimeType,
       _ => null,
     };
-    final isSignificantChange = currentType != audioState.runtimeType ||
+    final shouldLogStateChange = currentType != audioState.runtimeType ||
         (audioState is AudioStateError) ||
-        (audioState is AudioStateLoading) ||
-        _isBufferChangeSignificant(audioState);
+        (audioState is AudioStateLoading);
+    final shouldUpdateState =
+        shouldLogStateChange || _isBufferChangeSignificant(audioState);
 
-    if (isSignificantChange) {
+    if (shouldLogStateChange) {
       Logger.info('Audio state changed: ${audioState.runtimeType}');
     }
 
@@ -257,9 +268,10 @@ final class EnhancedRadioService implements IRadioService {
     switch (_currentState) {
       case RadioStateConnected connected:
         final newState = connected.copyWith(audioState: audioState);
+        _isCurrentStreamHls = _isHlsStream(connected.config.streamUrl);
 
         // Only update state if it's a significant change to avoid spam
-        if (isSignificantChange ||
+        if (shouldUpdateState ||
             connected.audioState.runtimeType != audioState.runtimeType) {
           _updateState(newState);
 
@@ -287,6 +299,9 @@ final class EnhancedRadioService implements IRadioService {
 
         // Handle error states - faster detection for stream loss
         if (audioState is AudioStateError) {
+          final fallbackDelay = _isCurrentStreamHls
+              ? const Duration(seconds: 20)
+              : const Duration(seconds: 8);
           Logger.warning(
               'Audio error detected: ${audioState.message}, isRetryable: ${audioState.isRetryable}');
 
@@ -323,8 +338,8 @@ final class EnhancedRadioService implements IRadioService {
             return;
           }
 
-          // Wait 8 seconds before activating failover to allow stream to recover (increased from 5s)
-          Timer(const Duration(seconds: 8), () {
+          // Wait longer on HLS since playlist can recover on its own
+          Timer(fallbackDelay, () {
             if (_currentState is! RadioStateConnected ||
                 _isConnectionInProgress ||
                 _isStreamSwitchInProgress) {
@@ -371,8 +386,12 @@ final class EnhancedRadioService implements IRadioService {
           Logger.error(
               '🚨 STREAM INTERRUPTION: Stream unexpectedly stopped while we were playing');
 
-          // Wait 5 seconds to see if it recovers automatically (increased from 3s)
-          Timer(const Duration(seconds: 5), () {
+          final interruptionDelay = _isCurrentStreamHls
+              ? const Duration(seconds: 12)
+              : const Duration(seconds: 5);
+
+          // Wait longer for HLS playlists to catch up
+          Timer(interruptionDelay, () {
             if (_currentState is! RadioStateConnected ||
                 _isConnectionInProgress ||
                 _isStreamSwitchInProgress) {
@@ -443,12 +462,12 @@ final class EnhancedRadioService implements IRadioService {
         );
 
         // Only update state if it's a significant change to avoid spam
-        if (isSignificantChange ||
+        if (shouldUpdateState ||
             failover.audioState.runtimeType != audioState.runtimeType) {
           _updateState(newState);
 
           // Log only significant failover state changes
-          if (isSignificantChange) {
+          if (shouldLogStateChange) {
             Logger.info(
                 '🚨 FAILOVER: Audio state changed to ${audioState.runtimeType}');
           }
@@ -580,7 +599,20 @@ final class EnhancedRadioService implements IRadioService {
 
     Logger.warning(
         '🌐 NETWORK LOSS: Connectivity lost - scheduling quick failover');
-    _networkLossTimer = Timer(const Duration(seconds: 3), () {
+    Duration dynamicDelay = const Duration(seconds: 3);
+    if (_isCurrentStreamHls) {
+      final bufferedAhead = _extractBufferedAhead(_audioService.currentState);
+      final cappedBuffer = bufferedAhead > const Duration(seconds: 60)
+          ? const Duration(seconds: 60)
+          : bufferedAhead;
+      dynamicDelay = const Duration(seconds: 6) + cappedBuffer;
+      Logger.info(
+          '🌐 NETWORK LOSS: HLS stream has ${bufferedAhead.inSeconds}s buffered - deferring failover timer by ${dynamicDelay.inSeconds}s');
+    }
+
+    final lossDelay = dynamicDelay;
+
+    _networkLossTimer = Timer(lossDelay, () {
       _networkLossTimer = null;
 
       if (_latestNetworkState.isConnected) {
@@ -595,11 +627,38 @@ final class EnhancedRadioService implements IRadioService {
         return;
       }
 
+      if (_isCurrentStreamHls) {
+        Logger.warning(
+            '🌐 NETWORK LOSS: HLS stream detected - giving playlist recovery extra time');
+        Timer(const Duration(seconds: 5), () {
+          if (_latestNetworkState.isConnected ||
+              _currentState is! RadioStateConnected) {
+            Logger.info(
+                '🌐 NETWORK LOSS: Recovery detected during extended wait');
+            return;
+          }
+          Logger.error(
+              '🚨 NETWORK LOSS: Triggering failover due to sustained connectivity loss (HLS)');
+          final connected = _currentState as RadioStateConnected;
+          _activateFailover(connected, 'Network connection lost (HLS)');
+        });
+        return;
+      }
+
       Logger.error(
           '🚨 NETWORK LOSS: Triggering failover due to sustained connectivity loss');
       final connected = _currentState as RadioStateConnected;
       _activateFailover(connected, 'Network connection lost');
     });
+  }
+
+  Duration _extractBufferedAhead(AudioState state) {
+    return switch (state) {
+      AudioStatePlaying(:final bufferSize) => bufferSize,
+      AudioStateBuffering(:final bufferSize) => bufferSize,
+      AudioStatePaused(:final bufferSize) => bufferSize,
+      _ => Duration.zero,
+    };
   }
 
   bool _isConnectingTooLong() {
