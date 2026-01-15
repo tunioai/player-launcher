@@ -30,7 +30,7 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
   late List<String> _digits;
   late FocusNode _focusNode;
   late TextEditingController _textController;
-  bool _hasAutoSubmitted = false;
+  String _lastSubmittedValue = '';
 
   // Detect if we're on mobile platform
   bool get _isMobile =>
@@ -45,7 +45,7 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
     _updateDigitsFromValue();
 
     // Setup focus listener for visual feedback
-    _focusNode.addListener(() => setState(() {}));
+    _focusNode.addListener(_handleFocusChange);
   }
 
   @override
@@ -63,9 +63,9 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
     for (int i = 0; i < value.length && i < _codeLength; i++) {
       _digits[i] = value[i];
     }
-    // Reset auto-submit flag when value changes externally (e.g., cleared)
+    // Reset auto-submit tracking when value is incomplete
     if (value.length < _codeLength) {
-      _hasAutoSubmitted = false;
+      _lastSubmittedValue = '';
     }
     // Update text controller and position cursor at the end
     if (_textController.text != value) {
@@ -75,6 +75,23 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
           TextPosition(offset: value.length),
         );
       }
+    }
+  }
+
+  void _handleFocusChange() {
+    if (!mounted) return;
+    setState(() {});
+    if (!_focusNode.hasFocus || !widget.enabled) return;
+    widget.onTap?.call();
+    if (_textController.text.isNotEmpty) {
+      _textController.selection = TextSelection(
+        baseOffset: 0,
+        extentOffset: _textController.text.length,
+      );
+    }
+    final navigationMode = MediaQuery.maybeOf(context)?.navigationMode;
+    if (navigationMode == NavigationMode.directional) {
+      SystemChannels.textInput.invokeMethod('TextInput.show');
     }
   }
 
@@ -103,8 +120,9 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
 
       widget.onChanged(cleanText);
 
-      if (cleanText.length == _codeLength && !_hasAutoSubmitted) {
-        _hasAutoSubmitted = true;
+      if (cleanText.length == _codeLength &&
+          cleanText != _lastSubmittedValue) {
+        _lastSubmittedValue = cleanText;
         widget.onSubmitted?.call();
       }
     } else {
@@ -116,138 +134,8 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
     }
   }
 
-  Widget _buildMobileInput() {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    return Column(
-      children: [
-        Text(
-          'Enter 6-digit code',
-          style: TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.w500,
-            color: widget.enabled ? null : Colors.grey,
-          ),
-        ),
-        const SizedBox(height: 16),
-        // Visual representation of digits
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-          children: List.generate(_codeLength, (index) {
-            return Container(
-              width: 40,
-              height: 50,
-              decoration: BoxDecoration(
-                border: Border.all(
-                  color: _digits[index].isNotEmpty
-                      ? (_focusNode.hasFocus
-                          ? TunioColors.primary
-                          : (isDark ? Colors.grey[600]! : Colors.grey[600]!))
-                      : (_focusNode.hasFocus
-                          ? TunioColors.primary
-                          : (isDark ? Colors.grey[700]! : Colors.grey[300]!)),
-                  width: _focusNode.hasFocus ? 3 : 2,
-                ),
-                borderRadius: BorderRadius.circular(8),
-                color: _digits[index].isNotEmpty
-                    ? (_focusNode.hasFocus
-                        ? TunioColors.primary.withValues(alpha: 0.1)
-                        : (isDark ? Colors.grey[850] : Colors.grey[50]))
-                    : (_focusNode.hasFocus
-                        ? TunioColors.primary.withValues(alpha: 0.05)
-                        : (isDark ? Colors.grey[900] : Colors.white)),
-              ),
-              child: Center(
-                child: Text(
-                  _digits[index],
-                  style: TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                    color: widget.enabled
-                        ? (_digits[index].isNotEmpty
-                            ? (isDark ? Colors.white : Colors.black)
-                            : Colors.grey[400])
-                        : Colors.grey,
-                  ),
-                ),
-              ),
-            );
-          }),
-        ),
-        const SizedBox(height: 16),
-        // Hidden TextField for mobile input
-        SizedBox(
-          height: 0,
-          child: TextField(
-            controller: _textController,
-            focusNode: _focusNode,
-            enabled: widget.enabled,
-            keyboardType: TextInputType.number,
-            inputFormatters: [
-              FilteringTextInputFormatter.digitsOnly,
-              LengthLimitingTextInputFormatter(_codeLength),
-            ],
-            onChanged: _onTextChanged,
-            onSubmitted: (_) {
-              // Don't resubmit if already auto-submitted
-              // This prevents double submission when pressing Enter after typing 6 digits
-            },
-            decoration: const InputDecoration(
-              border: InputBorder.none,
-            ),
-            style: const TextStyle(color: Colors.transparent),
-            cursorColor: Colors.transparent,
-            showCursor: false,
-          ),
-        ),
-        GestureDetector(
-          onTap: widget.enabled
-              ? () {
-                  widget.onTap?.call();
-                  _focusNode.requestFocus();
-                }
-              : null,
-          child: Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(vertical: 12),
-            decoration: BoxDecoration(
-              border: Border.all(
-                color: _focusNode.hasFocus
-                    ? TunioColors.primary
-                    : (isDark ? Colors.grey[700]! : Colors.grey[300]!),
-                width: _focusNode.hasFocus ? 3 : 2,
-              ),
-              borderRadius: BorderRadius.circular(8),
-              color: widget.enabled
-                  ? (_focusNode.hasFocus
-                      ? TunioColors.primary.withValues(alpha: 0.1)
-                      : (isDark
-                          ? Colors.grey[900]
-                          : TunioColors.primary.withValues(alpha: 0.05)))
-                  : (isDark ? Colors.grey[850] : Colors.grey[100]),
-            ),
-            child: Text(
-              _focusNode.hasFocus
-                  ? 'Use remote control or tap to enter code'
-                  : 'Tap to enter code',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 14,
-                color: widget.enabled
-                    ? (_focusNode.hasFocus
-                        ? (isDark ? Colors.white : TunioColors.primaryDark)
-                        : (isDark ? Colors.white70 : TunioColors.primary))
-                    : Colors.grey,
-                fontWeight:
-                    _focusNode.hasFocus ? FontWeight.w600 : FontWeight.w500,
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildDesktopInput() {
+  Widget _buildDesktopInput(
+      {required bool isDirectionalNav, required bool isMobile}) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return Container(
       constraints: const BoxConstraints(maxWidth: 400),
@@ -256,7 +144,7 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
           Text(
             'Enter 6-digit code',
             style: TextStyle(
-              fontSize: 18,
+              fontSize: isMobile ? 16 : 18,
               fontWeight: FontWeight.w600,
               color: widget.enabled ? null : Colors.grey,
             ),
@@ -274,12 +162,15 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
             onChanged: _onTextChanged,
             onTap: widget.onTap,
             onSubmitted: (_) {
-              // Don't resubmit if already auto-submitted
-              // This prevents double submission when pressing Enter after typing 6 digits
+              if (!widget.enabled) return;
+              final cleanText =
+                  _textController.text.replaceAll(RegExp(r'\D'), '');
+              if (cleanText.length == _codeLength) {
+                widget.onSubmitted?.call();
+              }
             },
             decoration: InputDecoration(
               labelText: 'PIN Code',
-              hintText: '123456',
               helperText: 'Enter your 6-digit PIN code',
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(12),
@@ -311,19 +202,26 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
             ),
             textAlign: TextAlign.center,
             style: TextStyle(
-              fontSize: 20,
+              fontSize: isMobile ? 18 : 20,
               fontWeight: FontWeight.bold,
-              letterSpacing: 6,
+              letterSpacing: isMobile ? 4 : 6,
               color: isDark ? Colors.white : Colors.black,
             ),
             maxLength: _codeLength,
-            autofocus: true,
+            textInputAction: TextInputAction.done,
+            autofocus: isDirectionalNav || !isMobile,
+            autocorrect: false,
+            enableSuggestions: false,
           ),
           const SizedBox(height: 8),
           Text(
             _focusNode.hasFocus
-                ? 'Use number keys on remote control or keyboard'
-                : 'Click to focus and enter digits',
+                ? (isDirectionalNav
+                    ? 'Use on-screen keyboard or number keys'
+                    : (isMobile
+                        ? 'Use on-screen keyboard to enter digits'
+                        : 'Use number keys on remote control or keyboard'))
+                : (isMobile ? 'Tap to enter code' : 'Click to focus and enter digits'),
             style: TextStyle(
               fontSize: 12,
               color: _focusNode.hasFocus
@@ -341,6 +239,11 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
 
   @override
   Widget build(BuildContext context) {
-    return _isMobile ? _buildMobileInput() : _buildDesktopInput();
+    final navigationMode = MediaQuery.maybeOf(context)?.navigationMode;
+    final isDirectionalNav = navigationMode == NavigationMode.directional;
+    return _buildDesktopInput(
+      isDirectionalNav: isDirectionalNav,
+      isMobile: _isMobile,
+    );
   }
 }

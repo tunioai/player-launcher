@@ -183,9 +183,12 @@ class _HomeScreenState extends State<HomeScreen> {
         _currentPing = _radioService.currentPing;
         _cachedTracksCount = _failoverService.cachedTracksCount;
 
-        // Update code from current state if available (only if user is not editing)
+        // Update code from current state only if field is empty and user is not editing
         final token = currentRadioState.token;
-        if (token != null && token != _currentCode && !_isUserEditingCode) {
+        if (token != null &&
+            token != _currentCode &&
+            !_isUserEditingCode &&
+            _currentCode.isEmpty) {
           _currentCode = token;
         }
 
@@ -210,14 +213,17 @@ class _HomeScreenState extends State<HomeScreen> {
           setState(() {
             _radioState = state;
 
-            // Update code from token in state (only if user is not editing)
+            // Update code from token only if field is empty and user is not editing
             final token = state.token;
-            if (token != null && token != _currentCode && !_isUserEditingCode) {
+            if (token != null &&
+                token != _currentCode &&
+                !_isUserEditingCode &&
+                _currentCode.isEmpty) {
               _currentCode = token;
             }
 
-            // Reset editing flag when successfully connected
-            if (state is RadioStateConnected) {
+            if (state is RadioStateConnected &&
+                state.token == _currentCode) {
               _isUserEditingCode = false;
             }
 
@@ -1007,7 +1013,6 @@ class _HomeScreenState extends State<HomeScreen> {
                     },
                     onTap: () {
                       setState(() {
-                        _currentCode = '';
                         _isUserEditingCode = true; // Mark that user is editing
                       });
                     },

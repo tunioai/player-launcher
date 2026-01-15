@@ -723,19 +723,23 @@ final class EnhancedRadioService implements IRadioService {
       {required bool isRetry}) async {
     // Prevent multiple simultaneous connection attempts
     if (_isConnectionInProgress) {
-      Logger.warning(
-          'Connection already in progress, skipping duplicate attempt');
-      return const Success(null);
+      if (!isRetry) {
+        Logger.warning(
+            'Manual connect requested while connection is in progress - forcing new attempt');
+        _retryTimer?.cancel();
+        _forceRecoveryTimer?.cancel();
+        _currentConnectionStage = null;
+        _connectingStateStartTime = null;
+        _isConnectionInProgress = false;
+      } else {
+        Logger.warning(
+            'Connection already in progress, skipping duplicate attempt');
+        return const Success(null);
+      }
     }
 
     _isConnectionInProgress = true;
-
-    // Make sure any existing stream is stopped before starting a new one.
-    // When stream URLs change quickly some platforms keep the old HTTP
-    // connection around in a half-open state which shows up as “ghost”
-    // listeners on the Icecast server. Explicitly stop playback and timers
-    // so the transport is torn down before we begin another connection.
-    await _prepareForFreshConnection(isRetry: isRetry);
+    _isStreamSwitchInProgress = true;
 
     final attempt = isRetry ? _retryManager.currentAttempt + 1 : 1;
 
@@ -744,6 +748,13 @@ final class EnhancedRadioService implements IRadioService {
       attempt: attempt,
       token: token,
     ));
+
+    // Make sure any existing stream is stopped before starting a new one.
+    // When stream URLs change quickly some platforms keep the old HTTP
+    // connection around in a half-open state which shows up as “ghost”
+    // listeners on the Icecast server. Explicitly stop playback and timers
+    // so the transport is torn down before we begin another connection.
+    await _prepareForFreshConnection(isRetry: isRetry);
 
     Logger.info('Attempting connection (attempt $attempt)');
 
@@ -761,6 +772,34 @@ final class EnhancedRadioService implements IRadioService {
       });
 
       connectingTimeout.cancel();
+      if (result.isFailure) {
+        final failure = result as Failure<void>;
+        final errorMessage = failure.message;
+        final exception = failure.exception;
+        final apiError = exception is ApiError ? exception : null;
+        final isInvalidToken = apiError != null &&
+            apiError.isFromBackend &&
+            (apiError.statusCode == 401 ||
+                errorMessage.toLowerCase().contains('invalid'));
+
+        if (isInvalidToken) {
+          _autoReconnectEnabled = false;
+          _updateState(RadioStateError(
+            message: errorMessage,
+            canRetry: false,
+            attemptCount: attempt,
+          ));
+        } else if (_autoReconnectEnabled) {
+          _isConnectionInProgress = false;
+          unawaited(_scheduleRetry('Connection failed: $errorMessage'));
+        } else {
+          _updateState(RadioStateError(
+            message: 'Connection failed',
+            canRetry: true,
+            attemptCount: attempt,
+          ));
+        }
+      }
       return result;
     } catch (e) {
       connectingTimeout.cancel();
@@ -781,6 +820,7 @@ final class EnhancedRadioService implements IRadioService {
       return Failure('Connection failed: $e');
     } finally {
       _isConnectionInProgress = false;
+      _isStreamSwitchInProgress = false;
     }
   }
 
