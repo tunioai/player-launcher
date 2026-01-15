@@ -222,8 +222,7 @@ class _HomeScreenState extends State<HomeScreen> {
               _currentCode = token;
             }
 
-            if (state is RadioStateConnected &&
-                state.token == _currentCode) {
+            if (state is RadioStateConnected && state.token == _currentCode) {
               _isUserEditingCode = false;
             }
 

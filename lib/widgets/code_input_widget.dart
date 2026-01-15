@@ -120,8 +120,7 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
 
       widget.onChanged(cleanText);
 
-      if (cleanText.length == _codeLength &&
-          cleanText != _lastSubmittedValue) {
+      if (cleanText.length == _codeLength && cleanText != _lastSubmittedValue) {
         _lastSubmittedValue = cleanText;
         widget.onSubmitted?.call();
       }
@@ -221,7 +220,9 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
                     : (isMobile
                         ? 'Use on-screen keyboard to enter digits'
                         : 'Use number keys on remote control or keyboard'))
-                : (isMobile ? 'Tap to enter code' : 'Click to focus and enter digits'),
+                : (isMobile
+                    ? 'Tap to enter code'
+                    : 'Click to focus and enter digits'),
             style: TextStyle(
               fontSize: 12,
               color: _focusNode.hasFocus
