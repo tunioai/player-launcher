@@ -1,18 +1,23 @@
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'dart:math';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:device_info_plus/device_info_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'logger.dart';
 
 class PlatformInfo {
   static PackageInfo? _packageInfo;
   static String? _deviceId;
   static String? _deviceModel;
+  static String? _deviceUuid;
+  static const String _deviceUuidKey = 'device_uuid';
 
   // Initialize package info and device info (call this at app startup)
   static Future<void> initialize() async {
     _packageInfo = await PackageInfo.fromPlatform();
     await _initializeDeviceInfo();
+    await _initializeDeviceUuid();
   }
 
   static Future<void> _initializeDeviceInfo() async {
@@ -76,6 +81,39 @@ class PlatformInfo {
     }
   }
 
+  static Future<void> _initializeDeviceUuid() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final stored = prefs.getString(_deviceUuidKey);
+      if (stored != null && stored.isNotEmpty) {
+        _deviceUuid = stored;
+        return;
+      }
+
+      _deviceUuid = _generateUuidV4();
+      await prefs.setString(_deviceUuidKey, _deviceUuid!);
+    } catch (e) {
+      Logger.error('Failed to initialize device UUID: $e');
+      _deviceUuid = null;
+    }
+  }
+
+  static String _generateUuidV4() {
+    final random = Random.secure();
+    final bytes = List<int>.generate(16, (_) => random.nextInt(256));
+    bytes[6] = (bytes[6] & 0x0F) | 0x40; // version 4
+    bytes[8] = (bytes[8] & 0x3F) | 0x80; // variant
+
+    String hex(int value) => value.toRadixString(16).padLeft(2, '0');
+    final b = bytes.map(hex).toList();
+
+    return '${b[0]}${b[1]}${b[2]}${b[3]}-'
+        '${b[4]}${b[5]}-'
+        '${b[6]}${b[7]}-'
+        '${b[8]}${b[9]}-'
+        '${b[10]}${b[11]}${b[12]}${b[13]}${b[14]}${b[15]}';
+  }
+
   static String get userAgent {
     final version = _packageInfo?.version ?? '1.0.0';
     final buildNumber = _packageInfo?.buildNumber ?? '1';
@@ -102,6 +140,9 @@ class PlatformInfo {
   // Get full device ID for server-side tracking
   static String get deviceId => _deviceId ?? 'unknown';
 
+  // Get stable device UUID for server-side tracking
+  static String get deviceUuid => _deviceUuid ?? 'unknown';
+
   // Get device model
   static String get deviceModel => _deviceModel ?? 'unknown';
 
@@ -116,6 +157,10 @@ class PlatformInfo {
 
     if (ping != null) {
       headers['X-Ping'] = ping.toString();
+    }
+
+    if (_deviceUuid != null && _deviceUuid!.isNotEmpty) {
+      headers['X-Device-UUID'] = _deviceUuid!;
     }
 
     return headers;
