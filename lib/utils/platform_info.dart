@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'dart:math';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:device_info_plus/device_info_plus.dart';
+import 'package:network_info_plus/network_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'logger.dart';
 
@@ -11,13 +13,23 @@ class PlatformInfo {
   static String? _deviceId;
   static String? _deviceModel;
   static String? _deviceUuid;
+  static String? _localIp;
+  static DateTime? _localIpUpdatedAt;
+  static String? _fallbackIp;
+  static DateTime? _fallbackIpUpdatedAt;
+  static final NetworkInfo _networkInfo = NetworkInfo();
   static const String _deviceUuidKey = 'device_uuid';
+  static const Duration _localIpTtl = Duration(minutes: 5);
+  static const Duration _localIpMissTtl = Duration(seconds: 15);
+  static const Duration _fallbackIpTtl = Duration(minutes: 1);
 
   // Initialize package info and device info (call this at app startup)
   static Future<void> initialize() async {
     _packageInfo = await PackageInfo.fromPlatform();
     await _initializeDeviceInfo();
     await _initializeDeviceUuid();
+    await _initializeLocalIp();
+    await _initializeFallbackIp();
   }
 
   static Future<void> _initializeDeviceInfo() async {
@@ -148,12 +160,28 @@ class PlatformInfo {
 
   static Map<String, String> get apiHeaders => getApiHeaders();
 
+  static String? get localWifiIp => _localIp;
+
+  static String? get bestEffortIp {
+    unawaited(_refreshLocalIp());
+    if (_localIp != null && _localIp!.isNotEmpty) {
+      return _localIp;
+    }
+    unawaited(_refreshFallbackIp());
+    return _fallbackIp;
+  }
+
   static Map<String, String> getApiHeaders({int? ping}) {
     final headers = {
       'User-Agent': userAgent,
       'X-Platform': platform,
       'Content-Type': 'application/json',
     };
+
+    unawaited(_refreshLocalIp());
+    if (_localIp != null && _localIp!.isNotEmpty) {
+      headers['X-Local-Ip'] = _localIp!;
+    }
 
     if (ping != null) {
       headers['X-Ping'] = ping.toString();
@@ -164,5 +192,95 @@ class PlatformInfo {
     }
 
     return headers;
+  }
+
+  static Future<void> _initializeLocalIp() async {
+    await _refreshLocalIp(force: true);
+  }
+
+  static Future<void> _initializeFallbackIp() async {
+    await _refreshFallbackIp(force: true);
+  }
+
+  static Future<void> _refreshLocalIp({bool force = false}) async {
+    if (kIsWeb) {
+      return;
+    }
+
+    final lastUpdated = _localIpUpdatedAt;
+    final ttl = _localIp == null ? _localIpMissTtl : _localIpTtl;
+    if (!force && lastUpdated != null && DateTime.now().difference(lastUpdated) < ttl) {
+      return;
+    }
+
+    try {
+      final wifiIp = await _networkInfo.getWifiIP();
+      if (wifiIp != null && wifiIp.isNotEmpty && wifiIp != '0.0.0.0') {
+        _localIp = wifiIp;
+      } else {
+        _localIp = null;
+      }
+      _localIpUpdatedAt = DateTime.now();
+    } catch (e) {
+      Logger.debug('Failed to refresh local Wi-Fi IP: $e');
+    }
+  }
+
+  static Future<void> _refreshFallbackIp({bool force = false}) async {
+    if (kIsWeb) {
+      return;
+    }
+
+    final lastUpdated = _fallbackIpUpdatedAt;
+    final ttl = _fallbackIp == null ? _localIpMissTtl : _fallbackIpTtl;
+    if (!force && lastUpdated != null && DateTime.now().difference(lastUpdated) < ttl) {
+      return;
+    }
+
+    try {
+      final interfaces = await NetworkInterface.list(
+        type: InternetAddressType.IPv4,
+        includeLoopback: false,
+      );
+
+      String? candidate;
+      for (final interface in interfaces) {
+        for (final address in interface.addresses) {
+          final ip = address.address;
+          if (address.isLoopback || _isLinkLocal(ip)) {
+            continue;
+          }
+          if (_isPrivateIpv4(ip)) {
+            candidate = ip;
+            break;
+          }
+          candidate ??= ip;
+        }
+        if (candidate != null && _isPrivateIpv4(candidate)) {
+          break;
+        }
+      }
+
+      _fallbackIp = candidate;
+      _fallbackIpUpdatedAt = DateTime.now();
+    } catch (e) {
+      Logger.debug('Failed to refresh fallback IP: $e');
+    }
+  }
+
+  static bool _isLinkLocal(String ip) {
+    return ip.startsWith('169.254.');
+  }
+
+  static bool _isPrivateIpv4(String ip) {
+    if (ip.startsWith('10.')) return true;
+    if (ip.startsWith('192.168.')) return true;
+    if (ip.startsWith('172.')) {
+      final parts = ip.split('.');
+      if (parts.length < 2) return false;
+      final second = int.tryParse(parts[1]) ?? 0;
+      return second >= 16 && second <= 31;
+    }
+    return false;
   }
 }

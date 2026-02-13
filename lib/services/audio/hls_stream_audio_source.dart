@@ -153,8 +153,13 @@ class _HlsStreamSession {
               final bytes = await _fetchSegment(segment.uri);
               if (_cancelled || _controller.isClosed) break;
 
-              _controller.add(bytes);
-              _lastSequence = segment.sequence;
+              if (bytes != null && bytes.isNotEmpty) {
+                _controller.add(bytes);
+                _lastSequence = segment.sequence;
+              } else {
+                Logger.warning(
+                    'HLS segment skipped after retries for ${segment.uri}');
+              }
             }
           }
         } catch (e, stackTrace) {
@@ -199,7 +204,7 @@ class _HlsStreamSession {
     return _ParsedHlsPlaylist.parse(playlistUri, body);
   }
 
-  Future<List<int>> _fetchSegment(Uri uri) async {
+  Future<List<int>?> _fetchSegment(Uri uri) async {
     var attempt = 0;
     while (!_cancelled && !_controller.isClosed) {
       try {
@@ -227,7 +232,7 @@ class _HlsStreamSession {
         if (attempt >= maxRetryAttempts) {
           Logger.error('HLS segment fetch failed repeatedly for $uri: $e');
           Logger.debug('$stackTrace');
-          rethrow;
+          return null;
         }
 
         Logger.warning(

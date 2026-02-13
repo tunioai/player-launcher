@@ -7,6 +7,8 @@ import '../utils/logger.dart';
 
 class StorageService {
   static const String _tokenKey = 'token';
+  static const String _adminKeyKey = 'admin_key';
+  static const String _adminKeyHashKey = 'admin_key_hash';
   static const String _lastVolumeKey = 'last_volume';
   static const String _isAutoStartEnabledKey = 'auto_start_enabled';
   static const String _isDarkModeEnabledKey = 'dark_mode_enabled';
@@ -42,6 +44,43 @@ class StorageService {
   Future<void> clearToken() async {
     await _prefs!.remove(_tokenKey);
     Logger.debug('🔑 StorageService: Token cleared', 'StorageService');
+  }
+
+  // Admin key methods
+  Future<void> saveAdminKey(String key) async {
+    await _prefs!.setString(_adminKeyKey, key);
+    Logger.debug('🔐 StorageService: Admin key saved', 'StorageService');
+  }
+
+  String? getAdminKey() {
+    final key = _prefs!.getString(_adminKeyKey);
+    Logger.debug(
+        '🔐 StorageService: Admin key loaded: ${key != null && key.isNotEmpty ? 'set' : 'NULL'}',
+        'StorageService');
+    return key;
+  }
+
+  Future<void> clearAdminKey() async {
+    await _prefs!.remove(_adminKeyKey);
+    Logger.debug('🔐 StorageService: Admin key cleared', 'StorageService');
+  }
+
+  Future<void> saveAdminKeyHash(String hash) async {
+    await _prefs!.setString(_adminKeyHashKey, hash);
+    Logger.debug('🔐 StorageService: Admin key hash saved', 'StorageService');
+  }
+
+  String? getAdminKeyHash() {
+    final hash = _prefs!.getString(_adminKeyHashKey);
+    Logger.debug(
+        '🔐 StorageService: Admin key hash loaded: ${hash != null && hash.isNotEmpty ? 'set' : 'NULL'}',
+        'StorageService');
+    return hash;
+  }
+
+  Future<void> clearAdminKeyHash() async {
+    await _prefs!.remove(_adminKeyHashKey);
+    Logger.debug('🔐 StorageService: Admin key hash cleared', 'StorageService');
   }
 
   // Persist the last known failover/music volume so we can reuse it when

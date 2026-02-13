@@ -139,26 +139,30 @@ final class EnhancedAudioService implements IAudioService {
     );
     _isCurrentLoadConfigurationHls = isHls;
 
-    final session = await AudioSession.instance;
-    await session.configure(const AudioSessionConfiguration(
-      avAudioSessionCategory: AVAudioSessionCategory.playback,
-      avAudioSessionCategoryOptions: AVAudioSessionCategoryOptions.duckOthers,
-      avAudioSessionMode: AVAudioSessionMode.defaultMode,
-      avAudioSessionRouteSharingPolicy:
-          AVAudioSessionRouteSharingPolicy.defaultPolicy,
-      avAudioSessionSetActiveOptions: AVAudioSessionSetActiveOptions.none,
-      androidAudioAttributes: AndroidAudioAttributes(
-        contentType: AndroidAudioContentType.music,
-        usage: AndroidAudioUsage.media,
-      ),
-      androidAudioFocusGainType: AndroidAudioFocusGainType.gain,
-      androidWillPauseWhenDucked: false,
-    ));
+    if (!Platform.isWindows) {
+      final session = await AudioSession.instance;
+      await session.configure(const AudioSessionConfiguration(
+        avAudioSessionCategory: AVAudioSessionCategory.playback,
+        avAudioSessionCategoryOptions: AVAudioSessionCategoryOptions.duckOthers,
+        avAudioSessionMode: AVAudioSessionMode.defaultMode,
+        avAudioSessionRouteSharingPolicy:
+            AVAudioSessionRouteSharingPolicy.defaultPolicy,
+        avAudioSessionSetActiveOptions: AVAudioSessionSetActiveOptions.none,
+        androidAudioAttributes: AndroidAudioAttributes(
+          contentType: AndroidAudioContentType.music,
+          usage: AndroidAudioUsage.media,
+        ),
+        androidAudioFocusGainType: AndroidAudioFocusGainType.gain,
+        androidWillPauseWhenDucked: false,
+      ));
 
-    _observeAudioSessionInterruptions(session);
+      _observeAudioSessionInterruptions(session);
+      Logger.info('🎵 INIT_DEBUG: Audio session configured');
+    } else {
+      Logger.info('🎵 INIT_DEBUG: Audio session skipped on Windows');
+    }
 
     Logger.info('🎵 INIT_DEBUG: AudioPlayer instance created');
-    Logger.info('🎵 INIT_DEBUG: Audio session configured');
     Logger.info('🎵 INIT_DEBUG: ===== AUDIO PLAYER INITIALIZED =====');
   }
 
@@ -526,10 +530,6 @@ final class EnhancedAudioService implements IAudioService {
   void _handlePositionUpdate(Duration position) {
     if (_currentState is AudioStatePlaying) {
       final delta = position - _lastPlaybackPosition;
-      if (_isCurrentLoadConfigurationHls) {
-        Logger.debug(
-            '🎵 HLS POSITION: pos=${position.inMilliseconds}ms delta=${delta.inMilliseconds}ms buffer=${_currentBufferSize.inMilliseconds}ms isPlaying=${_audioPlayer.playing}');
-      }
       if (_isCurrentLoadConfigurationHls &&
           delta > Duration.zero &&
           _currentBufferSize > Duration.zero) {
@@ -538,8 +538,6 @@ final class EnhancedAudioService implements IAudioService {
         _hlsBufferedDuration = _currentBufferSize;
         final newRaw = _lastRawHlsBuffer - delta;
         _lastRawHlsBuffer = newRaw.isNegative ? Duration.zero : newRaw;
-        Logger.debug(
-            '🎵 HLS BUFFER UPDATE: position=${position.inMilliseconds}ms, delta=${delta.inMilliseconds}ms, remaining=${_currentBufferSize.inMilliseconds}ms');
       }
       _lastPlaybackPosition = position;
 
@@ -934,27 +932,42 @@ final class EnhancedAudioService implements IAudioService {
 
         await _disposeActiveHlsSource();
 
-        final audioSource = isHls
-            ? (_activeHlsSource = HlsStreamAudioSource(
-                playlistUri: Uri.parse(config.streamUrl),
-                headers: AudioConfig.getStreamingHeaders(),
-                onPlaylistInfo: (info) {
-                  final total = info.totalDuration;
-                  _currentHlsPlaylistWindow = total;
-                },
-                tag: {
-                  'title': config.title ?? 'Live Stream',
-                  'artist': config.description ?? '',
-                },
-              ))
-            : AudioSource.uri(
-                Uri.parse(config.streamUrl),
-                headers: AudioConfig.getStreamingHeaders(),
-                tag: {
-                  'title': config.title ?? 'Live Stream',
-                  'artist': config.description ?? '',
-                },
-              );
+        final streamTag = {
+          'title': config.title ?? 'Live Stream',
+          'artist': config.description ?? '',
+        };
+        final streamHeaders = AudioConfig.getStreamingHeaders();
+
+        final AudioSource audioSource;
+        if (isHls) {
+          if (Platform.isWindows) {
+            // just_audio_windows notes byte stream support is not tested,
+            // so prefer native HLS via URL on Windows.
+            Logger.info(
+                '🎵 AUDIO_DEBUG: Using native HLS playback on Windows');
+            audioSource = AudioSource.uri(
+              Uri.parse(config.streamUrl),
+              headers: streamHeaders,
+              tag: streamTag,
+            );
+          } else {
+            audioSource = _activeHlsSource = HlsStreamAudioSource(
+              playlistUri: Uri.parse(config.streamUrl),
+              headers: streamHeaders,
+              onPlaylistInfo: (info) {
+                final total = info.totalDuration;
+                _currentHlsPlaylistWindow = total;
+              },
+              tag: streamTag,
+            );
+          }
+        } else {
+          audioSource = AudioSource.uri(
+            Uri.parse(config.streamUrl),
+            headers: streamHeaders,
+            tag: streamTag,
+          );
+        }
 
         Logger.info('🎵 AUDIO_DEBUG: About to call setAudioSource...');
         final setSourceTimeout = quickStart

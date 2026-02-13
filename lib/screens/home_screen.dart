@@ -20,6 +20,7 @@ import '../services/failover_service.dart';
 import '../widgets/code_input_widget.dart';
 import '../widgets/status_indicator.dart';
 import '../utils/logger.dart';
+import '../utils/platform_info.dart';
 import '../main.dart' show TunioColors;
 
 class HomeScreen extends StatefulWidget {
@@ -185,10 +186,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
         // Update code from current state only if field is empty and user is not editing
         final token = currentRadioState.token;
-        if (token != null &&
-            token != _currentCode &&
-            !_isUserEditingCode &&
-            _currentCode.isEmpty) {
+        if (token != null && token != _currentCode && !_isUserEditingCode) {
           _currentCode = token;
         }
 
@@ -215,10 +213,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
             // Update code from token only if field is empty and user is not editing
             final token = state.token;
-            if (token != null &&
-                token != _currentCode &&
-                !_isUserEditingCode &&
-                _currentCode.isEmpty) {
+            if (token != null && token != _currentCode && !_isUserEditingCode) {
               _currentCode = token;
             }
 
@@ -1417,7 +1412,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     : Colors.red,
           ),
 
-        // Buffer status if playing
+        // IP status if playing
         if (_radioState is RadioStateConnected ||
             _radioState is RadioStateFailover)
           ..._buildAudioMetricChips(),
@@ -1429,19 +1424,18 @@ class _HomeScreenState extends State<HomeScreen> {
     final audioState = _getAudioState();
     if (audioState is! AudioStatePlaying) return [];
 
+    final wifiIp = PlatformInfo.localWifiIp;
+    final bestIp = PlatformInfo.bestEffortIp;
+    final ipLabel = wifiIp != null && wifiIp.isNotEmpty ? 'Local IP' : 'IP';
+    final ipValue = bestIp ?? 'Unknown';
+
     return [
-      // Buffer size
+      // Local/Wi-Fi IP
       _buildStatusChip(
-        icon: Icons.memory,
-        label: 'Buffer',
-        value: '${audioState.bufferSize.inSeconds}s',
-        color: audioState.bufferSize.inSeconds >= 10
-            ? Colors.green
-            : audioState.bufferSize.inSeconds >= 5
-                ? Colors.lightGreen
-                : audioState.bufferSize.inSeconds >= 3
-                    ? Colors.orange
-                    : Colors.red,
+        icon: Icons.lan,
+        label: ipLabel,
+        value: ipValue,
+        color: bestIp != null ? Colors.green : Colors.orange,
       ),
     ];
   }

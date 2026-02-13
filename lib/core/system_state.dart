@@ -7,8 +7,10 @@ class SystemState {
   static final SystemState instance = SystemState._();
 
   bool _offlineMode = false;
+  bool _offlineOverrideActive = false;
 
   bool get offlineMode => _offlineMode;
+  bool get offlineOverrideActive => _offlineOverrideActive;
 
   /// Updates offline mode only if the value changes. Returns true when changed.
   bool setOfflineMode(bool value) {
@@ -22,9 +24,35 @@ class SystemState {
     return true;
   }
 
+  /// Overrides offline mode locally for the current session only.
+  /// Backend updates are ignored while override is active.
+  bool setOfflineModeLocalOverride(bool value) {
+    _offlineOverrideActive = true;
+    final changed = setOfflineMode(value);
+    if (changed) {
+      Logger.info(
+          '🛰️ SYSTEM_STATE: Offline mode locally overridden ${value ? 'ENABLED' : 'DISABLED'}');
+    } else {
+      Logger.info(
+          '🛰️ SYSTEM_STATE: Offline mode local override set (no change)');
+    }
+    return changed;
+  }
+
+  /// Clears local override so backend config can apply again.
+  void clearOfflineOverride() {
+    if (_offlineOverrideActive) {
+      _offlineOverrideActive = false;
+      Logger.info('🛰️ SYSTEM_STATE: Offline mode local override cleared');
+    }
+  }
+
   /// Applies a nullable offline mode value typically coming from backend config.
   bool syncOfflineMode(bool? value) {
     if (value == null) {
+      return false;
+    }
+    if (_offlineOverrideActive) {
       return false;
     }
     return setOfflineMode(value);

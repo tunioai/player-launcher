@@ -7,6 +7,7 @@ import '../services/audio_service.dart';
 import '../services/radio_service.dart';
 import '../services/failover_service.dart';
 import '../services/failover_reporting_service.dart';
+import '../services/local_web_server.dart';
 
 /// Service locator for dependency injection setup
 class ServiceLocator {
@@ -20,7 +21,7 @@ class ServiceLocator {
     final storageService = await StorageService.getInstance();
 
     // Core services
-    di.registerInstance<ApiService>(ApiService());
+    di.registerInstance<ApiService>(ApiService(storageService: storageService));
     di.registerInstance<StorageService>(storageService);
 
     // Failover service
@@ -45,6 +46,13 @@ class ServiceLocator {
           failoverReportingService: di.get<FailoverReportingService>(),
         ));
 
+    // Local web server for LAN control
+    di.registerSingleton<LocalWebServer>(() => LocalWebServer(
+          storageService: storageService,
+          radioService: di.get<IRadioService>(),
+          failoverService: di.get<IFailoverService>(),
+        ));
+
     // Initialize failover service
     final failoverService = di.get<IFailoverService>();
     await failoverService.initialize();
@@ -53,6 +61,10 @@ class ServiceLocator {
     // Don't await to prevent blocking app startup if network unavailable
     final radioService = di.get<IRadioService>();
     unawaited(radioService.initialize());
+
+    // Start local web server (non-blocking)
+    final localWebServer = di.get<LocalWebServer>();
+    unawaited(localWebServer.start());
 
     _isInitialized = true;
   }

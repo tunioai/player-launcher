@@ -8,10 +8,15 @@ import '../models/stream_config.dart';
 import '../models/api_error.dart';
 import '../utils/logger.dart';
 import '../utils/platform_info.dart';
+import 'storage_service.dart';
 
 class ApiService {
+  ApiService({required StorageService storageService})
+      : _storageService = storageService;
+
   static const String baseUrl = 'https://api.tunio.ai';
   static const Duration timeout = Duration(seconds: 15);
+  final StorageService _storageService;
 
   Future<StreamConfig?> getStreamConfig(String pin, {int? currentPing}) async {
     if (pin.isEmpty) return null;
@@ -89,7 +94,17 @@ class ApiService {
             Logger.debug(
                 '🔄 API_DEBUG: Backend offline_mode flag: $offlineFlag',
                 'ApiService');
-            SystemState.instance.setOfflineMode(offlineFlag);
+            SystemState.instance.syncOfflineMode(offlineFlag);
+          }
+
+          final adminKey = configData['admin_key'];
+          if (adminKey is String && adminKey.trim().isNotEmpty) {
+            await _storageService.saveAdminKeyHash(adminKey.trim());
+          } else {
+            final legacyKey = configData['admin_key_plain'];
+            if (legacyKey is String && legacyKey.trim().isNotEmpty) {
+              await _storageService.saveAdminKey(legacyKey.trim());
+            }
           }
         }
 

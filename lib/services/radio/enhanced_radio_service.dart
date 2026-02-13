@@ -1808,9 +1808,6 @@ final class EnhancedRadioService implements IRadioService {
 
   void _updateState(RadioState newState) {
     if (_currentState != newState) {
-      Logger.info(
-          'Radio state transition: ${_currentState.runtimeType} → ${newState.runtimeType}');
-
       // Track when we enter connecting state for hung detection
       if (newState is RadioStateConnecting) {
         _connectingStateStartTime = DateTime.now();
