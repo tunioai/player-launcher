@@ -83,6 +83,7 @@ final class EnhancedRadioService implements IRadioService {
       false; // Prevent multiple failover operations
   bool _isStreamSwitchInProgress =
       false; // Prevent failover during planned stream switches
+  bool _hasEstablishedLiveSession = false;
 
   DateTime? _failoverOperationStartTime;
   String? _activeFailoverOperation;
@@ -290,6 +291,7 @@ final class EnhancedRadioService implements IRadioService {
 
         // Track when stream is playing to prevent false failovers
         if (audioState.isPlaying) {
+          _markLiveSessionEstablished();
           _lastPlayingTime = DateTime.now();
         }
 
@@ -436,6 +438,7 @@ final class EnhancedRadioService implements IRadioService {
       case RadioStateConnecting connecting:
         // Check if we successfully started playing
         if (audioState.isPlaying) {
+          _markLiveSessionEstablished();
           // We should have config at this point
           final config = audioState.config;
           final token = connecting.token ?? _getStoredToken();
@@ -1103,7 +1106,20 @@ final class EnhancedRadioService implements IRadioService {
         reason.contains('Failed host lookup') ||
         reason.contains('SocketException');
 
-    if (isNetworkError && _failoverService.cachedTracksCount > 0) {
+    final shouldDeferStartupFailover = isNetworkError &&
+        _failoverService.cachedTracksCount > 0 &&
+        !_hasEstablishedLiveSession &&
+        _retryManager.currentAttempt == 0 &&
+        _currentState is RadioStateConnecting;
+
+    if (shouldDeferStartupFailover) {
+      Logger.info(
+          'Startup connection failed before first successful live playback - scheduling retry before failover');
+    }
+
+    if (isNetworkError &&
+        _failoverService.cachedTracksCount > 0 &&
+        !shouldDeferStartupFailover) {
       Logger.info(
           '🚨 NETWORK FAILOVER: Network error detected with ${_failoverService.cachedTracksCount} cached tracks - activating failover instead of retry');
 
@@ -1151,6 +1167,14 @@ final class EnhancedRadioService implements IRadioService {
         unawaited(_attemptConnect(token, isRetry: true));
       }
     });
+  }
+
+  void _markLiveSessionEstablished() {
+    if (_hasEstablishedLiveSession) {
+      return;
+    }
+    _hasEstablishedLiveSession = true;
+    Logger.info('Live stream playback confirmed for current app session');
   }
 
   void _startConfigPolling() {
