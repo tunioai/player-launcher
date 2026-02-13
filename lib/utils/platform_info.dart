@@ -209,7 +209,9 @@ class PlatformInfo {
 
     final lastUpdated = _localIpUpdatedAt;
     final ttl = _localIp == null ? _localIpMissTtl : _localIpTtl;
-    if (!force && lastUpdated != null && DateTime.now().difference(lastUpdated) < ttl) {
+    if (!force &&
+        lastUpdated != null &&
+        DateTime.now().difference(lastUpdated) < ttl) {
       return;
     }
 
@@ -233,7 +235,9 @@ class PlatformInfo {
 
     final lastUpdated = _fallbackIpUpdatedAt;
     final ttl = _fallbackIp == null ? _localIpMissTtl : _fallbackIpTtl;
-    if (!force && lastUpdated != null && DateTime.now().difference(lastUpdated) < ttl) {
+    if (!force &&
+        lastUpdated != null &&
+        DateTime.now().difference(lastUpdated) < ttl) {
       return;
     }
 

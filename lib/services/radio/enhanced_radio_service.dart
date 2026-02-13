@@ -1767,13 +1767,12 @@ final class EnhancedRadioService implements IRadioService {
         await _storageService.saveLastVolume(config.failoverVolume);
 
         // Try to restore live stream quickly to avoid long silent gaps.
-        final playResult = await _audioService
-            .playStream(config, quickStart: true)
-            .timeout(
-              _restoreLiveAttemptTimeout,
-              onTimeout: () =>
-                  const Failure('Restore live stream attempt timed out'),
-            );
+        final playResult =
+            await _audioService.playStream(config, quickStart: true).timeout(
+                  _restoreLiveAttemptTimeout,
+                  onTimeout: () =>
+                      const Failure('Restore live stream attempt timed out'),
+                );
         if (playResult.isSuccess) {
           Logger.info('✅ RESTORE: Successfully restored live stream!');
           _resetHealthFailures();

@@ -68,8 +68,8 @@ void main() {
 
       final connectResult = await context.radioService.connect('123456');
       expect(connectResult.isSuccess, isTrue);
-      await _waitUntil(() => context.radioService.currentState
-          is RadioStateConnected);
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateConnected);
 
       context.audioService.emitState(
         AudioStateError(
@@ -86,7 +86,8 @@ void main() {
       expect(context.radioService.currentState, isA<RadioStateFailover>());
     });
 
-    test('tries restoring after failover and continues cache on restore failure',
+    test(
+        'tries restoring after failover and continues cache on restore failure',
         () async {
       final context = await _createContext(
         liveConfig: liveConfig,
@@ -105,8 +106,8 @@ void main() {
 
       final connectResult = await context.radioService.connect('654321');
       expect(connectResult.isSuccess, isTrue);
-      await _waitUntil(() => context.radioService.currentState
-          is RadioStateConnected);
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateConnected);
 
       context.audioService.emitState(
         AudioStateError(
@@ -284,8 +285,9 @@ class _FakeAudioService implements IAudioService {
   Future<Result<void>> playStream(StreamConfig config,
       {bool quickStart = false}) async {
     playStreamCalls++;
-    final result =
-        _playStreamResults.isNotEmpty ? _playStreamResults.removeFirst() : const Success(null);
+    final result = _playStreamResults.isNotEmpty
+        ? _playStreamResults.removeFirst()
+        : const Success(null);
     if (result.isSuccess) {
       emitState(AudioStatePlaying(config: config));
     } else {
@@ -302,8 +304,9 @@ class _FakeAudioService implements IAudioService {
   Future<Result<void>> playLocalFile(String filePath,
       {StreamConfig? originalConfig}) async {
     playLocalFileCalls++;
-    final result =
-        _playLocalResults.isNotEmpty ? _playLocalResults.removeFirst() : const Success(null);
+    final result = _playLocalResults.isNotEmpty
+        ? _playLocalResults.removeFirst()
+        : const Success(null);
     final config = originalConfig ?? StreamConfig(streamUrl: filePath);
     if (result.isSuccess) {
       emitState(AudioStatePlaying(config: config));
@@ -369,7 +372,8 @@ class _FakeApiService extends ApiService {
   }
 
   @override
-  Future<void> sendFailoverReport(String pin, List<FailoverEvent> events) async {}
+  Future<void> sendFailoverReport(
+      String pin, List<FailoverEvent> events) async {}
 }
 
 class _FakeFailoverService implements IFailoverService {

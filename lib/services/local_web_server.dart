@@ -124,11 +124,8 @@ class LocalWebServer implements Disposable {
 
         final newestFirst = filtered.reversed.toList(growable: false);
         final total = newestFirst.length;
-        final totalPages =
-            total == 0 ? 1 : ((total + perPage - 1) ~/ perPage);
-        final safePage = page < 1
-            ? 1
-            : (page > totalPages ? totalPages : page);
+        final totalPages = total == 0 ? 1 : ((total + perPage - 1) ~/ perPage);
+        final safePage = page < 1 ? 1 : (page > totalPages ? totalPages : page);
         final start = (safePage - 1) * perPage;
         final end = start + perPage > total ? total : start + perPage;
         final slice =
@@ -163,8 +160,8 @@ class LocalWebServer implements Disposable {
         }
         final accept = request.headers.value(HttpHeaders.acceptHeader) ?? '';
         final contentType = request.headers.contentType?.mimeType ?? '';
-        final wantsHtml = accept.contains('text/html') &&
-            contentType != 'application/json';
+        final wantsHtml =
+            accept.contains('text/html') && contentType != 'application/json';
         if (wantsHtml) {
           return _sendRedirect(request, '/');
         }
@@ -267,9 +264,8 @@ class LocalWebServer implements Disposable {
   }
 
   String _renderLoginHtml({required bool showError}) {
-    final error = showError
-        ? '<p class="error">Wrong key. Use admin key.</p>'
-        : '';
+    final error =
+        showError ? '<p class="error">Wrong key. Use admin key.</p>' : '';
     return '''
 <!doctype html>
 <html lang="en">
@@ -321,8 +317,7 @@ class LocalWebServer implements Disposable {
     final sourceColor = _sourceColor(sourceLabel);
     final cacheLabel = _formatCache(state['cachedTracks'] as int?);
     final statusColor = offline ? '#ffb86c' : '#31c36b';
-    final statusText =
-        offline ? 'Offline mode enabled' : 'Online mode enabled';
+    final statusText = offline ? 'Offline mode enabled' : 'Online mode enabled';
     return '''
 <!doctype html>
 <html lang="en">

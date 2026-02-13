@@ -955,8 +955,7 @@ final class EnhancedAudioService implements IAudioService {
           if (Platform.isWindows) {
             // just_audio_windows notes byte stream support is not tested,
             // so prefer native HLS via URL on Windows.
-            Logger.info(
-                '🎵 AUDIO_DEBUG: Using native HLS playback on Windows');
+            Logger.info('🎵 AUDIO_DEBUG: Using native HLS playback on Windows');
             audioSource = AudioSource.uri(
               Uri.parse(config.streamUrl),
               headers: streamHeaders,
