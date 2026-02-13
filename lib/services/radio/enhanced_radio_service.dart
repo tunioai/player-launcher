@@ -1734,22 +1734,25 @@ final class EnhancedRadioService implements IRadioService {
     Logger.info('🔄 RESTORE: Failover token: ${failover.token}');
     _startFailoverOperation('restore', () async {
       try {
-        // Avoid expensive restore attempts when we know the network is down
-        if (!_latestNetworkState.isConnected) {
-          Logger.info(
-              '🔄 RESTORE: Skipping restore attempt - network still offline');
-          _releaseFailoverOperationLock();
-          _playNextFailoverTrack(failover);
-          return;
+        final isNetworkReportedOffline = !_latestNetworkState.isConnected;
+        final configTimeout = isNetworkReportedOffline
+            ? const Duration(seconds: 2)
+            : const Duration(seconds: 5);
+        final restoreTimeout = isNetworkReportedOffline
+            ? const Duration(seconds: 4)
+            : _restoreLiveAttemptTimeout;
+        if (isNetworkReportedOffline) {
+          Logger.warning(
+              '🔄 RESTORE: Network is reported offline, running a quick restore probe to avoid getting stuck in failover');
         }
 
         // Attempt to get fresh config from server with a short timeout
         final config = await _apiService
             .getStreamConfig(failover.token, currentPing: _currentPing)
             .timeout(
-              const Duration(seconds: 5),
+              configTimeout,
               onTimeout: () => throw TimeoutException(
-                  'Config request timeout', const Duration(seconds: 5)),
+                  'Config request timeout', configTimeout),
             );
         if (config == null) {
           Logger.warning(
@@ -1769,7 +1772,7 @@ final class EnhancedRadioService implements IRadioService {
         // Try to restore live stream quickly to avoid long silent gaps.
         final playResult =
             await _audioService.playStream(config, quickStart: true).timeout(
-                  _restoreLiveAttemptTimeout,
+                  restoreTimeout,
                   onTimeout: () =>
                       const Failure('Restore live stream attempt timed out'),
                 );

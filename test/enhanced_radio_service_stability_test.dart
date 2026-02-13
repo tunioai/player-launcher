@@ -137,6 +137,58 @@ void main() {
       expect(context.apiService.getStreamConfigCalls, greaterThanOrEqualTo(2));
       expect(context.radioService.currentState, isA<RadioStateFailover>());
     });
+
+    test('restores from failover even when connectivity state is stale offline',
+        () async {
+      final context = await _createContext(
+        liveConfig: liveConfig,
+        cachedTracksCount: 3,
+      );
+
+      addTearDown(() async {
+        await context.dispose();
+      });
+
+      context.audioService.enqueuePlayStreamResult(const Success(null));
+      context.audioService
+          .enqueuePlayStreamResult(const Failure<void>('restart failed'));
+      context.audioService.enqueuePlayStreamResult(const Success(null));
+
+      final connectResult = await context.radioService.connect('112233');
+      expect(connectResult.isSuccess, isTrue);
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateConnected);
+
+      context.audioService.emitState(
+        AudioStateError(
+          message: 'Network error',
+          config: liveConfig,
+          isRetryable: true,
+        ),
+      );
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateFailover);
+      expect(context.audioService.playLocalFileCalls, 1);
+
+      context.audioService.emitNetworkState(const NetworkState(
+        isConnected: false,
+        type: ConnectionType.unknown,
+      ));
+
+      context.audioService.emitState(
+        AudioStateError(
+          message: 'Failover track completed',
+          config: liveConfig,
+          isRetryable: false,
+        ),
+      );
+
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateConnected);
+
+      expect(context.apiService.getStreamConfigCalls, greaterThanOrEqualTo(2));
+      expect(context.radioService.currentState, isA<RadioStateConnected>());
+    });
   });
 }
 
