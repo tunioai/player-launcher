@@ -556,6 +556,18 @@ class LocalWebServer implements Disposable {
               sourceBadge.textContent = 'Source: ' + sourceText;
               sourceBadge.style.color = sourceText.indexOf('Online') === 0 ? '#31c36b' : '#ff6b6b';
             }
+            var sourceTextForStatus = data.source || 'Unknown';
+            if (sourceTextForStatus.indexOf('Connecting') === 0) {
+              setPinStatus('Connecting...', '#9aa4b2');
+            } else if (sourceTextForStatus.indexOf('Online') === 0) {
+              setPinStatus('Connected', '#31c36b');
+            } else if (sourceTextForStatus.indexOf('Fallback') === 0) {
+              setPinStatus('Fallback playback', '#ffb86c');
+            } else if (sourceTextForStatus.indexOf('Error') === 0) {
+              setPinStatus('Connection error', '#ff6b6b');
+            } else if (sourceTextForStatus.indexOf('Disconnected') === 0) {
+              setPinStatus('Ready', '#9aa4b2');
+            }
             if (cacheBadge) cacheBadge.textContent = 'Cache: ' + formatCache(data.cachedTracks);
           })
           .catch(function(){});
