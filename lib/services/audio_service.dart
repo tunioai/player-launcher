@@ -66,7 +66,7 @@ final class EnhancedAudioService implements IAudioService {
 
   Timer? _loadingTimeoutTimer;
   Timer? _hangDetectionTimer;
-  final Completer<void> _initializationCompleter = Completer<void>();
+  Future<void>? _initializationFuture;
   bool _isInitialized = false;
   bool _isDisposed = false;
   bool _isPlayingStream = false;
@@ -102,21 +102,33 @@ final class EnhancedAudioService implements IAudioService {
   @override
   Future<Result<void>> initialize() async {
     if (_isInitialized) return const Success(null);
-    if (_initializationCompleter.isCompleted) {
-      await _initializationCompleter.future;
-      return const Success(null);
+
+    final pendingInitialization = _initializationFuture;
+    if (pendingInitialization != null) {
+      return tryResultAsync(() async {
+        await pendingInitialization;
+      });
     }
 
+    final initialization = _performInitialization();
+    _initializationFuture = initialization;
+
     return tryResultAsync(() async {
+      await initialization;
+    });
+  }
+
+  Future<void> _performInitialization() async {
+    try {
       await _initializeAudioPlayer();
       _setupSubscriptions();
       _startHangDetection();
 
       _isInitialized = true;
-      _initializationCompleter.complete();
-
       Logger.info('AudioService: Initialized successfully');
-    });
+    } finally {
+      _initializationFuture = null;
+    }
   }
 
   bool _isHlsStream(String url) {

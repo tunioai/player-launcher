@@ -16,10 +16,12 @@ class AutoStartService : Service() {
         Log.d("AutoStartService", "Service started")
         
         val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+        val token = prefs.getString("flutter.token", "")
         val apiKey = prefs.getString("flutter.api_key", "")
         val autoStartEnabled = prefs.getBoolean("flutter.auto_start_enabled", true)
+        val hasStoredCredential = !token.isNullOrEmpty() || !apiKey.isNullOrEmpty()
         
-        if (!apiKey.isNullOrEmpty() && autoStartEnabled) {
+        if (hasStoredCredential && autoStartEnabled) {
             Log.d("AutoStartService", "Starting MainActivity from service")
             
             val appIntent = Intent(this, MainActivity::class.java)

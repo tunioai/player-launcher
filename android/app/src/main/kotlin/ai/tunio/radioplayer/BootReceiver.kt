@@ -26,12 +26,17 @@ class BootReceiver : BroadcastReceiver() {
                 Log.d("BootReceiver", "Boot completed detected, checking settings...")
                 
                 val prefs = context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+                val token = prefs.getString("flutter.token", "")
                 val apiKey = prefs.getString("flutter.api_key", "")
                 val autoStartEnabled = prefs.getBoolean("flutter.auto_start_enabled", true)
+                val hasStoredCredential = !token.isNullOrEmpty() || !apiKey.isNullOrEmpty()
                 
-                Log.d("BootReceiver", "API Key exists: ${!apiKey.isNullOrEmpty()}, Auto-start enabled: $autoStartEnabled")
+                Log.d(
+                    "BootReceiver",
+                    "Token/API key exists: $hasStoredCredential, Auto-start enabled: $autoStartEnabled"
+                )
                 
-                if (!apiKey.isNullOrEmpty() && autoStartEnabled) {
+                if (hasStoredCredential && autoStartEnabled) {
                     synchronized(this) {
                         if (!isStarting) {
                             isStarting = true

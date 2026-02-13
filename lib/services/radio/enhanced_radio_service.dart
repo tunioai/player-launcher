@@ -64,7 +64,14 @@ final class EnhancedRadioService implements IRadioService {
   String?
       _currentConnectionStage; // Track which stage we're in for better diagnostics
   int _consecutiveHealthFailures = 0;
-  static const int _healthFailureThreshold = 3;
+  // Keep live recovery short to avoid audible gaps before fallback playback.
+  static const int _healthFailureThreshold = 1;
+  static const Duration _liveErrorFallbackDelayHls = Duration(seconds: 8);
+  static const Duration _liveErrorFallbackDelayDefault = Duration(seconds: 4);
+  static const Duration _liveInterruptionDelayHls = Duration(seconds: 6);
+  static const Duration _liveInterruptionDelayDefault = Duration(seconds: 3);
+  static const Duration _pingFailureGracePeriod = Duration(seconds: 6);
+  static const Duration _restoreLiveAttemptTimeout = Duration(seconds: 12);
   DateTime?
       _lastFailoverRestoreTime; // Track when we last restored from failover
   DateTime?
@@ -89,7 +96,7 @@ final class EnhancedRadioService implements IRadioService {
   String? _activeFailoverOperation;
 
   // Initialization
-  final Completer<void> _initializationCompleter = Completer<void>();
+  Future<void>? _initializationFuture;
   bool _isInitialized = false;
   bool _isDisposed = false;
 
@@ -129,12 +136,24 @@ final class EnhancedRadioService implements IRadioService {
   @override
   Future<Result<void>> initialize() async {
     if (_isInitialized) return const Success(null);
-    if (_initializationCompleter.isCompleted) {
-      await _initializationCompleter.future;
-      return const Success(null);
+
+    final pendingInitialization = _initializationFuture;
+    if (pendingInitialization != null) {
+      return tryResultAsync(() async {
+        await pendingInitialization;
+      });
     }
 
+    final initialization = _performInitialization();
+    _initializationFuture = initialization;
+
     return tryResultAsync(() async {
+      await initialization;
+    });
+  }
+
+  Future<void> _performInitialization() async {
+    try {
       // Initialize audio service first
       final audioInitResult = await _audioService.initialize();
       if (audioInitResult.isFailure) {
@@ -146,10 +165,10 @@ final class EnhancedRadioService implements IRadioService {
       await _restoreState();
 
       _isInitialized = true;
-      _initializationCompleter.complete();
-
       Logger.info('RadioService: Initialized successfully');
-    });
+    } finally {
+      _initializationFuture = null;
+    }
   }
 
   void _setupSubscriptions() {
@@ -302,8 +321,8 @@ final class EnhancedRadioService implements IRadioService {
         // Handle error states - faster detection for stream loss
         if (audioState is AudioStateError) {
           final fallbackDelay = _isCurrentStreamHls
-              ? const Duration(seconds: 20)
-              : const Duration(seconds: 8);
+              ? _liveErrorFallbackDelayHls
+              : _liveErrorFallbackDelayDefault;
           Logger.warning(
               'Audio error detected: ${audioState.message}, isRetryable: ${audioState.isRetryable}');
 
@@ -389,8 +408,8 @@ final class EnhancedRadioService implements IRadioService {
               '🚨 STREAM INTERRUPTION: Stream unexpectedly stopped while we were playing');
 
           final interruptionDelay = _isCurrentStreamHls
-              ? const Duration(seconds: 12)
-              : const Duration(seconds: 5);
+              ? _liveInterruptionDelayHls
+              : _liveInterruptionDelayDefault;
 
           // Wait longer for HLS playlists to catch up
           Timer(interruptionDelay, () {
@@ -1239,11 +1258,6 @@ final class EnhancedRadioService implements IRadioService {
           if (needsRestart) {
             Logger.info('Stream restart required due to URL change');
 
-            // Clear failover cache when stream URL changes (different station/stream)
-            Logger.info(
-                '🧹 CLEANUP: Stream URL changed, clearing failover cache');
-            unawaited(_failoverService.clearCache());
-
             // Set flag to prevent failover during planned stream switch
             _isStreamSwitchInProgress = true;
 
@@ -1263,6 +1277,9 @@ final class EnhancedRadioService implements IRadioService {
               } else {
                 Logger.info(
                     '✅ STREAM SWITCH: Successfully switched to new stream URL');
+                Logger.info(
+                    '🧹 CLEANUP: Stream URL switched successfully, clearing failover cache');
+                unawaited(_failoverService.clearCache());
               }
             } finally {
               // Always clear the flag, even if there was an error
@@ -1749,8 +1766,14 @@ final class EnhancedRadioService implements IRadioService {
 
         await _storageService.saveLastVolume(config.failoverVolume);
 
-        // Try to play the live stream
-        final playResult = await _audioService.playStream(config);
+        // Try to restore live stream quickly to avoid long silent gaps.
+        final playResult = await _audioService
+            .playStream(config, quickStart: true)
+            .timeout(
+              _restoreLiveAttemptTimeout,
+              onTimeout: () =>
+                  const Failure('Restore live stream attempt timed out'),
+            );
         if (playResult.isSuccess) {
           Logger.info('✅ RESTORE: Successfully restored live stream!');
           _resetHealthFailures();
@@ -1900,13 +1923,13 @@ final class EnhancedRadioService implements IRadioService {
             !_audioService.currentState.isPlaying &&
             _autoLogicEnabled) {
           // ✅ Give more time for stream to start playing after ping failure
-          Timer(const Duration(seconds: 15), () {
+          Timer(_pingFailureGracePeriod, () {
             if (_currentState is RadioStateConnected &&
                 !_audioService.currentState.isPlaying &&
                 !_isConnectionInProgress &&
                 _autoLogicEnabled) {
               Logger.warning(
-                  '🔍 PING FAIL: Ping failed and audio still not playing after 15s - checking stream health');
+                  '🔍 PING FAIL: Ping failed and audio still not playing after ${_pingFailureGracePeriod.inSeconds}s - checking stream health');
               _checkStreamHealth();
             }
           });
