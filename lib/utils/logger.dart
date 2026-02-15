@@ -9,7 +9,13 @@ enum LogLevel {
 }
 
 class Logger {
-  static const bool _isDebugMode = true;
+  // Stdout is the only reliably visible channel in `flutter run --release`.
+  // Keep it low-noise: always print warnings/errors; print debug/info only in
+  // debug builds.
+  static bool _shouldPrint(LogLevel level) {
+    if (kDebugMode) return true;
+    return level == LogLevel.warning || level == LogLevel.error;
+  }
 
   static void debug(String message, [String? tag]) {
     _log(LogLevel.debug, message, tag);
@@ -29,16 +35,12 @@ class Logger {
     if (error != null) {
       _log(LogLevel.error, 'Error details: $error', tag);
     }
-    if (stackTrace != null && _isDebugMode) {
+    if (stackTrace != null && kDebugMode) {
       _log(LogLevel.error, 'Stack trace: $stackTrace', tag);
     }
   }
 
   static void _log(LogLevel level, String message, String? tag) {
-    if (!_isDebugMode && level == LogLevel.debug) {
-      return;
-    }
-
     final timestamp = DateTime.now().toIso8601String();
     final levelStr = level.name.toUpperCase().padRight(7);
     final tagStr = tag != null ? '[$tag] ' : '';
@@ -48,19 +50,23 @@ class Logger {
     switch (level) {
       case LogLevel.debug:
         developer.log(formattedMessage, name: 'DEBUG');
-        if (kDebugMode) print('🔍 DEBUG: $tagStr$message');
+        // ignore: avoid_print
+        if (_shouldPrint(level)) print('🔍 DEBUG: $tagStr$message');
         break;
       case LogLevel.info:
         developer.log(formattedMessage, name: 'INFO');
-        if (kDebugMode) print('ℹ️ INFO: $tagStr$message');
+        // ignore: avoid_print
+        if (_shouldPrint(level)) print('ℹ️ INFO: $tagStr$message');
         break;
       case LogLevel.warning:
         developer.log(formattedMessage, name: 'WARNING', level: 900);
-        if (kDebugMode) print('⚠️ WARNING: $tagStr$message');
+        // ignore: avoid_print
+        if (_shouldPrint(level)) print('⚠️ WARNING: $tagStr$message');
         break;
       case LogLevel.error:
         developer.log(formattedMessage, name: 'ERROR', level: 1000);
-        if (kDebugMode) print('❌ ERROR: $tagStr$message');
+        // ignore: avoid_print
+        if (_shouldPrint(level)) print('❌ ERROR: $tagStr$message');
         break;
     }
   }

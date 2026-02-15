@@ -135,7 +135,7 @@ The Tunio Spot application features an advanced failover system that ensures con
 #### **Offline Mode (Failover)**
 - **Automatic Activation**: Triggered when network issues are detected
 - **Seamless Transition**: Instantly switches to cached music tracks
-- **Continuous Playback**: Plays random tracks from local cache
+- **Continuous Playback**: Plays cached tracks, prioritizing least recently played to avoid repeats
 - **Background Recovery**: Monitors for network restoration while playing offline
 
 #### **Network Recovery**

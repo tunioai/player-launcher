@@ -91,6 +91,7 @@ final class EnhancedRadioService implements IRadioService {
   bool _isStreamSwitchInProgress =
       false; // Prevent failover during planned stream switches
   bool _hasEstablishedLiveSession = false;
+  String? _pendingManualConnectToken;
 
   DateTime? _failoverOperationStartTime;
   String? _activeFailoverOperation;
@@ -746,13 +747,19 @@ final class EnhancedRadioService implements IRadioService {
     // Prevent multiple simultaneous connection attempts
     if (_isConnectionInProgress) {
       if (!isRetry) {
+        final activeToken = _currentState is RadioStateConnecting
+            ? (_currentState as RadioStateConnecting).token
+            : null;
+        if (activeToken == token) {
+          Logger.warning(
+              'Manual connect requested while connection is in progress (same token) - ignoring duplicate request');
+          return const Success(null);
+        }
+
+        _pendingManualConnectToken = token;
         Logger.warning(
-            'Manual connect requested while connection is in progress - forcing new attempt');
-        _retryTimer?.cancel();
-        _forceRecoveryTimer?.cancel();
-        _currentConnectionStage = null;
-        _connectingStateStartTime = null;
-        _isConnectionInProgress = false;
+            'Manual connect requested while connection is in progress - queued request will run after current attempt completes');
+        return const Success(null);
       } else {
         Logger.warning(
             'Connection already in progress, skipping duplicate attempt');
@@ -780,9 +787,12 @@ final class EnhancedRadioService implements IRadioService {
 
     Logger.info('Attempting connection (attempt $attempt)');
 
-    final connectingTimeout = Timer(const Duration(seconds: 20), () {
+    // Keep this above the per-stage timeouts (API + playStream) so it doesn't
+    // prematurely abort a slow but valid connection attempt (notably HLS on
+    // macOS in --release).
+    final connectingTimeout = Timer(const Duration(seconds: 70), () {
       if (_currentState is RadioStateConnecting && _isConnectionInProgress) {
-        Logger.error('Connection attempt timed out after 20 seconds');
+        Logger.error('Connection attempt timed out after 70 seconds');
         _isConnectionInProgress = false;
         unawaited(_scheduleRetry('Connection timeout - retrying'));
       }
@@ -843,6 +853,12 @@ final class EnhancedRadioService implements IRadioService {
     } finally {
       _isConnectionInProgress = false;
       _isStreamSwitchInProgress = false;
+
+      final pendingToken = _pendingManualConnectToken;
+      if (pendingToken != null && !_isDisposed) {
+        _pendingManualConnectToken = null;
+        unawaited(_attemptConnect(pendingToken, isRetry: false));
+      }
     }
   }
 
@@ -881,6 +897,11 @@ final class EnhancedRadioService implements IRadioService {
     final connectionStartTime = DateTime.now();
 
     try {
+      final previousToken = _storageService.getToken();
+      final tokenChanged = previousToken != null &&
+          previousToken.isNotEmpty &&
+          previousToken != token;
+
       // STAGE 1: Fetch stream configuration with timeout
       _currentConnectionStage = 'API_REQUEST';
       Logger.info('🔄 CONNECTION: STAGE 1 - Fetching stream configuration...');
@@ -916,13 +937,6 @@ final class EnhancedRadioService implements IRadioService {
       Logger.info(
           '🔄 CONNECTION: STAGE 1 COMPLETED - API response received in ${apiDuration.inMilliseconds}ms');
       Logger.info('🔄 CONNECTION: Stream URL: ${config.streamUrl}');
-
-      // Download current track for failover if available
-      if (config.current != null) {
-        Logger.info(
-            '🔄 CONNECTION: Starting background download of current track for failover');
-        _downloadTrackInBackground(config.current!);
-      }
 
       // STAGE 2: Save configuration
       _currentConnectionStage = 'SAVING_CONFIG';
@@ -976,6 +990,21 @@ final class EnhancedRadioService implements IRadioService {
       final audioDuration = DateTime.now().difference(audioStartTime);
       Logger.info(
           '🔄 CONNECTION: STAGE 3 COMPLETED - Audio started in ${audioDuration.inMilliseconds}ms');
+
+      if (tokenChanged) {
+        Logger.info(
+            '🧹 CLEANUP: PIN changed - clearing failover cache to avoid mixing stations');
+        // Wait for the cache to clear so subsequent downloads belong only to
+        // the newly selected station.
+        await _failoverService.clearCache();
+      }
+
+      // Download current track for failover (after any cache reset).
+      if (config.current != null) {
+        Logger.info(
+            '🔄 CONNECTION: Starting background download of current track for failover');
+        _downloadTrackInBackground(config.current!);
+      }
 
       // STAGE 4: Wait for state confirmation
       _currentConnectionStage = 'WAITING_CONFIRMATION';
@@ -1121,9 +1150,10 @@ final class EnhancedRadioService implements IRadioService {
 
     // Check if this is a network error and we should activate failover instead of retry
     final isNetworkError = reason.contains('No internet connection') ||
-        reason.contains('Connection failed') ||
         reason.contains('Failed host lookup') ||
-        reason.contains('SocketException');
+        reason.contains('SocketException') ||
+        reason.contains('Network error') ||
+        reason.contains('Connection timeout');
 
     final shouldDeferStartupFailover = isNetworkError &&
         _failoverService.cachedTracksCount > 0 &&
@@ -1223,6 +1253,10 @@ final class EnhancedRadioService implements IRadioService {
         if (newConfig != null && newConfig != connected.config) {
           Logger.info('Configuration updated - stream URL or settings changed');
 
+          final stationChanged = newConfig.streamUuid != null &&
+              connected.config.streamUuid != null &&
+              newConfig.streamUuid != connected.config.streamUuid;
+
           // Download current track for failover if available
           if (newConfig.current != null) {
             _downloadTrackInBackground(newConfig.current!);
@@ -1291,6 +1325,12 @@ final class EnhancedRadioService implements IRadioService {
             // Just update the state without restarting stream
             final updatedState = connected.copyWith(config: newConfig);
             _updateState(updatedState);
+
+            if (stationChanged) {
+              Logger.info(
+                  '🧹 CLEANUP: Station changed (stream_uuid), clearing failover cache');
+              unawaited(_failoverService.clearCache());
+            }
           }
         } else {
           Logger.debug('Config refresh: no changes detected');

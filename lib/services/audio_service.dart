@@ -983,7 +983,9 @@ final class EnhancedAudioService implements IAudioService {
         Logger.info('🎵 AUDIO_DEBUG: About to call setAudioSource...');
         final setSourceTimeout = quickStart
             ? const Duration(seconds: 5)
-            : const Duration(seconds: 15);
+            : (isHls && Platform.isMacOS
+                ? const Duration(seconds: 30)
+                : const Duration(seconds: 15));
         final setSourceStartTime = DateTime.now();
         try {
           await _audioPlayer

@@ -8,6 +8,7 @@ import '../models/current_track.dart';
 import '../utils/constants.dart';
 import '../utils/logger.dart';
 import '../core/dependency_injection.dart';
+import 'storage_service.dart';
 
 abstract interface class IFailoverService implements Disposable {
   Future<void> initialize();
@@ -24,6 +25,7 @@ class FailoverService implements IFailoverService {
       StreamController<int>.broadcast();
 
   late Directory _cacheDirectory;
+  late StorageService _storageService;
   bool _isInitialized = false;
   final Set<String> _downloadingTracks = {};
   // Timer? _cleanupTimer; // Removed automatic cleanup
@@ -33,6 +35,7 @@ class FailoverService implements IFailoverService {
     if (_isInitialized) return;
 
     try {
+      _storageService = di.get<StorageService>();
       final documentsDir = await getApplicationDocumentsDirectory();
       _cacheDirectory =
           Directory('${documentsDir.path}/${AppConstants.failoverCacheDir}');
@@ -172,12 +175,50 @@ class FailoverService implements IFailoverService {
       return null;
     }
 
-    final random = Random();
-    final selectedTrack = tracks[random.nextInt(tracks.length)];
+    final history = _storageService.getFailoverTrackLastPlayed();
+
+    // Track keys are uuids (filename without .m4a). Using uuid keeps this
+    // stable across path changes and works cross-platform.
+    String keyFor(File file) {
+      final last = file.uri.pathSegments.isNotEmpty
+          ? file.uri.pathSegments.last
+          : file.path.split('/').last;
+      if (last.endsWith('.m4a')) {
+        return last.substring(0, last.length - 4);
+      }
+      return last;
+    }
+
+    final candidates = <({File file, String key, int lastPlayed})>[];
+    for (final file in tracks) {
+      final key = keyFor(file);
+      candidates.add((
+        file: file,
+        key: key,
+        lastPlayed: history[key] ?? 0,
+      ));
+    }
+
+    // Remove stale history entries (deleted cache files).
+    unawaited(_storageService
+        .pruneFailoverTrackHistory(candidates.map((c) => c.key).toSet()));
+
+    // Pick the least recently played. If multiple have the same oldest
+    // timestamp (including 0 = never played), pick randomly among them.
+    candidates.sort((a, b) => a.lastPlayed.compareTo(b.lastPlayed));
+    final oldestTs = candidates.first.lastPlayed;
+    final oldest = candidates.where((c) => c.lastPlayed == oldestTs).toList();
+
+    final selected = oldest.length == 1
+        ? oldest.first
+        : oldest[Random().nextInt(oldest.length)];
+
+    // Mark now to prevent immediate repeats, even if playback fails.
+    unawaited(_storageService.markFailoverTrackPlayed(selected.key));
 
     Logger.info(
-        'FailoverService: Selected random track: ${selectedTrack.path.split('/').last}');
-    return selectedTrack;
+        'FailoverService: Selected LRP failover track: ${selected.file.path.split('/').last} (lastPlayed=$oldestTs)');
+    return selected.file;
   }
 
   @override
@@ -320,6 +361,8 @@ class FailoverService implements IFailoverService {
       }
 
       _updateCachedCount();
+      // Cache is gone; reset playback history so new cache starts clean.
+      unawaited(_storageService.clearFailoverTrackHistory());
       Logger.info(
           'FailoverService: Cache cleared successfully, deleted $deletedCount tracks');
     } catch (e) {

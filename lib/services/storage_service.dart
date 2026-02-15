@@ -13,7 +13,11 @@ class StorageService {
   static const String _isAutoStartEnabledKey = 'auto_start_enabled';
   static const String _isDarkModeEnabledKey = 'dark_mode_enabled';
   static const String _failoverEventsKey = 'failover_events';
+  static const String _failoverTrackLastPlayedKey =
+      'failover_track_last_played_v1';
   static const int _maxFailoverEvents = 200;
+  // Keep some slack for forward-compat, but never let this grow without bound.
+  static const int _maxFailoverTrackHistoryEntries = 250;
 
   static StorageService? _instance;
   SharedPreferences? _prefs;
@@ -191,5 +195,81 @@ class StorageService {
   Future<void> _saveFailoverEvents(List<FailoverEvent> events) async {
     final encoded = jsonEncode(events.map((event) => event.toJson()).toList());
     await _prefs!.setString(_failoverEventsKey, encoded);
+  }
+
+  // Failover track playback history (uuid -> lastPlayedAtMillis)
+  Map<String, int> getFailoverTrackLastPlayed() {
+    final raw = _prefs!.getString(_failoverTrackLastPlayedKey);
+    if (raw == null || raw.isEmpty) return <String, int>{};
+
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return <String, int>{};
+
+      final out = <String, int>{};
+      for (final entry in decoded.entries) {
+        final key = entry.key;
+        final value = entry.value;
+        if (key is! String) continue;
+        if (value is int) {
+          out[key] = value;
+          continue;
+        }
+        if (value is String) {
+          final parsed = int.tryParse(value);
+          if (parsed != null) {
+            out[key] = parsed;
+          }
+        }
+      }
+      return out;
+    } catch (e) {
+      Logger.error(
+          'Failed to decode failover track history: $e', 'StorageService');
+      return <String, int>{};
+    }
+  }
+
+  Future<void> markFailoverTrackPlayed(String uuid,
+      {DateTime? playedAt}) async {
+    if (uuid.isEmpty) return;
+
+    final history = getFailoverTrackLastPlayed();
+    history[uuid] = (playedAt ?? DateTime.now()).millisecondsSinceEpoch;
+
+    // Trim the oldest entries if we somehow exceeded bounds.
+    if (history.length > _maxFailoverTrackHistoryEntries) {
+      final entries = history.entries.toList(growable: false);
+      entries.sort((a, b) => b.value.compareTo(a.value)); // newest first
+      history
+        ..clear()
+        ..addEntries(entries.take(_maxFailoverTrackHistoryEntries));
+    }
+
+    await _prefs!.setString(_failoverTrackLastPlayedKey, jsonEncode(history));
+  }
+
+  Future<void> pruneFailoverTrackHistory(Set<String> validUuids) async {
+    if (validUuids.isEmpty) {
+      await clearFailoverTrackHistory();
+      return;
+    }
+
+    final history = getFailoverTrackLastPlayed();
+    var changed = false;
+    final keys = history.keys.toList(growable: false);
+    for (final key in keys) {
+      if (!validUuids.contains(key)) {
+        history.remove(key);
+        changed = true;
+      }
+    }
+    if (!changed) return;
+
+    await _prefs!.setString(_failoverTrackLastPlayedKey, jsonEncode(history));
+  }
+
+  Future<void> clearFailoverTrackHistory() async {
+    await _prefs!.remove(_failoverTrackLastPlayedKey);
   }
 }

@@ -31,6 +31,7 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
   late FocusNode _focusNode;
   late TextEditingController _textController;
   String _lastSubmittedValue = '';
+  bool _suppressTextCallbacks = false;
 
   // Detect if we're on mobile platform
   bool get _isMobile =>
@@ -66,14 +67,23 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
     // Reset auto-submit tracking when value is incomplete
     if (value.length < _codeLength) {
       _lastSubmittedValue = '';
+    } else {
+      // Treat externally-provided full codes as already "submitted" so we don't
+      // auto-submit on programmatic updates (e.g. restoring saved PIN).
+      _lastSubmittedValue = value;
     }
     // Update text controller and position cursor at the end
     if (_textController.text != value) {
-      _textController.text = value;
-      if (value.isNotEmpty) {
-        _textController.selection = TextSelection.fromPosition(
-          TextPosition(offset: value.length),
-        );
+      _suppressTextCallbacks = true;
+      try {
+        _textController.text = value;
+        if (value.isNotEmpty) {
+          _textController.selection = TextSelection.fromPosition(
+            TextPosition(offset: value.length),
+          );
+        }
+      } finally {
+        _suppressTextCallbacks = false;
       }
     }
   }
@@ -106,6 +116,7 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
 
   void _onTextChanged(String text) {
     if (!widget.enabled) return;
+    if (_suppressTextCallbacks) return;
 
     // Only keep digits
     final cleanText = text.replaceAll(RegExp(r'\D'), '');
@@ -119,6 +130,11 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
       });
 
       widget.onChanged(cleanText);
+
+      // Allow re-submitting the same PIN if the user edits it back.
+      if (cleanText.length < _codeLength) {
+        _lastSubmittedValue = '';
+      }
 
       if (cleanText.length == _codeLength && cleanText != _lastSubmittedValue) {
         _lastSubmittedValue = cleanText;

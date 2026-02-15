@@ -1263,12 +1263,14 @@ class _HomeScreenState extends State<HomeScreen> {
     required String value,
     required Color color,
     Color? backgroundColor,
+    VoidCallback? onTap,
   }) {
-    return Container(
+    final borderRadius = BorderRadius.circular(16);
+    final chip = Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
         color: backgroundColor ?? color.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: borderRadius,
         border: Border.all(color: color.withValues(alpha: 0.3)),
       ),
       child: Row(
@@ -1285,6 +1287,20 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
         ],
+      ),
+    );
+
+    if (onTap == null) return chip;
+
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: borderRadius,
+          onTap: onTap,
+          child: chip,
+        ),
       ),
     );
   }
@@ -1428,6 +1444,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final bestIp = PlatformInfo.bestEffortIp;
     final ipLabel = wifiIp != null && wifiIp.isNotEmpty ? 'Local IP' : 'IP';
     final ipValue = bestIp ?? 'Unknown';
+    final isLocalLanIp = ipValue.startsWith('192.');
 
     return [
       // Local/Wi-Fi IP
@@ -1436,8 +1453,26 @@ class _HomeScreenState extends State<HomeScreen> {
         label: ipLabel,
         value: ipValue,
         color: bestIp != null ? Colors.green : Colors.orange,
+        onTap: isLocalLanIp ? () => _openLocalWebUi(ipValue) : null,
       ),
     ];
+  }
+
+  Future<void> _openLocalWebUi(String ip) async {
+    final trimmed = ip.trim();
+    if (!trimmed.startsWith('192.')) return;
+
+    final uri = Uri.parse('http://$trimmed:9292/');
+    try {
+      final ok = await canLaunchUrl(uri);
+      if (!ok) {
+        _showError('Failed to open $uri');
+        return;
+      }
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (e) {
+      _showError('Failed to open $uri: $e');
+    }
   }
 }
 
