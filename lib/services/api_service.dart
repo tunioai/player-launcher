@@ -233,6 +233,8 @@ class ApiService {
       data.remove('sent');
       return data;
     }).toList(growable: false);
+    final headers = PlatformInfo.apiHeaders;
+    final deviceUuid = headers['X-Device-UUID'] ?? PlatformInfo.deviceUuid;
 
     try {
       Logger.info(
@@ -241,8 +243,11 @@ class ApiService {
       final response = await http
           .post(
             uri,
-            headers: PlatformInfo.apiHeaders,
-            body: jsonEncode({'events': payload}),
+            headers: headers,
+            body: jsonEncode({
+              'device_uuid': deviceUuid,
+              'events': payload,
+            }),
           )
           .timeout(timeout);
 
