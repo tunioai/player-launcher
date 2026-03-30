@@ -65,5 +65,11 @@
 
 # Keep our main application classes
 -keep class ai.tunio.radioplayer.MainActivity { *; }
+-keep class ai.tunio.radioplayer.VisualizerActivity { *; }
 -keep class ai.tunio.radioplayer.BootReceiver { *; }
--keep class ai.tunio.radioplayer.AutoStartService { *; } 
+-keep class ai.tunio.radioplayer.AutoStartService { *; }
+
+# Keep JavascriptInterface methods used by WebView bridge
+-keepclassmembers class * {
+    @android.webkit.JavascriptInterface <methods>;
+}

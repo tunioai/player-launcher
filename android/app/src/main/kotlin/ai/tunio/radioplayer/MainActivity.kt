@@ -24,7 +24,7 @@ class MainActivity: FlutterActivity() {
         setIntent(intent)
         handleAutoStart()
     }
-    
+
     private fun handleAutoStart() {
         val intent = getIntent()
         val isAutoStart = intent.getBooleanExtra("auto_start", false)

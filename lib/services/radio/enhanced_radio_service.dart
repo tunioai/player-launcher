@@ -90,6 +90,7 @@ final class EnhancedRadioService implements IRadioService {
       false; // Prevent multiple failover operations
   bool _isStreamSwitchInProgress =
       false; // Prevent failover during planned stream switches
+  bool _hasLoggedPlannedSwitchStateSuppression = false;
   bool _hasEstablishedLiveSession = false;
   String? _pendingManualConnectToken;
 
@@ -451,8 +452,11 @@ final class EnhancedRadioService implements IRadioService {
             }
           });
         } else if (_isStreamSwitchInProgress) {
-          Logger.info(
-              '🔄 STREAM SWITCH: Audio state changed during planned stream switch, not triggering failover');
+          if (!_hasLoggedPlannedSwitchStateSuppression) {
+            Logger.info(
+                '🔄 STREAM SWITCH: Audio state changed during planned stream switch, not triggering failover');
+            _hasLoggedPlannedSwitchStateSuppression = true;
+          }
         }
 
       case RadioStateConnecting connecting:
@@ -1318,6 +1322,7 @@ final class EnhancedRadioService implements IRadioService {
             } finally {
               // Always clear the flag, even if there was an error
               _isStreamSwitchInProgress = false;
+              _hasLoggedPlannedSwitchStateSuppression = false;
             }
           } else {
             Logger.info(
