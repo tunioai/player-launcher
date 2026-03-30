@@ -30,6 +30,12 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 class VisualizerActivity : Activity() {
+    private data class VideoPlacement(
+        val x: Float,
+        val y: Float,
+        val width: Float,
+        val height: Float,
+    )
 
     companion object {
         const val EXTRA_URL = "visualizer_url"
@@ -52,8 +58,10 @@ class VisualizerActivity : Activity() {
     private var currentOwnerId: String? = null
     private var currentPlaylistKey: String = ""
     private var currentDimAlpha: Float = 0f
+    private var currentPlacement: VideoPlacement? = null
     private var transitionMs: Int = 0
     private var isTransitionRunning = false
+    private var waitingForFirstFrame = false
     private val closeTapSlop by lazy { ViewConfiguration.get(this).scaledTouchSlop.toFloat() }
     private var closeTapDownX: Float = 0f
     private var closeTapDownY: Float = 0f
@@ -157,13 +165,24 @@ class VisualizerActivity : Activity() {
                     }
 
                     override fun onPlaybackStateChanged(playbackState: Int) {
+                        if (playbackState == Player.STATE_READY && waitingForFirstFrame) {
+                            revealVideoAfterFirstFrame()
+                        }
                         if (playbackState == Player.STATE_ENDED) {
                             hardCutToNext()
                         }
                     }
 
+                    override fun onRenderedFirstFrame() {
+                        if (waitingForFirstFrame) {
+                            revealVideoAfterFirstFrame()
+                        }
+                    }
+
                     override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                         Log.w(TAG, "player error, hard cut fallback: ${error.message}")
+                        waitingForFirstFrame = false
+                        transitionOverlayView.alpha = 0f
                         hardCutToNext()
                     }
                 },
@@ -307,6 +326,7 @@ class VisualizerActivity : Activity() {
 
         videoTextureView = TextureView(this).apply {
             setOpaque(true)
+            alpha = 0f
         }
 
         dimOverlayView = View(this).apply {
@@ -330,6 +350,22 @@ class VisualizerActivity : Activity() {
 
         rootLayout.addView(videoLayer, FrameLayout.LayoutParams(matchParent))
         rootLayout.addView(webView, FrameLayout.LayoutParams(matchParent))
+
+        rootLayout.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+            val newWidth = right - left
+            val newHeight = bottom - top
+            val oldWidth = oldRight - oldLeft
+            val oldHeight = oldBottom - oldTop
+            if (newWidth <= 0 || newHeight <= 0) {
+                return@addOnLayoutChangeListener
+            }
+            if (newWidth == oldWidth && newHeight == oldHeight) {
+                return@addOnLayoutChangeListener
+            }
+            if (videoLayer.visibility == View.VISIBLE) {
+                applyStoredPlacement()
+            }
+        }
 
         return rootLayout
     }
@@ -408,10 +444,9 @@ class VisualizerActivity : Activity() {
         when (json.optString("action")) {
             "setPlaylist" -> handleSetPlaylist(json)
             "clear" -> {
-                val ownerId = json.optString("ownerId")
-                if (ownerId.isNotEmpty() && ownerId == currentOwnerId) {
-                    clearNativeVideo()
-                }
+                // Always clear on explicit request from SPA. This prevents stale
+                // tail frames from previous scenes when returning to video scenes.
+                clearNativeVideo()
             }
             else -> {
                 // no-op
@@ -445,20 +480,13 @@ class VisualizerActivity : Activity() {
         // Force hard cuts in native mode to avoid delayed fade-in/out artifacts.
         transitionMs = 0
         currentDimAlpha = json.optDouble("dimAlpha", 0.0).toFloat().coerceIn(0f, 1f)
+        hideUntilFirstFrame()
         applyPlacement(json.optJSONObject("rect"), currentDimAlpha)
         Log.d(TAG, "setPlaylist owner=$ownerId tracks=${nextPlaylist.size} transitionMs=$transitionMs")
 
-        val key = nextPlaylist.joinToString("\u0001")
-        val shouldRestart = ownerId != currentOwnerId || key != currentPlaylistKey
-
         currentOwnerId = ownerId
-        if (!shouldRestart) {
-            Log.d(TAG, "setPlaylist skip restart (same owner/playlist)")
-            return
-        }
-
         playlist = nextPlaylist
-        currentPlaylistKey = key
+        currentPlaylistKey = nextPlaylist.joinToString("\u0001")
         refillQueue(avoidCurrent = false)
         startPlaybackPipeline()
     }
@@ -472,9 +500,12 @@ class VisualizerActivity : Activity() {
         currentIndex = -1
         currentOwnerId = null
         currentPlaylistKey = ""
+        currentPlacement = null
         isTransitionRunning = false
+        waitingForFirstFrame = false
         transitionOverlayView.animate().cancel()
         transitionOverlayView.alpha = 0f
+        videoTextureView.alpha = 0f
         dimOverlayView.alpha = 0f
         videoLayer.visibility = View.GONE
         player?.stop()
@@ -562,6 +593,20 @@ class VisualizerActivity : Activity() {
         }
     }
 
+    private fun hideUntilFirstFrame() {
+        waitingForFirstFrame = true
+        transitionOverlayView.animate().cancel()
+        transitionOverlayView.alpha = 1f
+        videoTextureView.alpha = 0f
+    }
+
+    private fun revealVideoAfterFirstFrame() {
+        waitingForFirstFrame = false
+        transitionOverlayView.animate().cancel()
+        transitionOverlayView.alpha = 0f
+        videoTextureView.alpha = 1f
+    }
+
     private fun ensureQueueDepth() {
         val targetQueueDepth = if (playlist.size <= 1) 1 else 2
         while ((player?.mediaItemCount ?: 0) < targetQueueDepth) {
@@ -637,19 +682,30 @@ class VisualizerActivity : Activity() {
     }
 
     private fun applyPlacement(rect: JSONObject?, dimAlpha: Float) {
+        val placement = VideoPlacement(
+            x = rect?.optDouble("x", 0.0)?.toFloat() ?: 0f,
+            y = rect?.optDouble("y", 0.0)?.toFloat() ?: 0f,
+            width = rect?.optDouble("width", 100.0)?.toFloat() ?: 100f,
+            height = rect?.optDouble("height", 100.0)?.toFloat() ?: 100f,
+        )
+        currentPlacement = placement
+        applyPlacement(placement, dimAlpha)
+    }
+
+    private fun applyStoredPlacement() {
+        val placement = currentPlacement ?: return
+        applyPlacement(placement, currentDimAlpha)
+    }
+
+    private fun applyPlacement(placement: VideoPlacement, dimAlpha: Float) {
         rootLayout.post {
             val rootW = rootLayout.width.coerceAtLeast(1)
             val rootH = rootLayout.height.coerceAtLeast(1)
 
-            val x = rect?.optDouble("x", 0.0)?.toFloat() ?: 0f
-            val y = rect?.optDouble("y", 0.0)?.toFloat() ?: 0f
-            val width = rect?.optDouble("width", 100.0)?.toFloat() ?: 100f
-            val height = rect?.optDouble("height", 100.0)?.toFloat() ?: 100f
-
-            val left = (rootW * (x / 100f)).roundToInt().coerceAtLeast(0)
-            val top = (rootH * (y / 100f)).roundToInt().coerceAtLeast(0)
-            val w = (rootW * (width / 100f)).roundToInt().coerceAtLeast(1)
-            val h = (rootH * (height / 100f)).roundToInt().coerceAtLeast(1)
+            val left = (rootW * (placement.x / 100f)).roundToInt().coerceAtLeast(0)
+            val top = (rootH * (placement.y / 100f)).roundToInt().coerceAtLeast(0)
+            val w = (rootW * (placement.width / 100f)).roundToInt().coerceAtLeast(1)
+            val h = (rootH * (placement.height / 100f)).roundToInt().coerceAtLeast(1)
 
             val params = FrameLayout.LayoutParams(w, h).apply {
                 leftMargin = left
