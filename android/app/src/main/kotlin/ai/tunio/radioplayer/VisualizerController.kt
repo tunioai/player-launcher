@@ -11,9 +11,10 @@ object VisualizerController {
     var channel: MethodChannel? = null
     var currentActivity: VisualizerActivity? = null
 
-    fun open(host: Activity, url: String) {
+    fun open(host: Activity, url: String, lowPerformanceMode: Boolean) {
         val intent = Intent(host, VisualizerActivity::class.java).apply {
             putExtra(VisualizerActivity.EXTRA_URL, url)
+            putExtra(VisualizerActivity.EXTRA_LOW_PERFORMANCE_MODE, lowPerformanceMode)
             addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
         }
         host.startActivity(intent)

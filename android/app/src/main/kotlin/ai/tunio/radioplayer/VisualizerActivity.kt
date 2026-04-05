@@ -3,11 +3,14 @@ package ai.tunio.radioplayer
 import android.app.Activity
 import android.content.Intent
 import android.graphics.Color
+import android.graphics.RectF
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.view.MotionEvent
-import android.view.TextureView
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowInsets
@@ -25,6 +28,8 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
 import org.json.JSONObject
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -39,12 +44,17 @@ class VisualizerActivity : Activity() {
 
     companion object {
         const val EXTRA_URL = "visualizer_url"
+        const val EXTRA_LOW_PERFORMANCE_MODE = "low_performance_mode"
         private const val TAG = "VisualizerActivity"
+        private const val PLAYBACK_GUARD_CHECK_INTERVAL_MS = 3000L
+        private const val PLAYBACK_GUARD_STALL_TIMEOUT_MS = 12000L
+        private const val PLAYBACK_GUARD_RECOVERY_COOLDOWN_MS = 2500L
+        private const val PLAYBACK_PROGRESS_EPSILON_MS = 250L
     }
 
     private lateinit var rootLayout: FrameLayout
     private lateinit var videoLayer: FrameLayout
-    private lateinit var videoTextureView: TextureView
+    private lateinit var videoPlayerView: PlayerView
     private lateinit var dimOverlayView: View
     private lateinit var transitionOverlayView: View
     private lateinit var webView: WebView
@@ -59,22 +69,31 @@ class VisualizerActivity : Activity() {
     private var currentPlaylistKey: String = ""
     private var currentDimAlpha: Float = 0f
     private var currentPlacement: VideoPlacement? = null
+    private var cachedSceneViewportRect: RectF? = null
     private var transitionMs: Int = 0
     private var isTransitionRunning = false
     private var waitingForFirstFrame = false
+    private var pendingRevealAfterTransform = false
     private val closeTapSlop by lazy { ViewConfiguration.get(this).scaledTouchSlop.toFloat() }
     private var closeTapDownX: Float = 0f
     private var closeTapDownY: Float = 0f
+    private var lowPerformanceMode: Boolean = false
+    private val playbackGuardHandler = Handler(Looper.getMainLooper())
+    private var playbackGuardRunnable: Runnable? = null
+    private var lastObservedPlaybackPositionMs: Long = -1L
+    private var lastPlaybackProgressRealtimeMs: Long = 0L
+    private var lastRecoveryAttemptRealtimeMs: Long = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        lowPerformanceMode = intent?.getBooleanExtra(EXTRA_LOW_PERFORMANCE_MODE, false) ?: false
         setupWindow()
         initPlayer()
 
         webView = createWebView()
         setContentView(createLayout())
 
-        player?.setVideoTextureView(videoTextureView)
+        videoPlayerView.player = player
         VisualizerController.currentActivity = this
 
         val url = intent?.getStringExtra(EXTRA_URL)
@@ -88,15 +107,18 @@ class VisualizerActivity : Activity() {
 
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
+        lowPerformanceMode = intent?.getBooleanExtra(EXTRA_LOW_PERFORMANCE_MODE, lowPerformanceMode) ?: lowPerformanceMode
         intent?.getStringExtra(EXTRA_URL)?.let { loadUrl(it) }
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        stopPlaybackGuard()
         if (VisualizerController.currentActivity == this) {
             VisualizerController.currentActivity = null
         }
         clearNativeVideo()
+        videoPlayerView.player = null
         player?.release()
         player = null
         webView.destroy()
@@ -142,6 +164,11 @@ class VisualizerActivity : Activity() {
         player = ExoPlayer.Builder(this).build().apply {
             repeatMode = Player.REPEAT_MODE_OFF
             playWhenReady = true
+            videoScalingMode = if (lowPerformanceMode) {
+                C.VIDEO_SCALING_MODE_SCALE_TO_FIT
+            } else {
+                C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
+            }
             volume = 0f
             trackSelectionParameters = noAudioTracks
             // Do not participate in Android audio focus - audio app remains authoritative.
@@ -160,14 +187,16 @@ class VisualizerActivity : Activity() {
                         dropPlayedItems()
                         ensureQueueDepth()
 
-                        // Overlay fade is intentionally disabled because it can become
-                        // visibly desynced from the actual frame switch on weak devices.
+                        // Keep transitions hard-cut here: visual overlay fade can drift
+                        // behind the actual decoder frame switch on some devices.
                     }
 
                     override fun onPlaybackStateChanged(playbackState: Int) {
                         if (playbackState == Player.STATE_READY && waitingForFirstFrame) {
-                            revealVideoAfterFirstFrame()
+                            pendingRevealAfterTransform = true
+                            maybeRevealVideoAfterFirstFrame()
                         }
+                        markPlaybackProgressIfAdvanced()
                         if (playbackState == Player.STATE_ENDED) {
                             hardCutToNext()
                         }
@@ -175,7 +204,18 @@ class VisualizerActivity : Activity() {
 
                     override fun onRenderedFirstFrame() {
                         if (waitingForFirstFrame) {
-                            revealVideoAfterFirstFrame()
+                            pendingRevealAfterTransform = true
+                            maybeRevealVideoAfterFirstFrame()
+                        }
+                    }
+
+                    override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
+                        maybeRevealVideoAfterFirstFrame()
+                    }
+
+                    override fun onIsPlayingChanged(isPlaying: Boolean) {
+                        if (isPlaying) {
+                            markPlaybackProgressIfAdvanced(forceRefresh = true)
                         }
                     }
 
@@ -233,10 +273,13 @@ class VisualizerActivity : Activity() {
                     Log.d(TAG, "onPageFinished url=$url")
                     enforceWebViewMediaMuted(view)
                     syncPageTransparencyForNativeVideo(view)
+                    applyLowPerformanceWebMode(view)
                     rootLayout.postDelayed({ enforceWebViewMediaMuted(view) }, 350L)
                     rootLayout.postDelayed({ syncPageTransparencyForNativeVideo(view) }, 350L)
+                    rootLayout.postDelayed({ applyLowPerformanceWebMode(view) }, 350L)
                     rootLayout.postDelayed({ enforceWebViewMediaMuted(view) }, 1200L)
                     rootLayout.postDelayed({ syncPageTransparencyForNativeVideo(view) }, 1200L)
+                    rootLayout.postDelayed({ applyLowPerformanceWebMode(view) }, 1200L)
                     view?.evaluateJavascript(
                         """
                         (function() {
@@ -314,6 +357,55 @@ class VisualizerActivity : Activity() {
         )
     }
 
+    private fun applyLowPerformanceWebMode(view: WebView?) {
+        if (!lowPerformanceMode) {
+            return
+        }
+        view?.evaluateJavascript(
+            """
+            (function() {
+              try {
+                var root = document.documentElement;
+                var body = document.body;
+                if (root && root.dataset) {
+                  root.dataset.tunioPerformanceMode = 'low';
+                }
+                if (body && body.dataset) {
+                  body.dataset.tunioPerformanceMode = 'low';
+                }
+
+                var stage = document.getElementById('tunio-scene-stage');
+                var appRoot = document.getElementById('tunio-screen-player-root');
+                if (stage && stage.dataset) stage.dataset.tunioPerformanceMode = 'low';
+                if (appRoot && appRoot.dataset) appRoot.dataset.tunioPerformanceMode = 'low';
+
+                var styleId = '__tunio_low_performance_style';
+                var style = document.getElementById(styleId);
+                if (!style) {
+                  style = document.createElement('style');
+                  style.id = styleId;
+                  style.textContent = [
+                    ':root{--tunio-performance-mode:low;}',
+                    '*{-webkit-backdrop-filter:none !important;backdrop-filter:none !important;}',
+                    '[style*="blur("],[style*="backdrop-filter"],[class*="blur"],[class*="glass"],[class*="frost"]{',
+                    '  -webkit-backdrop-filter:none !important;',
+                    '  backdrop-filter:none !important;',
+                    '  filter:none !important;',
+                    '}'
+                  ].join('');
+                  (document.head || root || body).appendChild(style);
+                }
+
+                return true;
+              } catch (e) {
+                return false;
+              }
+            })();
+            """.trimIndent(),
+            null,
+        )
+    }
+
     private fun createLayout(): FrameLayout {
         rootLayout = FrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
@@ -324,9 +416,26 @@ class VisualizerActivity : Activity() {
             visibility = View.GONE
         }
 
-        videoTextureView = TextureView(this).apply {
-            setOpaque(true)
+        videoPlayerView = PlayerView(this).apply {
+            useController = false
+            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+            setShutterBackgroundColor(Color.BLACK)
             alpha = 0f
+            addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+                val newWidth = right - left
+                val newHeight = bottom - top
+                val oldWidth = oldRight - oldLeft
+                val oldHeight = oldBottom - oldTop
+                if (newWidth <= 0 || newHeight <= 0) {
+                    return@addOnLayoutChangeListener
+                }
+                if (newWidth == oldWidth && newHeight == oldHeight) {
+                    return@addOnLayoutChangeListener
+                }
+                if (applyVideoCenterCropTransform()) {
+                    maybeRevealVideoAfterFirstFrame()
+                }
+            }
         }
 
         dimOverlayView = View(this).apply {
@@ -344,7 +453,7 @@ class VisualizerActivity : Activity() {
             FrameLayout.LayoutParams.MATCH_PARENT,
         )
 
-        videoLayer.addView(videoTextureView, FrameLayout.LayoutParams(matchParent))
+        videoLayer.addView(videoPlayerView, FrameLayout.LayoutParams(matchParent))
         videoLayer.addView(dimOverlayView, FrameLayout.LayoutParams(matchParent))
         videoLayer.addView(transitionOverlayView, FrameLayout.LayoutParams(matchParent))
 
@@ -375,6 +484,7 @@ class VisualizerActivity : Activity() {
     }
 
     private fun syncPageTransparencyForNativeVideo(view: WebView?) {
+        val forceBlackBackground = waitingForFirstFrame
         view?.evaluateJavascript(
             """
             (function() {
@@ -391,12 +501,18 @@ class VisualizerActivity : Activity() {
                   (root && root.dataset && root.dataset.tunioNativeVideoMode === '1') ||
                   (document.documentElement.dataset && document.documentElement.dataset.tunioNativeVideoMode === '1') ||
                   (document.body && document.body.dataset && document.body.dataset.tunioNativeVideoMode === '1');
-                var shouldBeTransparent = Boolean(hasVideoLayer && nativeMode);
+                var forceBlack = ${if (forceBlackBackground) "true" else "false"};
+                var shouldBeTransparent = Boolean(hasVideoLayer && nativeMode && !forceBlack);
 
                 var styleId = '__tunio_native_video_transparency';
                 var style = document.getElementById(styleId);
+                var blackoutStyleId = '__tunio_native_video_blackout';
+                var blackoutStyle = document.getElementById(blackoutStyleId);
 
                 if (shouldBeTransparent) {
+                  if (blackoutStyle && blackoutStyle.parentNode) {
+                    blackoutStyle.parentNode.removeChild(blackoutStyle);
+                  }
                   if (!style) {
                     style = document.createElement('style');
                     style.id = styleId;
@@ -413,18 +529,37 @@ class VisualizerActivity : Activity() {
                   if (style && style.parentNode) {
                     style.parentNode.removeChild(style);
                   }
-                  if (document.documentElement) {
-                    document.documentElement.style.removeProperty('background');
-                  }
-                  if (document.body) {
-                    document.body.style.removeProperty('background');
+                  if (forceBlack) {
+                    if (!blackoutStyle) {
+                      blackoutStyle = document.createElement('style');
+                      blackoutStyle.id = blackoutStyleId;
+                      blackoutStyle.textContent = 'html,body,#__next,#tunio-screen-player-root{background:#000!important;}';
+                      (document.head || document.documentElement).appendChild(blackoutStyle);
+                    }
+                    if (document.documentElement) {
+                      document.documentElement.style.background = '#000';
+                    }
+                    if (document.body) {
+                      document.body.style.background = '#000';
+                    }
+                  } else {
+                    if (blackoutStyle && blackoutStyle.parentNode) {
+                      blackoutStyle.parentNode.removeChild(blackoutStyle);
+                    }
+                    if (document.documentElement) {
+                      document.documentElement.style.removeProperty('background');
+                    }
+                    if (document.body) {
+                      document.body.style.removeProperty('background');
+                    }
                   }
                 }
 
                 return JSON.stringify({
                   hasVideoLayer: Boolean(hasVideoLayer),
                   nativeMode: Boolean(nativeMode),
-                  shouldBeTransparent: shouldBeTransparent
+                  shouldBeTransparent: shouldBeTransparent,
+                  forceBlack: forceBlack
                 });
               } catch (e) {}
             })();
@@ -477,8 +612,9 @@ class VisualizerActivity : Activity() {
             return
         }
 
-        // Force hard cuts in native mode to avoid delayed fade-in/out artifacts.
-        transitionMs = 0
+        // Keep scene transitions enabled; low-performance mode should reduce
+        // heavy visual effects (blur/backdrop) but not remove transitions.
+        transitionMs = json.optInt("transitionMs", 0).coerceIn(0, 1200)
         currentDimAlpha = json.optDouble("dimAlpha", 0.0).toFloat().coerceIn(0f, 1f)
         hideUntilFirstFrame()
         applyPlacement(json.optJSONObject("rect"), currentDimAlpha)
@@ -493,6 +629,7 @@ class VisualizerActivity : Activity() {
 
     private fun clearNativeVideo() {
         Log.d(TAG, "clearNativeVideo")
+        stopPlaybackGuard()
         playlist = emptyList()
         playQueue.clear()
         mediaIdToPlaylistIndex.clear()
@@ -503,11 +640,13 @@ class VisualizerActivity : Activity() {
         currentPlacement = null
         isTransitionRunning = false
         waitingForFirstFrame = false
+        pendingRevealAfterTransform = false
         transitionOverlayView.animate().cancel()
         transitionOverlayView.alpha = 0f
-        videoTextureView.alpha = 0f
+        videoPlayerView.alpha = 0f
         dimOverlayView.alpha = 0f
         videoLayer.visibility = View.GONE
+        resetPlaybackGuardState()
         player?.stop()
     }
 
@@ -568,6 +707,9 @@ class VisualizerActivity : Activity() {
             return
         }
 
+        resetPlaybackGuardState()
+        startPlaybackGuard()
+
         player?.apply {
             stop()
             clearMediaItems()
@@ -590,21 +732,34 @@ class VisualizerActivity : Activity() {
             addNextMediaItem()
             prepare()
             playWhenReady = true
+            play()
         }
     }
 
     private fun hideUntilFirstFrame() {
         waitingForFirstFrame = true
+        pendingRevealAfterTransform = false
         transitionOverlayView.animate().cancel()
         transitionOverlayView.alpha = 1f
-        videoTextureView.alpha = 0f
+        videoPlayerView.alpha = 0f
+        webView.setBackgroundColor(Color.BLACK)
+        syncPageTransparencyForNativeVideo(webView)
     }
 
-    private fun revealVideoAfterFirstFrame() {
+    private fun maybeRevealVideoAfterFirstFrame() {
+        if (!waitingForFirstFrame || !pendingRevealAfterTransform) {
+            return
+        }
+        if (!applyVideoCenterCropTransform()) {
+            return
+        }
         waitingForFirstFrame = false
+        pendingRevealAfterTransform = false
         transitionOverlayView.animate().cancel()
         transitionOverlayView.alpha = 0f
-        videoTextureView.alpha = 1f
+        videoPlayerView.alpha = 1f
+        webView.setBackgroundColor(Color.TRANSPARENT)
+        syncPageTransparencyForNativeVideo(webView)
     }
 
     private fun ensureQueueDepth() {
@@ -654,7 +809,104 @@ class VisualizerActivity : Activity() {
             addNextMediaItem()
             prepare()
             playWhenReady = true
+            play()
         }
+    }
+
+    private fun startPlaybackGuard() {
+        if (playbackGuardRunnable != null) {
+            return
+        }
+
+        playbackGuardRunnable = object : Runnable {
+            override fun run() {
+                runPlaybackGuardCycle()
+                playbackGuardHandler.postDelayed(this, PLAYBACK_GUARD_CHECK_INTERVAL_MS)
+            }
+        }.also { runnable ->
+            playbackGuardHandler.postDelayed(runnable, PLAYBACK_GUARD_CHECK_INTERVAL_MS)
+        }
+    }
+
+    private fun stopPlaybackGuard() {
+        playbackGuardRunnable?.let { playbackGuardHandler.removeCallbacks(it) }
+        playbackGuardRunnable = null
+    }
+
+    private fun resetPlaybackGuardState() {
+        lastObservedPlaybackPositionMs = -1L
+        lastPlaybackProgressRealtimeMs = 0L
+        lastRecoveryAttemptRealtimeMs = 0L
+    }
+
+    private fun markPlaybackProgressIfAdvanced(forceRefresh: Boolean = false) {
+        val instance = player ?: return
+        val now = SystemClock.elapsedRealtime()
+        val currentPosition = instance.currentPosition.coerceAtLeast(0L)
+        val hasAdvanced = lastObservedPlaybackPositionMs < 0L ||
+            currentPosition >= (lastObservedPlaybackPositionMs + PLAYBACK_PROGRESS_EPSILON_MS)
+
+        if (forceRefresh || hasAdvanced) {
+            lastObservedPlaybackPositionMs = currentPosition
+            lastPlaybackProgressRealtimeMs = now
+        }
+    }
+
+    private fun runPlaybackGuardCycle() {
+        val instance = player ?: return
+        if (playlist.isEmpty() || videoLayer.visibility != View.VISIBLE || waitingForFirstFrame) {
+            return
+        }
+
+        markPlaybackProgressIfAdvanced()
+
+        val now = SystemClock.elapsedRealtime()
+        val playbackState = instance.playbackState
+        val stallDurationMs = if (lastPlaybackProgressRealtimeMs <= 0L) 0L else now - lastPlaybackProgressRealtimeMs
+
+        if (!instance.playWhenReady) {
+            recoverPlayback("playWhenReady=false")
+            return
+        }
+
+        if (playbackState == Player.STATE_IDLE) {
+            recoverPlayback("state=IDLE")
+            return
+        }
+
+        val potentiallyStalledState = playbackState == Player.STATE_READY || playbackState == Player.STATE_BUFFERING
+        if (potentiallyStalledState && stallDurationMs >= PLAYBACK_GUARD_STALL_TIMEOUT_MS) {
+            recoverPlayback("no progress for ${stallDurationMs}ms, state=$playbackState")
+        }
+    }
+
+    private fun recoverPlayback(reason: String) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastRecoveryAttemptRealtimeMs < PLAYBACK_GUARD_RECOVERY_COOLDOWN_MS) {
+            return
+        }
+        lastRecoveryAttemptRealtimeMs = now
+
+        val instance = player ?: return
+        Log.w(TAG, "PlaybackGuard recovery: $reason")
+
+        if (instance.mediaItemCount == 0) {
+            startPlaybackPipeline()
+            return
+        }
+
+        when (instance.playbackState) {
+            Player.STATE_ENDED -> {
+                hardCutToNext()
+                return
+            }
+            Player.STATE_IDLE -> instance.prepare()
+            else -> Unit
+        }
+
+        instance.playWhenReady = true
+        instance.play()
+        markPlaybackProgressIfAdvanced(forceRefresh = true)
     }
 
     private fun runSmartFade() {
@@ -701,21 +953,126 @@ class VisualizerActivity : Activity() {
         rootLayout.post {
             val rootW = rootLayout.width.coerceAtLeast(1)
             val rootH = rootLayout.height.coerceAtLeast(1)
+            val isFullBleed = isPlacementFullBleed(placement)
+            resolveSceneViewportRect { viewport ->
+                val useViewport = !isFullBleed && viewport != null
+                val containerLeft = if (useViewport) viewport!!.left else 0f
+                val containerTop = if (useViewport) viewport!!.top else 0f
+                val containerW = if (useViewport) viewport!!.width().coerceAtLeast(1f) else rootW.toFloat()
+                val containerH = if (useViewport) viewport!!.height().coerceAtLeast(1f) else rootH.toFloat()
 
-            val left = (rootW * (placement.x / 100f)).roundToInt().coerceAtLeast(0)
-            val top = (rootH * (placement.y / 100f)).roundToInt().coerceAtLeast(0)
-            val w = (rootW * (placement.width / 100f)).roundToInt().coerceAtLeast(1)
-            val h = (rootH * (placement.height / 100f)).roundToInt().coerceAtLeast(1)
+                val left = (containerLeft + (containerW * (placement.x / 100f))).roundToInt().coerceAtLeast(0)
+                val top = (containerTop + (containerH * (placement.y / 100f))).roundToInt().coerceAtLeast(0)
+                val w = (containerW * (placement.width / 100f)).roundToInt().coerceAtLeast(1)
+                val h = (containerH * (placement.height / 100f)).roundToInt().coerceAtLeast(1)
 
-            val params = FrameLayout.LayoutParams(w, h).apply {
-                leftMargin = left
-                topMargin = top
+                val params = FrameLayout.LayoutParams(w, h).apply {
+                    leftMargin = left
+                    topMargin = top
+                }
+
+                videoLayer.layoutParams = params
+                videoLayer.visibility = View.VISIBLE
+                if (applyVideoCenterCropTransform()) {
+                    maybeRevealVideoAfterFirstFrame()
+                }
+                dimOverlayView.alpha = dimAlpha.coerceIn(0f, 1f)
             }
-
-            videoLayer.layoutParams = params
-            videoLayer.visibility = View.VISIBLE
-            dimOverlayView.alpha = dimAlpha.coerceIn(0f, 1f)
         }
+    }
+
+    private fun isPlacementFullBleed(placement: VideoPlacement): Boolean {
+        fun close(a: Float, b: Float): Boolean = kotlin.math.abs(a - b) <= 0.01f
+        return close(placement.x, 0f) &&
+            close(placement.y, 0f) &&
+            close(placement.width, 100f) &&
+            close(placement.height, 100f)
+    }
+
+    private fun resolveSceneViewportRect(onResolved: (RectF?) -> Unit) {
+        val script = """
+            (function() {
+              try {
+                var root = document.getElementById('tunio-screen-player-root');
+                var viewport = document.getElementById('tunio-scene-viewport');
+                if (!root || !viewport) return '';
+                var rootRect = root.getBoundingClientRect();
+                var viewportRect = viewport.getBoundingClientRect();
+                var dpr = Number(window.devicePixelRatio || 1);
+                if (!isFinite(dpr) || dpr <= 0) dpr = 1;
+                return [
+                  viewportRect.left - rootRect.left,
+                  viewportRect.top - rootRect.top,
+                  viewportRect.width,
+                  viewportRect.height,
+                  dpr
+                ].join(',');
+              } catch (e) {
+                return '';
+              }
+            })();
+        """.trimIndent()
+
+        webView.evaluateJavascript(script) { rawResult ->
+            val parsed = parseSceneViewportRect(rawResult)
+            if (parsed != null) {
+                cachedSceneViewportRect = parsed
+                onResolved(parsed)
+            } else {
+                onResolved(cachedSceneViewportRect)
+            }
+        }
+    }
+
+    private fun parseSceneViewportRect(rawResult: String?): RectF? {
+        val cleaned = rawResult?.trim().orEmpty()
+        if (cleaned.isEmpty() || cleaned == "null" || cleaned == "\"\"") {
+            return null
+        }
+
+        val unquoted = if (cleaned.length >= 2 && cleaned.first() == '"' && cleaned.last() == '"') {
+            cleaned.substring(1, cleaned.length - 1)
+        } else {
+            cleaned
+        }
+
+        val normalized = unquoted
+            .replace("\\\\", "\\")
+            .replace("\\\"", "\"")
+        val parts = normalized.split(',')
+        if (parts.size < 4) {
+            return null
+        }
+
+        val left = parts[0].toFloatOrNull() ?: return null
+        val top = parts[1].toFloatOrNull() ?: return null
+        val width = parts[2].toFloatOrNull() ?: return null
+        val height = parts[3].toFloatOrNull() ?: return null
+        val dpr = if (parts.size >= 5) {
+            parts[4].toFloatOrNull()?.takeIf { it > 0f } ?: 1f
+        } else {
+            1f
+        }
+        if (width <= 0f || height <= 0f) {
+            return null
+        }
+
+        val scaledLeft = left * dpr
+        val scaledTop = top * dpr
+        val scaledWidth = width * dpr
+        val scaledHeight = height * dpr
+        return RectF(scaledLeft, scaledTop, scaledLeft + scaledWidth, scaledTop + scaledHeight)
+    }
+
+    private fun applyVideoCenterCropTransform(): Boolean {
+        val viewW = videoPlayerView.width
+        val viewH = videoPlayerView.height
+
+        if (viewW <= 0 || viewH <= 0) {
+            return false
+        }
+
+        return true
     }
 
     private inner class NativeVideoJsBridge {

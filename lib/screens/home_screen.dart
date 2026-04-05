@@ -72,6 +72,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Timer? _visualizerHeartbeatTimer;
   static const MethodChannel _visualizerChannel =
       MethodChannel('ai.tunio/visualizer');
+  static const bool _androidLowPerformanceVisualizerMode = true;
 
   // Subscriptions
   StreamSubscription<RadioState>? _radioStateSubscription;
@@ -483,6 +484,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
     final queryParameters = Map<String, String>.from(uri.queryParameters);
     queryParameters['embedded'] = '1';
+    if (_isAndroid && _androidLowPerformanceVisualizerMode) {
+      queryParameters['performance'] = 'low';
+    }
     final targetUri = uri.replace(queryParameters: queryParameters);
 
     if (_isAndroid) {
@@ -531,6 +535,7 @@ class _HomeScreenState extends State<HomeScreen> {
     try {
       await _visualizerChannel.invokeMethod('openVisualizer', {
         'url': targetUri.toString(),
+        'lowPerformanceMode': _androidLowPerformanceVisualizerMode,
       });
       setState(() {
         _visualizerController = null;
@@ -1312,7 +1317,7 @@ class _HomeScreenState extends State<HomeScreen> {
         onTap: _clearFailoverCache,
         child: _buildSimpleLabel(
           icon: Icons.offline_pin,
-          value: 'Offline: $_cachedTracksCount',
+          value: 'Cached: $_cachedTracksCount',
           color: _cachedTracksCount >= 5
               ? Colors.green
               : _cachedTracksCount >= 3

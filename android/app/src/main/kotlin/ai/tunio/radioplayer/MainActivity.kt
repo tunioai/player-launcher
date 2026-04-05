@@ -91,10 +91,11 @@ class MainActivity: FlutterActivity() {
             when (call.method) {
                 "openVisualizer" -> {
                     val url = call.argument<String>("url")
+                    val lowPerformanceMode = call.argument<Boolean>("lowPerformanceMode") ?: false
                     if (url.isNullOrEmpty()) {
                         result.error("INVALID_URL", "Visualizer URL is missing", null)
                     } else {
-                        VisualizerController.open(this, url)
+                        VisualizerController.open(this, url, lowPerformanceMode)
                         result.success(null)
                     }
                 }
