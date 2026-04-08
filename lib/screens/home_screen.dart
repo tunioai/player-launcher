@@ -14,6 +14,7 @@ import '../core/dependency_injection.dart';
 import '../core/service_locator.dart';
 import '../core/audio_state.dart';
 import '../core/result.dart';
+import '../core/system_state.dart';
 
 import '../services/radio_service.dart';
 import '../services/failover_service.dart';
@@ -194,7 +195,9 @@ class _HomeScreenState extends State<HomeScreen> {
         _lastStreamUrl = currentRadioState.config?.streamUrl;
 
         final initialVisualizerUrl = currentRadioState.config?.visualizerUrl;
-        if (initialVisualizerUrl == null || initialVisualizerUrl.isEmpty) {
+        if (SystemState.instance.serviceSuspended ||
+            initialVisualizerUrl == null ||
+            initialVisualizerUrl.isEmpty) {
           _resetVisualizerState(closeNative: true);
         }
 
@@ -238,7 +241,9 @@ class _HomeScreenState extends State<HomeScreen> {
             }
 
             final newVisualizerUrl = state.config?.visualizerUrl;
-            if (newVisualizerUrl == null || newVisualizerUrl.isEmpty) {
+            if (SystemState.instance.serviceSuspended ||
+                newVisualizerUrl == null ||
+                newVisualizerUrl.isEmpty) {
               _resetVisualizerState(closeNative: true);
             } else if (_loadedVisualizerUrl != null &&
                 _currentVisualizerUrl != null &&
@@ -419,6 +424,10 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget? _buildVisualizerButton() {
+    if (SystemState.instance.serviceSuspended) {
+      return null;
+    }
+
     if (_visualizerUrl == null) {
       return null;
     }
@@ -471,6 +480,11 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _openVisualizer() async {
+    if (SystemState.instance.serviceSuspended) {
+      _resetVisualizerState(closeNative: true);
+      return;
+    }
+
     final url = _visualizerUrl;
     if (url == null) {
       return;
@@ -720,6 +734,11 @@ class _HomeScreenState extends State<HomeScreen> {
   void _maybeAutoOpenVisualizer() {
     if (!mounted) return;
     if (_isVisualizerVisible) return;
+    if (SystemState.instance.serviceSuspended) {
+      _hasAutoOpenedVisualizer = false;
+      _resetVisualizerState(closeNative: true);
+      return;
+    }
     if (!_radioState.isConnected) {
       _hasAutoOpenedVisualizer = false;
       return;
@@ -860,6 +879,10 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   String? get _visualizerUrl {
+    if (SystemState.instance.serviceSuspended) {
+      return null;
+    }
+
     final url = _radioState.config?.visualizerUrl;
     if (url == null || url.isEmpty) {
       return null;

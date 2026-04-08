@@ -48,6 +48,8 @@ final class EnhancedRadioService implements IRadioService {
   // Configuration polling
   Timer? _configPollingTimer;
   static const Duration _configPollingInterval = Duration(minutes: 1);
+  Timer? _warningLoopTimer;
+  static const Duration _warningLoopPause = Duration(seconds: 20);
 
   // Retry management
   final RetryManager _retryManager = RetryManager();
@@ -93,6 +95,8 @@ final class EnhancedRadioService implements IRadioService {
   bool _hasLoggedPlannedSwitchStateSuppression = false;
   bool _hasEstablishedLiveSession = false;
   String? _pendingManualConnectToken;
+  bool _serviceSuspendedMode = false;
+  String? _warningTrackPath;
 
   DateTime? _failoverOperationStartTime;
   String? _activeFailoverOperation;
@@ -503,6 +507,22 @@ final class EnhancedRadioService implements IRadioService {
           _currentState = newState;
         }
 
+        if (_serviceSuspendedMode) {
+          if (audioState is AudioStateIdle &&
+              (failover.audioState is AudioStatePlaying ||
+                  failover.audioState is AudioStatePaused)) {
+            _scheduleWarningReplay(failover);
+            return;
+          }
+
+          if (audioState is AudioStateError) {
+            Logger.warning(
+                '🚫 SERVICE_SUSPENDED: Warning playback failed, retrying loop');
+            _scheduleWarningReplay(failover);
+            return;
+          }
+        }
+
         if (audioState is AudioStateIdle &&
             (failover.audioState is AudioStatePlaying ||
                 failover.audioState is AudioStatePaused)) {
@@ -597,6 +617,12 @@ final class EnhancedRadioService implements IRadioService {
   }
 
   void _handleNetworkLoss() {
+    if (_serviceSuspendedMode || SystemState.instance.serviceSuspended) {
+      Logger.info(
+          'Network loss handling skipped: service suspended warning mode active');
+      return;
+    }
+
     // Avoid spamming timers if network toggles rapidly
     if (_networkLossTimer != null) {
       return;
@@ -700,6 +726,25 @@ final class EnhancedRadioService implements IRadioService {
   Future<void> _restoreState() async {
     final token = _getStoredToken();
     if (token != null) {
+      final persistedSuspended = _storageService.isServiceSuspended();
+      final persistedWarningUrl =
+          _storageService.getServiceSuspensionWarningUrl();
+      if (persistedSuspended && persistedWarningUrl != null) {
+        SystemState.instance.syncServiceSuspended(
+          suspended: true,
+          warningMessageUrl: persistedWarningUrl,
+        );
+        Logger.warning(
+            'Service suspension flag restored from local storage - entering warning mode');
+        final activated = await _activateServiceSuspendedMode(
+          token: token,
+          fallbackConfig: null,
+        );
+        if (activated) {
+          return;
+        }
+      }
+
       Logger.info('Restoring connection with stored token');
       _autoReconnectEnabled = true;
 
@@ -737,6 +782,23 @@ final class EnhancedRadioService implements IRadioService {
     if (!_isInitialized) {
       final initResult = await initialize();
       if (initResult.isFailure) return initResult;
+    }
+
+    if (_storageService.isServiceSuspended()) {
+      final warningUrl = _storageService.getServiceSuspensionWarningUrl();
+      if (warningUrl != null) {
+        SystemState.instance.syncServiceSuspended(
+          suspended: true,
+          warningMessageUrl: warningUrl,
+        );
+        final activated = await _activateServiceSuspendedMode(
+          token: token,
+          fallbackConfig: _currentState.config,
+        );
+        if (activated) {
+          return const Success(null);
+        }
+      }
     }
 
     _retryManager.reset();
@@ -949,6 +1011,29 @@ final class EnhancedRadioService implements IRadioService {
       await _storageService.saveLastVolume(config.failoverVolume);
       Logger.info('🔄 CONNECTION: STAGE 2 COMPLETED - Configuration saved');
 
+      if (SystemState.instance.serviceSuspended) {
+        Logger.warning(
+            '🔄 CONNECTION: Service suspended by backend config - switching to warning mode');
+        final activated = await _activateServiceSuspendedMode(
+          token: token,
+          fallbackConfig: config,
+        );
+        if (!activated) {
+          throw Exception('Service suspended mode activation failed');
+        }
+        _currentConnectionStage = null;
+        return;
+      }
+
+      if (_serviceSuspendedMode) {
+        Logger.info(
+            '🔄 CONNECTION: Service suspension is cleared - resuming normal playback flow');
+        _serviceSuspendedMode = false;
+        _warningTrackPath = null;
+        _warningLoopTimer?.cancel();
+        _warningLoopTimer = null;
+      }
+
       // STAGE 3: Start audio playback with detailed monitoring
       _currentConnectionStage = 'AUDIO_LOADING';
       Logger.info('🔄 CONNECTION: STAGE 3 - Starting audio playback...');
@@ -1041,6 +1126,10 @@ final class EnhancedRadioService implements IRadioService {
       _isConnectionInProgress = false;
       _isFailoverOperationInProgress = false;
       _isStreamSwitchInProgress = false;
+      _serviceSuspendedMode = false;
+      _warningTrackPath = null;
+      _warningLoopTimer?.cancel();
+      _warningLoopTimer = null;
       _retryTimer?.cancel();
       _configPollingTimer?.cancel();
       _stopPinging();
@@ -1116,6 +1205,12 @@ final class EnhancedRadioService implements IRadioService {
 
   Future<void> _scheduleRetry(String reason) async {
     if (!_autoReconnectEnabled) return;
+
+    if (_serviceSuspendedMode || SystemState.instance.serviceSuspended) {
+      Logger.info(
+          'Skipping retry scheduling while service suspended ($reason)');
+      return;
+    }
 
     final token = _getStoredToken();
     if (token == null) {
@@ -1253,6 +1348,16 @@ final class EnhancedRadioService implements IRadioService {
           return await _apiService.getStreamConfig(connected.token,
               currentPing: _currentPing);
         });
+
+        if (SystemState.instance.serviceSuspended) {
+          Logger.warning(
+              'Config refresh received service suspension - entering warning mode');
+          await _activateServiceSuspendedMode(
+            token: connected.token,
+            fallbackConfig: newConfig ?? connected.config,
+          );
+          return;
+        }
 
         if (newConfig != null && newConfig != connected.config) {
           Logger.info('Configuration updated - stream URL or settings changed');
@@ -1443,6 +1548,12 @@ final class EnhancedRadioService implements IRadioService {
     RadioStateConnected connected,
     String reason,
   ) async {
+    if (_serviceSuspendedMode || SystemState.instance.serviceSuspended) {
+      Logger.info(
+          'Skipping live stream restart while service suspended ($reason)');
+      return false;
+    }
+
     if (!_autoLogicEnabled) {
       Logger.info(
           'Skipping live stream restart ($reason) - auto recovery suspended');
@@ -1568,6 +1679,12 @@ final class EnhancedRadioService implements IRadioService {
   }
 
   void _activateFailover(RadioStateConnected connectedState, String reason) {
+    if (_serviceSuspendedMode || SystemState.instance.serviceSuspended) {
+      Logger.info(
+          '🚫 SERVICE_SUSPENDED: Skipping failover activation, warning mode has higher priority');
+      return;
+    }
+
     if (_isFailoverOperationInProgress) {
       Logger.warning(
           '🚨 FAILOVER: Failover already in progress, ignoring duplicate request');
@@ -1900,6 +2017,160 @@ final class EnhancedRadioService implements IRadioService {
         '🔄 RESTORE BACKOFF: $reason - waiting for $pendingTracks failover track(s) before the next live stream attempt');
   }
 
+  Future<bool> _activateServiceSuspendedMode({
+    required String token,
+    StreamConfig? fallbackConfig,
+  }) async {
+    final warningUrl = SystemState.instance.warningMessageUrl ??
+        _storageService.getServiceSuspensionWarningUrl();
+    if (warningUrl == null || warningUrl.trim().isEmpty) {
+      Logger.error(
+          '🚫 SERVICE_SUSPENDED: Missing warning_message URL, cannot activate mode');
+      return false;
+    }
+
+    final cachedPath = await _failoverService.cacheWarningMessage(warningUrl) ??
+        await _failoverService.getCachedWarningMessagePath();
+    if (cachedPath == null) {
+      Logger.error(
+          '🚫 SERVICE_SUSPENDED: Warning message is not cached and cannot be downloaded');
+      return false;
+    }
+
+    _serviceSuspendedMode = true;
+    _warningTrackPath = cachedPath;
+    _warningLoopTimer?.cancel();
+    _warningLoopTimer = null;
+
+    _configPollingTimer?.cancel();
+    _stopPinging();
+    _stopFailoverBackgroundMonitoring();
+
+    final stopResult = await _audioService.stop();
+    if (stopResult.isFailure) {
+      Logger.warning(
+          '🚫 SERVICE_SUSPENDED: Failed to stop existing playback: ${stopResult.error}');
+    }
+
+    final suspendedConfig = _buildServiceSuspendedConfig(
+      cachedPath: cachedPath,
+      fallbackConfig: fallbackConfig,
+    );
+
+    _updateState(RadioStateFailover(
+      token: token,
+      originalConfig: suspendedConfig,
+      audioState: AudioStateLoading(config: suspendedConfig),
+      currentTrackPath: cachedPath,
+      attemptCount: 0,
+    ));
+
+    final playResult = await _audioService.playLocalFile(
+      cachedPath,
+      originalConfig: suspendedConfig,
+    );
+
+    if (playResult.isFailure) {
+      Logger.error(
+          '🚫 SERVICE_SUSPENDED: Failed to start warning playback: ${playResult.error}');
+      return false;
+    }
+
+    _startFailoverBackgroundMonitoring();
+    Logger.warning(
+        '🚫 SERVICE_SUSPENDED: Warning mode active. Stream and failover cache playback are disabled.');
+    return true;
+  }
+
+  Future<void> _refreshServiceSuspendedAudio({required String token}) async {
+    final warningUrl = SystemState.instance.warningMessageUrl ??
+        _storageService.getServiceSuspensionWarningUrl();
+    if (warningUrl == null || warningUrl.trim().isEmpty) {
+      return;
+    }
+
+    final previousPath = _warningTrackPath;
+    final resolvedPath =
+        await _failoverService.cacheWarningMessage(warningUrl) ??
+            await _failoverService.getCachedWarningMessagePath();
+    if (resolvedPath == null) {
+      return;
+    }
+
+    _warningTrackPath = resolvedPath;
+
+    if (previousPath != resolvedPath) {
+      Logger.info(
+          '🚫 SERVICE_SUSPENDED: Warning message audio updated, switching to the new cached file');
+      await _activateServiceSuspendedMode(
+        token: token,
+        fallbackConfig: _currentState.config,
+      );
+    }
+  }
+
+  void _scheduleWarningReplay(RadioStateFailover failover) {
+    if (!_serviceSuspendedMode) {
+      return;
+    }
+
+    _warningLoopTimer?.cancel();
+    _warningLoopTimer = Timer(_warningLoopPause, () async {
+      if (!_serviceSuspendedMode) {
+        return;
+      }
+      if (_currentState is! RadioStateFailover) {
+        return;
+      }
+
+      final path = _warningTrackPath ??
+          await _failoverService.getCachedWarningMessagePath();
+      if (path == null) {
+        Logger.error(
+            '🚫 SERVICE_SUSPENDED: Warning cache missing before replay cycle');
+        return;
+      }
+
+      final suspendedConfig = _buildServiceSuspendedConfig(
+        cachedPath: path,
+        fallbackConfig: failover.originalConfig,
+      );
+
+      _updateState(RadioStateFailover(
+        token: failover.token,
+        originalConfig: suspendedConfig,
+        audioState: AudioStateLoading(config: suspendedConfig),
+        currentTrackPath: path,
+        attemptCount: failover.attemptCount,
+      ));
+
+      final playResult = await _audioService.playLocalFile(
+        path,
+        originalConfig: suspendedConfig,
+      );
+      if (playResult.isFailure) {
+        Logger.warning(
+            '🚫 SERVICE_SUSPENDED: Warning replay failed: ${playResult.error}');
+        _scheduleWarningReplay(failover);
+      }
+    });
+  }
+
+  StreamConfig _buildServiceSuspendedConfig({
+    required String cachedPath,
+    StreamConfig? fallbackConfig,
+  }) {
+    return StreamConfig(
+      streamUrl: cachedPath,
+      volume: fallbackConfig?.volume ?? _storageService.getLastVolume(),
+      musicVolume: fallbackConfig?.musicVolume,
+      title: fallbackConfig?.title ?? 'Service suspended',
+      description: 'Warning message playback',
+      visualizerUrl: fallbackConfig?.visualizerUrl,
+      streamUuid: fallbackConfig?.streamUuid,
+    );
+  }
+
   void _updateState(RadioState newState) {
     if (_currentState != newState) {
       // Track when we enter connecting state for hung detection
@@ -1993,6 +2264,10 @@ final class EnhancedRadioService implements IRadioService {
   }
 
   void _checkStreamHealth() {
+    if (_serviceSuspendedMode || SystemState.instance.serviceSuspended) {
+      return;
+    }
+
     if (_currentState is! RadioStateConnected) {
       return;
     }
@@ -2235,6 +2510,37 @@ final class EnhancedRadioService implements IRadioService {
         Logger.info(
             '🔄 FAILOVER BACKGROUND: Successfully retrieved config during failover');
 
+        if (_serviceSuspendedMode) {
+          if (SystemState.instance.serviceSuspended) {
+            await _refreshServiceSuspendedAudio(token: failover.token);
+            return;
+          }
+
+          Logger.info(
+              '🔄 FAILOVER BACKGROUND: Service suspension cleared by backend - restoring normal stream playback');
+          _serviceSuspendedMode = false;
+          _warningTrackPath = null;
+          _warningLoopTimer?.cancel();
+          _warningLoopTimer = null;
+
+          final playResult =
+              await _audioService.playStream(config, quickStart: true);
+          if (playResult.isSuccess) {
+            _updateState(RadioStateConnected(
+              token: failover.token,
+              config: config,
+              audioState: AudioStateLoading(config: config),
+            ));
+            _startConfigPolling();
+            _startPinging(config.streamUrl);
+          } else {
+            Logger.warning(
+                '🔄 FAILOVER BACKGROUND: Failed to restore live stream after suspension clear: ${playResult.error}');
+            _serviceSuspendedMode = true;
+          }
+          return;
+        }
+
         await _storageService.saveLastVolume(config.failoverVolume);
 
         // Download current track for failover cache if available
@@ -2290,6 +2596,10 @@ final class EnhancedRadioService implements IRadioService {
     _isConnectionInProgress = false; // Reset connection flag
     _isFailoverOperationInProgress = false; // Reset failover flag
     _isStreamSwitchInProgress = false; // Reset stream switch flag
+    _serviceSuspendedMode = false;
+    _warningTrackPath = null;
+    _warningLoopTimer?.cancel();
+    _warningLoopTimer = null;
     _stopStateMonitoring();
     _stopFailoverBackgroundMonitoring();
     _retryTimer?.cancel();

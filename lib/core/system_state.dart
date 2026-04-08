@@ -8,9 +8,13 @@ class SystemState {
 
   bool _offlineMode = false;
   bool _offlineOverrideActive = false;
+  bool _serviceSuspended = false;
+  String? _warningMessageUrl;
 
   bool get offlineMode => _offlineMode;
   bool get offlineOverrideActive => _offlineOverrideActive;
+  bool get serviceSuspended => _serviceSuspended;
+  String? get warningMessageUrl => _warningMessageUrl;
 
   /// Updates offline mode only if the value changes. Returns true when changed.
   bool setOfflineMode(bool value) {
@@ -56,5 +60,29 @@ class SystemState {
       return false;
     }
     return setOfflineMode(value);
+  }
+
+  bool setServiceSuspended(bool value, {String? warningMessageUrl}) {
+    final normalizedUrl = warningMessageUrl?.trim();
+    final hasChanged =
+        _serviceSuspended != value || _warningMessageUrl != normalizedUrl;
+
+    if (!hasChanged) {
+      return false;
+    }
+
+    _serviceSuspended = value;
+    _warningMessageUrl = value ? normalizedUrl : null;
+    Logger.info(
+        '🛰️ SYSTEM_STATE: Service suspension ${value ? 'ENABLED' : 'DISABLED'}${value && normalizedUrl != null ? ' ($normalizedUrl)' : ''}');
+    return true;
+  }
+
+  bool syncServiceSuspended(
+      {required bool suspended, String? warningMessageUrl}) {
+    return setServiceSuspended(
+      suspended,
+      warningMessageUrl: warningMessageUrl,
+    );
   }
 }

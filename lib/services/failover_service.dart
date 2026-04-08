@@ -13,6 +13,9 @@ import 'storage_service.dart';
 abstract interface class IFailoverService implements Disposable {
   Future<void> initialize();
   Future<void> downloadTrack(CurrentTrack track);
+  Future<String?> cacheWarningMessage(String warningUrl);
+  Future<String?> getCachedWarningMessagePath();
+  Future<void> clearWarningMessageCache();
   Future<List<File>> getAvailableTracks();
   Future<File?> getRandomTrack();
   Future<void> clearCache();
@@ -28,6 +31,7 @@ class FailoverService implements IFailoverService {
   late StorageService _storageService;
   bool _isInitialized = false;
   final Set<String> _downloadingTracks = {};
+  final Set<String> _downloadingWarningUrls = {};
   // Timer? _cleanupTimer; // Removed automatic cleanup
 
   @override
@@ -140,6 +144,101 @@ class FailoverService implements IFailoverService {
     } finally {
       _downloadingTracks.remove(track.uuid);
     }
+  }
+
+  @override
+  Future<String?> cacheWarningMessage(String warningUrl) async {
+    if (!_isInitialized) {
+      throw StateError('FailoverService not initialized');
+    }
+
+    final normalizedUrl = warningUrl.trim();
+    if (normalizedUrl.isEmpty) {
+      return null;
+    }
+
+    if (_downloadingWarningUrls.contains(normalizedUrl)) {
+      Logger.debug(
+          'FailoverService: Warning message already downloading: $normalizedUrl');
+      return _storageService.getCachedWarningMessagePath();
+    }
+
+    final existingPath = _storageService.getCachedWarningMessagePath();
+    if (existingPath != null && await File(existingPath).exists()) {
+      Logger.debug(
+          'FailoverService: Warning message already cached at $existingPath');
+      return existingPath;
+    }
+
+    _downloadingWarningUrls.add(normalizedUrl);
+
+    try {
+      final extension = _resolveWarningExtension(normalizedUrl);
+      final targetPath = '${_cacheDirectory.path}/warning_message$extension';
+      final targetFile = File(targetPath);
+
+      Logger.info(
+          'FailoverService: Downloading warning message $normalizedUrl');
+      final response = await http.get(
+        Uri.parse(normalizedUrl),
+        headers: {
+          'User-Agent': AppConstants.userAgent,
+        },
+      ).timeout(const Duration(seconds: 30));
+
+      if (response.statusCode != 200) {
+        throw Exception(
+            'Failed to download warning message: HTTP ${response.statusCode}');
+      }
+
+      await targetFile.writeAsBytes(response.bodyBytes, flush: true);
+      await _storageService.saveCachedWarningMessagePath(targetPath);
+      Logger.info(
+          'FailoverService: Warning message cached at $targetPath (${response.bodyBytes.length} bytes)');
+      return targetPath;
+    } catch (e) {
+      Logger.error('FailoverService: Failed to cache warning message: $e');
+      return null;
+    } finally {
+      _downloadingWarningUrls.remove(normalizedUrl);
+    }
+  }
+
+  @override
+  Future<String?> getCachedWarningMessagePath() async {
+    if (!_isInitialized) {
+      throw StateError('FailoverService not initialized');
+    }
+
+    final storedPath = _storageService.getCachedWarningMessagePath();
+    if (storedPath == null) {
+      return null;
+    }
+
+    if (await File(storedPath).exists()) {
+      return storedPath;
+    }
+
+    await _storageService.clearCachedWarningMessagePath();
+    return null;
+  }
+
+  @override
+  Future<void> clearWarningMessageCache() async {
+    if (!_isInitialized) {
+      throw StateError('FailoverService not initialized');
+    }
+
+    final storedPath = _storageService.getCachedWarningMessagePath();
+    if (storedPath != null) {
+      final file = File(storedPath);
+      if (await file.exists()) {
+        await file.delete();
+      }
+    }
+
+    await _storageService.clearCachedWarningMessagePath();
+    Logger.info('FailoverService: Warning message cache cleared');
   }
 
   @override
@@ -376,6 +475,19 @@ class FailoverService implements IFailoverService {
     // _cleanupTimer?.cancel(); // Removed automatic cleanup
     await _cachedTracksCountController.close();
     Logger.info('FailoverService: Disposed');
+  }
+
+  String _resolveWarningExtension(String warningUrl) {
+    final uri = Uri.tryParse(warningUrl);
+    final path = uri?.path.toLowerCase() ?? '';
+
+    if (path.endsWith('.m4a')) return '.m4a';
+    if (path.endsWith('.aac')) return '.aac';
+    if (path.endsWith('.mp3')) return '.mp3';
+    if (path.endsWith('.wav')) return '.wav';
+    if (path.endsWith('.ogg')) return '.ogg';
+
+    return '.mp3';
   }
 }
 

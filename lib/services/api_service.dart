@@ -14,7 +14,7 @@ class ApiService {
   ApiService({required StorageService storageService})
       : _storageService = storageService;
 
-  // static const String baseUrl = 'http://192.168.0.213:9191/api/public';
+  // static const String baseUrl = 'http://192.168.0.84:9191/api/public';
   static const String baseUrl = 'https://api.tunio.ai';
   static const Duration timeout = Duration(seconds: 15);
   final StorageService _storageService;
@@ -106,6 +106,19 @@ class ApiService {
             if (legacyKey is String && legacyKey.trim().isNotEmpty) {
               await _storageService.saveAdminKey(legacyKey.trim());
             }
+          }
+
+          final warningMessageRaw = configData['warning_message'];
+          final warningMessage =
+              warningMessageRaw is String ? warningMessageRaw.trim() : '';
+          if (warningMessage.isNotEmpty) {
+            await _storageService
+                .saveServiceSuspensionWarningUrl(warningMessage);
+            SystemState.instance.syncServiceSuspended(
+                suspended: true, warningMessageUrl: warningMessage);
+          } else {
+            await _storageService.clearServiceSuspension();
+            SystemState.instance.syncServiceSuspended(suspended: false);
           }
         }
 

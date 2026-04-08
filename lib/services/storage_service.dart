@@ -15,6 +15,11 @@ class StorageService {
   static const String _failoverEventsKey = 'failover_events';
   static const String _failoverTrackLastPlayedKey =
       'failover_track_last_played_v1';
+  static const String _serviceSuspendedKey = 'service_suspended';
+  static const String _serviceSuspendedWarningUrlKey =
+      'service_suspended_warning_url';
+  static const String _cachedWarningMessagePathKey =
+      'cached_warning_message_path';
   static const int _maxFailoverEvents = 200;
   // Keep some slack for forward-compat, but never let this grow without bound.
   static const int _maxFailoverTrackHistoryEntries = 250;
@@ -123,6 +128,54 @@ class StorageService {
 
   Future<void> clear() async {
     await _prefs!.clear();
+  }
+
+  Future<void> saveServiceSuspensionWarningUrl(String warningUrl) async {
+    final normalized = warningUrl.trim();
+    if (normalized.isEmpty) return;
+
+    await _prefs!.setBool(_serviceSuspendedKey, true);
+    await _prefs!.setString(_serviceSuspendedWarningUrlKey, normalized);
+    Logger.info(
+        '🚫 StorageService: Service suspension enabled with warning URL',
+        'StorageService');
+  }
+
+  Future<void> clearServiceSuspension() async {
+    await _prefs!.setBool(_serviceSuspendedKey, false);
+    await _prefs!.remove(_serviceSuspendedWarningUrlKey);
+    Logger.info(
+        '🚫 StorageService: Service suspension cleared', 'StorageService');
+  }
+
+  bool isServiceSuspended() {
+    return _prefs!.getBool(_serviceSuspendedKey) ?? false;
+  }
+
+  String? getServiceSuspensionWarningUrl() {
+    final warningUrl = _prefs!.getString(_serviceSuspendedWarningUrlKey);
+    if (warningUrl == null || warningUrl.trim().isEmpty) {
+      return null;
+    }
+    return warningUrl.trim();
+  }
+
+  Future<void> saveCachedWarningMessagePath(String filePath) async {
+    final normalized = filePath.trim();
+    if (normalized.isEmpty) return;
+    await _prefs!.setString(_cachedWarningMessagePathKey, normalized);
+  }
+
+  String? getCachedWarningMessagePath() {
+    final path = _prefs!.getString(_cachedWarningMessagePathKey);
+    if (path == null || path.trim().isEmpty) {
+      return null;
+    }
+    return path.trim();
+  }
+
+  Future<void> clearCachedWarningMessagePath() async {
+    await _prefs!.remove(_cachedWarningMessagePathKey);
   }
 
   List<FailoverEvent> getFailoverEvents({bool includeSent = true}) {

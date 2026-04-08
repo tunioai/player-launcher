@@ -447,6 +447,19 @@ class _FakeFailoverService implements IFailoverService {
   Future<void> downloadTrack(CurrentTrack track) async {}
 
   @override
+  Future<String?> cacheWarningMessage(String warningUrl) async {
+    return null;
+  }
+
+  @override
+  Future<String?> getCachedWarningMessagePath() async {
+    return null;
+  }
+
+  @override
+  Future<void> clearWarningMessageCache() async {}
+
+  @override
   Future<List<File>> getAvailableTracks() async {
     if (_cachedTracksCount <= 0 || randomTrack == null) {
       return <File>[];
