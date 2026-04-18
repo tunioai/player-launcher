@@ -124,7 +124,8 @@ class AppUpdateService {
 
   Future<bool> canRequestPackageInstalls() async {
     if (!isSupported) return false;
-    final allowed = await _channel.invokeMethod<bool>('canRequestPackageInstalls');
+    final allowed =
+        await _channel.invokeMethod<bool>('canRequestPackageInstalls');
     return allowed ?? false;
   }
 
@@ -255,7 +256,8 @@ class AppUpdateService {
   List<int> _parseVersionParts(String version) {
     return _normalizeVersion(version)
         .split('.')
-        .map((part) => int.tryParse(part.replaceAll(RegExp(r'[^0-9]'), '')) ?? 0)
+        .map(
+            (part) => int.tryParse(part.replaceAll(RegExp(r'[^0-9]'), '')) ?? 0)
         .toList();
   }
 }

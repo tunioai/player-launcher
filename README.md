@@ -39,8 +39,8 @@ v*-just-audio*
 ```
 
 ```
-git tag v1.0.6-just-audio
-git push origin v1.0.6-just-audio
+git tag v1.3.0
+git push origin v1.3.0
 ```
 
 example: v1.0.6-just-audio

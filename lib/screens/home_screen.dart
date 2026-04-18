@@ -1100,7 +1100,8 @@ class _HomeScreenState extends State<HomeScreen> {
                                 child: CircularProgressIndicator(
                                   strokeWidth: 2,
                                   value: _updateDownloadProgress,
-                                  valueColor: const AlwaysStoppedAnimation<Color>(
+                                  valueColor:
+                                      const AlwaysStoppedAnimation<Color>(
                                     Colors.white,
                                   ),
                                 ),
