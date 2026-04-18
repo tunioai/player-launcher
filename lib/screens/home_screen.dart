@@ -18,6 +18,7 @@ import '../core/system_state.dart';
 
 import '../services/radio_service.dart';
 import '../services/failover_service.dart';
+import '../services/app_update_service.dart';
 import '../widgets/code_input_widget.dart';
 import '../widgets/status_indicator.dart';
 import '../utils/logger.dart';
@@ -42,12 +43,18 @@ class _HomeScreenState extends State<HomeScreen> {
   late IRadioService _radioService;
   late IFailoverService _failoverService;
   bool _serviceInitialized = false;
+  final AppUpdateService _appUpdateService = AppUpdateService();
+  bool _isCheckingForUpdates = false;
+  bool _isDownloadingUpdate = false;
+  double? _updateDownloadProgress;
+  String? _updateStatusText;
 
   // Focus nodes for TV remote navigation
   final FocusNode _codeFocusNode = FocusNode();
   final FocusNode _connectButtonFocusNode = FocusNode();
   final FocusNode _playButtonFocusNode = FocusNode();
   final FocusNode _themeButtonFocusNode = FocusNode();
+  final FocusNode _updateButtonFocusNode = FocusNode();
   final FocusNode _visualizerButtonFocusNode = FocusNode();
   final FocusNode _visualizerCloseButtonFocusNode = FocusNode();
 
@@ -104,6 +111,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _connectButtonFocusNode.dispose();
     _playButtonFocusNode.dispose();
     _themeButtonFocusNode.dispose();
+    _updateButtonFocusNode.dispose();
     _visualizerButtonFocusNode.dispose();
     _visualizerCloseButtonFocusNode.dispose();
     _visualizerController = null;
@@ -119,8 +127,132 @@ class _HomeScreenState extends State<HomeScreen> {
     _connectButtonFocusNode.addListener(() => setState(() {}));
     _playButtonFocusNode.addListener(() => setState(() {}));
     _themeButtonFocusNode.addListener(() => setState(() {}));
+    _updateButtonFocusNode.addListener(() => setState(() {}));
     _visualizerButtonFocusNode.addListener(() => setState(() {}));
     _visualizerCloseButtonFocusNode.addListener(() => setState(() {}));
+  }
+
+  Future<void> _openUpdateDialog() async {
+    if (!_appUpdateService.isSupported ||
+        _isCheckingForUpdates ||
+        _isDownloadingUpdate) {
+      return;
+    }
+
+    setState(() {
+      _isCheckingForUpdates = true;
+      _updateDownloadProgress = null;
+      _updateStatusText = 'Checking for updates...';
+    });
+
+    try {
+      final checkResult = await _appUpdateService.checkForUpdate();
+      if (!mounted) return;
+
+      final latestRelease = checkResult.latestRelease;
+      if (latestRelease == null) {
+        _showError('Unable to load update metadata from CDN.');
+        setState(() {
+          _updateStatusText = 'Failed to load manifest';
+        });
+        return;
+      }
+
+      final approved = await showDialog<bool>(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: const Text('App updates'),
+              content: Text(
+                'Current: ${checkResult.currentVersion}\n'
+                'Latest: ${latestRelease.version}+${latestRelease.build}\n\n'
+                '${checkResult.isUpdateAvailable ? "Update is available." : "You already have the latest version."}',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(false),
+                  child: const Text('Close'),
+                ),
+                if (checkResult.isUpdateAvailable)
+                  FilledButton(
+                    onPressed: () => Navigator.of(context).pop(true),
+                    child: const Text('Update'),
+                  ),
+              ],
+            ),
+          ) ??
+          false;
+
+      if (!approved) {
+        setState(() {
+          _updateStatusText = checkResult.isUpdateAvailable
+              ? 'Update available: ${latestRelease.version}+${latestRelease.build}'
+              : 'Current version: ${checkResult.currentVersion}';
+        });
+        return;
+      }
+
+      await _downloadAndInstallUpdate(latestRelease);
+    } catch (e) {
+      Logger.error('HomeScreen: App update failed: $e');
+      _showError('Update failed: $e');
+      setState(() {
+        _updateStatusText = 'Update failed';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isCheckingForUpdates = false;
+          _isDownloadingUpdate = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _downloadAndInstallUpdate(AppReleaseInfo latestRelease) async {
+    final canInstall = await _appUpdateService.canRequestPackageInstalls();
+    if (!canInstall) {
+      await _appUpdateService.openUnknownSourcesSettings();
+      _showError(
+        'Allow "Install unknown apps" for Tunio Spot, then tap update again.',
+      );
+      setState(() {
+        _updateStatusText = 'Permission required: Install unknown apps';
+      });
+      return;
+    }
+
+    setState(() {
+      _isDownloadingUpdate = true;
+      _updateDownloadProgress = 0;
+      _updateStatusText =
+          'Downloading ${latestRelease.version}+${latestRelease.build}...';
+    });
+
+    try {
+      final apkFile = await _appUpdateService.downloadApk(
+        latestRelease,
+        onProgress: (received, total) {
+          if (!mounted) return;
+          setState(() {
+            _updateDownloadProgress =
+                total > 0 ? received.toDouble() / total.toDouble() : null;
+          });
+        },
+      );
+
+      await _appUpdateService.installApk(apkFile);
+      _showSuccess('Installer opened. Confirm installation to update the app.');
+      setState(() {
+        _updateStatusText =
+            'Installer opened for ${latestRelease.version}+${latestRelease.build}';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isDownloadingUpdate = false;
+        });
+      }
+    }
   }
 
   void _resetVisualizerState({bool closeNative = false}) {
@@ -931,6 +1063,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     final visualizerButton = _buildVisualizerButton();
+    final isUpdateBusy = _isCheckingForUpdates || _isDownloadingUpdate;
 
     return PopScope(
       canPop: !_isVisualizerVisible,
@@ -945,6 +1078,38 @@ class _HomeScreenState extends State<HomeScreen> {
             appBar: AppBar(
               title: const Text('Tunio Spot'),
               actions: [
+                if (_appUpdateService.isSupported)
+                  Focus(
+                    focusNode: _updateButtonFocusNode,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        border: Border.all(
+                          color: _updateButtonFocusNode.hasFocus
+                              ? TunioColors.primary
+                              : Colors.transparent,
+                          width: 2,
+                        ),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: IconButton(
+                        onPressed: isUpdateBusy ? null : _openUpdateDialog,
+                        icon: isUpdateBusy
+                            ? SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  value: _updateDownloadProgress,
+                                  valueColor: const AlwaysStoppedAnimation<Color>(
+                                    Colors.white,
+                                  ),
+                                ),
+                              )
+                            : const Icon(Icons.system_update_alt),
+                        tooltip: _updateStatusText ?? 'Check updates',
+                      ),
+                    ),
+                  ),
                 Focus(
                   focusNode: _themeButtonFocusNode,
                   child: Container(

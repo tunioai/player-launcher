@@ -90,17 +90,17 @@ flutter analyze
 echo "🧪 Running tests..."
 flutter test || echo "⚠️  Tests failed or not available"
 
-# Build AAB
-echo "🔨 Building Android App Bundle..."
+# Build AAB for Google Play flavor
+echo "🔨 Building Android App Bundle (play flavor)..."
 if [ -n "$BUILD_FLAGS" ]; then
     echo "📝 Using additional flags: $BUILD_FLAGS"
-    flutter build appbundle --release $BUILD_FLAGS
+    flutter build appbundle --release --flavor play --dart-define=APP_FLAVOR=play $BUILD_FLAGS
 else
-    flutter build appbundle --release
+    flutter build appbundle --release --flavor play --dart-define=APP_FLAVOR=play
 fi
 
 # Check file size
-AAB_FILE="build/app/outputs/bundle/release/app-release.aab"
+AAB_FILE="build/app/outputs/bundle/playRelease/app-play-release.aab"
 if [ -f "$AAB_FILE" ]; then
     FILE_SIZE=$(ls -lh "$AAB_FILE" | awk '{print $5}')
     echo "✅ AAB file successfully created: $AAB_FILE"
@@ -116,15 +116,15 @@ else
     exit 1
 fi
 
-# Also build APK for testing
-echo "🔨 Building APK for testing..."
+# Also build standalone APK with self-update support
+echo "🔨 Building standalone APK..."
 if [ -n "$BUILD_FLAGS" ]; then
-    flutter build apk --release $BUILD_FLAGS
+    flutter build apk --release --flavor standalone --dart-define=APP_FLAVOR=standalone $BUILD_FLAGS
 else
-    flutter build apk --release
+    flutter build apk --release --flavor standalone --dart-define=APP_FLAVOR=standalone
 fi
 
-APK_FILE="build/app/outputs/flutter-apk/app-release.apk"
+APK_FILE="build/app/outputs/flutter-apk/app-standalone-release.apk"
 if [ -f "$APK_FILE" ]; then
     APK_SIZE=$(ls -lh "$APK_FILE" | awk '{print $5}')
     echo "✅ APK file created: $APK_FILE"
@@ -135,15 +135,15 @@ echo ""
 echo "🎉 Build completed successfully!"
 echo ""
 echo "📁 Files for upload:"
-echo "   AAB (for Google Play): $AAB_FILE"
-echo "   APK (for testing): $APK_FILE"
+echo "   AAB (Google Play): $AAB_FILE"
+echo "   APK (standalone with self-update): $APK_FILE"
 echo ""
 echo "📋 Next steps:"
-echo "1. Test APK: flutter install --release"
+echo "1. Test standalone APK: flutter install --release --flavor standalone --dart-define=APP_FLAVOR=standalone"
 echo "2. Upload AAB to Google Play Console"
 echo "3. Fill in app description"
 echo "4. Submit for review"
 echo ""
 echo "📖 Detailed instructions in README.md and PUBLISH_CHECKLIST.md" 
 
-adb install -r build/app/outputs/flutter-apk/app-release.apk
+adb install -r build/app/outputs/flutter-apk/app-standalone-release.apk

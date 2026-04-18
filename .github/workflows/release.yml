@@ -58,19 +58,19 @@ jobs:
         echo "keyAlias=${{ secrets.KEY_ALIAS }}" >> android/key.properties
         echo "storeFile=upload-keystore.jks" >> android/key.properties
         
-    - name: Build Android App Bundle
-      run: flutter build appbundle --release
+    - name: Build Android App Bundle (Play)
+      run: flutter build appbundle --release --flavor play --dart-define=APP_FLAVOR=play
       
-    - name: Build Android APK
-      run: flutter build apk --release
+    - name: Build Android APK (Standalone)
+      run: flutter build apk --release --flavor standalone --dart-define=APP_FLAVOR=standalone
       
     - name: Upload Android artifacts
       uses: actions/upload-artifact@v4
       with:
         name: android-builds
         path: |
-          build/app/outputs/bundle/release/app-release.aab
-          build/app/outputs/flutter-apk/app-release.apk
+          build/app/outputs/bundle/playRelease/app-play-release.aab
+          build/app/outputs/flutter-apk/app-standalone-release.apk
           
   build-macos:
     name: Build macOS
@@ -192,9 +192,9 @@ jobs:
         echo "Checking android-builds directory:"
         ls -la ./android-builds/ || echo "android-builds directory not found"
         echo "Checking for APK file:"
-        ls -la ./android-builds/flutter-apk/app-release.apk || echo "APK file not found"
+        ls -la ./android-builds/flutter-apk/app-standalone-release.apk || echo "APK file not found"
         echo "Checking for AAB file:"
-        ls -la ./android-builds/bundle/release/app-release.aab || echo "AAB file not found"
+        ls -la ./android-builds/bundle/playRelease/app-play-release.aab || echo "AAB file not found"
         echo "All files in android-builds:"
         find ./android-builds -type f || echo "No files found"
         
@@ -229,16 +229,16 @@ jobs:
           ## What's new in version ${{ steps.get_version.outputs.VERSION }}
           
           ### Download files:
-          - **app-release.aab** - Android App Bundle for Google Play upload
-          - **app-release.apk** - APK file for Android testing
+          - **app-play-release.aab** - Android App Bundle for Google Play upload
+          - **app-standalone-release.apk** - Standalone APK with in-app self-update
           - **tunio-spot-macos.tar.gz** - macOS application
           - **tunio-spot-windows-x64.zip** - Windows application (64-bit)
           
           ### Installation instructions:
           
           #### Android:
-          - For regular installation: download APK and install
-          - For Google Play publishing: use AAB file
+          - For Google Play publishing: use `app-play-release.aab`
+          - For direct install/update outside Play: use `app-standalone-release.apk`
           
           #### macOS:
           - Extract archive and move application to Applications folder
@@ -251,8 +251,8 @@ jobs:
           
           Project automatically built via GitHub Actions
         files: |
-          ./android-builds/bundle/release/app-release.aab
-          ./android-builds/flutter-apk/app-release.apk
+          ./android-builds/bundle/playRelease/app-play-release.aab
+          ./android-builds/flutter-apk/app-standalone-release.apk
           ./macos-builds/tunio-spot-macos.tar.gz
           ./windows-x64-builds/tunio-spot-windows-x64.zip
         draft: false

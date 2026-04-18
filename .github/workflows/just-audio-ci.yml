@@ -75,8 +75,8 @@ jobs:
     - name: Disable Flutter analytics
       run: flutter config --no-analytics
       
-    - name: Build APK (debug)
-      run: flutter build apk --debug
+    - name: Build APK (debug, standalone flavor)
+      run: flutter build apk --debug --flavor standalone --dart-define=APP_FLAVOR=standalone
       
   build-test-macos:
     name: Build Test macOS (Just Audio)

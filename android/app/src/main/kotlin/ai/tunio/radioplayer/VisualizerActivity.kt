@@ -1,12 +1,14 @@
 package ai.tunio.radioplayer
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.RectF
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -27,10 +29,25 @@ import androidx.media3.common.Player
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.TrackSelectionParameters
+import androidx.media3.database.StandaloneDatabaseProvider
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.cache.CacheDataSource
+import androidx.media3.datasource.cache.CacheKeyFactory
+import androidx.media3.datasource.cache.CacheWriter
+import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
+import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import org.json.JSONObject
+import java.io.File
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import kotlin.random.Random
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -46,10 +63,54 @@ class VisualizerActivity : Activity() {
         const val EXTRA_URL = "visualizer_url"
         const val EXTRA_LOW_PERFORMANCE_MODE = "low_performance_mode"
         private const val TAG = "VisualizerActivity"
+        private const val VIDEO_CACHE_DIR_NAME = "visualizer_video_cache"
+        private const val VIDEO_CACHE_MAX_BYTES = 3L * 1024L * 1024L * 1024L // 3 GB
+        private const val VIDEO_PREFETCH_MAX_ITEMS = 1
+        private const val VIDEO_PREFETCH_MAX_BYTES_PER_ITEM = 8L * 1024L * 1024L // 8 MB
         private const val PLAYBACK_GUARD_CHECK_INTERVAL_MS = 3000L
         private const val PLAYBACK_GUARD_STALL_TIMEOUT_MS = 12000L
         private const val PLAYBACK_GUARD_RECOVERY_COOLDOWN_MS = 2500L
         private const val PLAYBACK_PROGRESS_EPSILON_MS = 250L
+
+        @Volatile
+        private var sharedVideoCache: SimpleCache? = null
+
+        @Volatile
+        private var sharedVideoCachePath: String? = null
+
+        @Volatile
+        private var sharedDatabaseProvider: StandaloneDatabaseProvider? = null
+
+        private fun obtainSharedVideoCache(context: Context, cacheDir: File): SimpleCache {
+            synchronized(this) {
+                val desiredPath = cacheDir.absolutePath
+                val existing = sharedVideoCache
+                if (existing != null && sharedVideoCachePath == desiredPath) {
+                    return existing
+                }
+                if (existing != null) {
+                    try {
+                        existing.release()
+                    } catch (_: Throwable) {
+                        // no-op
+                    }
+                    sharedVideoCache = null
+                    sharedVideoCachePath = null
+                }
+
+                val provider = sharedDatabaseProvider ?: StandaloneDatabaseProvider(context).also {
+                    sharedDatabaseProvider = it
+                }
+                val cache = SimpleCache(
+                    cacheDir,
+                    LeastRecentlyUsedCacheEvictor(VIDEO_CACHE_MAX_BYTES),
+                    provider,
+                )
+                sharedVideoCache = cache
+                sharedVideoCachePath = desiredPath
+                return cache
+            }
+        }
     }
 
     private lateinit var rootLayout: FrameLayout
@@ -83,6 +144,14 @@ class VisualizerActivity : Activity() {
     private var lastObservedPlaybackPositionMs: Long = -1L
     private var lastPlaybackProgressRealtimeMs: Long = 0L
     private var lastRecoveryAttemptRealtimeMs: Long = 0L
+    private lateinit var playbackCacheDataSourceFactory: CacheDataSource.Factory
+    private lateinit var prefetchCacheDataSourceFactory: CacheDataSource.Factory
+    private val prefetchExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    private var prefetchFuture: Future<*>? = null
+    @Volatile
+    private var prefetchToken: Int = 0
+    private lateinit var videoCache: SimpleCache
+    private val knownSources = linkedSetOf<String>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -118,6 +187,8 @@ class VisualizerActivity : Activity() {
             VisualizerController.currentActivity = null
         }
         clearNativeVideo()
+        cancelVideoPrefetch()
+        prefetchExecutor.shutdownNow()
         videoPlayerView.player = null
         player?.release()
         player = null
@@ -152,6 +223,8 @@ class VisualizerActivity : Activity() {
     }
 
     private fun initPlayer() {
+        initVideoCaching()
+        val mediaSourceFactory = DefaultMediaSourceFactory(playbackCacheDataSourceFactory)
         val silentVideoAttrs = AudioAttributes.Builder()
             .setUsage(C.USAGE_MEDIA)
             .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
@@ -161,7 +234,10 @@ class VisualizerActivity : Activity() {
             .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)
             .build()
 
-        player = ExoPlayer.Builder(this).build().apply {
+        player = ExoPlayer.Builder(this)
+            .setMediaSourceFactory(mediaSourceFactory)
+            .build()
+            .apply {
             repeatMode = Player.REPEAT_MODE_OFF
             playWhenReady = true
             videoScalingMode = if (lowPerformanceMode) {
@@ -223,11 +299,111 @@ class VisualizerActivity : Activity() {
                         Log.w(TAG, "player error, hard cut fallback: ${error.message}")
                         waitingForFirstFrame = false
                         transitionOverlayView.alpha = 0f
+                        if (tryPlayRandomCachedFallback()) {
+                            return
+                        }
                         hardCutToNext()
                     }
                 },
             )
         }
+    }
+
+    private fun initVideoCaching() {
+        val cacheDir = resolveVideoCacheDirectory()
+        val appContext = applicationContext
+        val cache = obtainSharedVideoCache(appContext, cacheDir)
+        videoCache = cache
+        val httpFactory = DefaultHttpDataSource.Factory().setAllowCrossProtocolRedirects(true)
+        val upstreamFactory = DefaultDataSource.Factory(appContext, httpFactory)
+        val cacheKeyFactory = CacheKeyFactory { dataSpec ->
+            buildVideoCacheKey(dataSpec.uri)
+        }
+        Log.d(TAG, "Video cache directory: ${cacheDir.absolutePath}")
+
+        // Playback must not write into cache on the critical rendering path.
+        playbackCacheDataSourceFactory = CacheDataSource.Factory()
+            .setCache(cache)
+            .setUpstreamDataSourceFactory(upstreamFactory)
+            .setCacheKeyFactory(cacheKeyFactory)
+            .setCacheWriteDataSinkFactory(null)
+            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+
+        // Background prefetch fills cache out-of-band.
+        prefetchCacheDataSourceFactory = CacheDataSource.Factory()
+            .setCache(cache)
+            .setUpstreamDataSourceFactory(upstreamFactory)
+            .setCacheKeyFactory(cacheKeyFactory)
+            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+    }
+
+    private fun resolveVideoCacheDirectory(): File {
+        val externalDirs = getExternalFilesDirs(null).filterNotNull()
+        val removableDir = externalDirs.firstOrNull {
+            Environment.isExternalStorageRemovable(it) && ensureDirectoryWritable(it)
+        }
+        if (removableDir != null) {
+            return File(removableDir, VIDEO_CACHE_DIR_NAME).apply { mkdirs() }
+        }
+
+        val internalExternalDir = externalDirs.firstOrNull {
+            !Environment.isExternalStorageRemovable(it) && ensureDirectoryWritable(it)
+        }
+        if (internalExternalDir != null) {
+            return File(internalExternalDir, VIDEO_CACHE_DIR_NAME).apply { mkdirs() }
+        }
+
+        val internalDir = cacheDir.takeIf { ensureDirectoryWritable(it) }
+        if (internalDir != null) {
+            return File(internalDir, VIDEO_CACHE_DIR_NAME).apply { mkdirs() }
+        }
+
+        return File(cacheDir, VIDEO_CACHE_DIR_NAME).apply { mkdirs() }
+    }
+
+    private fun ensureDirectoryWritable(dir: File): Boolean {
+        return try {
+            if (!dir.exists() && !dir.mkdirs()) {
+                return false
+            }
+            dir.isDirectory && dir.canWrite()
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    private fun buildVideoCacheKey(uri: Uri?): String {
+        if (uri == null) {
+            return "video:unknown"
+        }
+
+        val quality = uri.pathSegments
+            .firstOrNull { it.equals("hd", ignoreCase = true) || it.equals("low", ignoreCase = true) }
+            ?.lowercase()
+
+        val fileName = uri.lastPathSegment
+            ?.substringAfterLast('/')
+            ?.substringBefore('?')
+            ?.lowercase()
+            .orEmpty()
+
+        if (fileName.isNotEmpty()) {
+            if (!quality.isNullOrEmpty()) {
+                val dotIndex = fileName.lastIndexOf('.')
+                val withQuality = if (dotIndex > 0) {
+                    val base = fileName.substring(0, dotIndex)
+                    val ext = fileName.substring(dotIndex)
+                    "${base}_${quality}${ext}"
+                } else {
+                    "${fileName}_${quality}"
+                }
+                return "video:$withQuality"
+            }
+            return "video:$fileName"
+        }
+
+        val normalized = uri.buildUpon().clearQuery().fragment(null).build().toString()
+        return "video:$normalized"
     }
 
     private fun createWebView(): WebView {
@@ -611,24 +787,38 @@ class VisualizerActivity : Activity() {
             clearNativeVideo()
             return
         }
+        val nextPlaylistKey = nextPlaylist.joinToString("\u0001")
+        val samePlaylist = ownerId == currentOwnerId &&
+            nextPlaylistKey == currentPlaylistKey &&
+            playlist.isNotEmpty() &&
+            (player?.mediaItemCount ?: 0) > 0
 
         // Keep scene transitions enabled; low-performance mode should reduce
         // heavy visual effects (blur/backdrop) but not remove transitions.
         transitionMs = json.optInt("transitionMs", 0).coerceIn(0, 1200)
         currentDimAlpha = json.optDouble("dimAlpha", 0.0).toFloat().coerceIn(0f, 1f)
-        hideUntilFirstFrame()
         applyPlacement(json.optJSONObject("rect"), currentDimAlpha)
+        if (samePlaylist) {
+            Log.d(TAG, "setPlaylist skipped restart (same owner/playlist), owner=$ownerId")
+            return
+        }
+
+        knownSources.addAll(nextPlaylist)
+        hideUntilFirstFrame()
         Log.d(TAG, "setPlaylist owner=$ownerId tracks=${nextPlaylist.size} transitionMs=$transitionMs")
 
         currentOwnerId = ownerId
         playlist = nextPlaylist
-        currentPlaylistKey = nextPlaylist.joinToString("\u0001")
+        currentPlaylistKey = nextPlaylistKey
         refillQueue(avoidCurrent = false)
         startPlaybackPipeline()
+        val currentSource = playlist.getOrNull(currentIndex)
+        scheduleVideoPrefetch(playlist, currentSource)
     }
 
     private fun clearNativeVideo() {
         Log.d(TAG, "clearNativeVideo")
+        cancelVideoPrefetch()
         stopPlaybackGuard()
         playlist = emptyList()
         playQueue.clear()
@@ -648,6 +838,110 @@ class VisualizerActivity : Activity() {
         videoLayer.visibility = View.GONE
         resetPlaybackGuardState()
         player?.stop()
+    }
+
+    private fun scheduleVideoPrefetch(playlistSnapshot: List<String>, excludeSource: String?) {
+        val targets = playlistSnapshot
+            .asSequence()
+            .filter { it.isNotBlank() && it != excludeSource }
+            .distinct()
+            .take(VIDEO_PREFETCH_MAX_ITEMS)
+            .toList()
+
+        cancelVideoPrefetch()
+        if (targets.isEmpty()) {
+            return
+        }
+
+        val token = ++prefetchToken
+        prefetchFuture = prefetchExecutor.submit {
+            for (source in targets) {
+                if (Thread.currentThread().isInterrupted || token != prefetchToken) {
+                    return@submit
+                }
+                prefetchVideoToCache(source, token)
+            }
+        }
+    }
+
+    private fun cancelVideoPrefetch() {
+        prefetchToken += 1
+        prefetchFuture?.cancel(true)
+        prefetchFuture = null
+    }
+
+    private fun prefetchVideoToCache(source: String, token: Int) {
+        try {
+            if (token != prefetchToken) {
+                return
+            }
+            val uri = Uri.parse(source)
+            val dataSpec = DataSpec.Builder()
+                .setUri(uri)
+                .setKey(buildVideoCacheKey(uri))
+                .setLength(VIDEO_PREFETCH_MAX_BYTES_PER_ITEM)
+                .build()
+            val cacheWriter = CacheWriter(
+                prefetchCacheDataSourceFactory.createDataSource(),
+                dataSpec,
+                null,
+                null,
+            )
+            cacheWriter.cache()
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        } catch (error: Throwable) {
+            Log.d(TAG, "Video prefetch skipped for $source: ${error.message}")
+        }
+    }
+
+    private fun tryPlayRandomCachedFallback(): Boolean {
+        val instance = player ?: return false
+        val currentMediaId = instance.currentMediaItem?.mediaId.orEmpty()
+        if (currentMediaId.startsWith("fallback-")) {
+            return false
+        }
+
+        val currentSource = playlist.getOrNull(currentIndex)
+        val candidates = knownSources
+            .asSequence()
+            .filter { it.isNotBlank() && it != currentSource }
+            .filter { hasCachedDataForSource(it) }
+            .toList()
+        if (candidates.isEmpty()) {
+            return false
+        }
+
+        val fallbackSource = candidates[Random.nextInt(candidates.size)]
+        val mediaItem = createFallbackMediaItem(fallbackSource)
+        Log.w(TAG, "Using cached fallback clip: $fallbackSource")
+        instance.stop()
+        instance.clearMediaItems()
+        instance.addMediaItem(mediaItem)
+        instance.prepare()
+        instance.playWhenReady = true
+        instance.play()
+        return true
+    }
+
+    private fun hasCachedDataForSource(source: String): Boolean {
+        val key = buildVideoCacheKey(Uri.parse(source))
+        if (key == "video:unknown") {
+            return false
+        }
+        return try {
+            videoCache.getCachedSpans(key).isNotEmpty()
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    private fun createFallbackMediaItem(source: String): MediaItem {
+        val mediaId = "fallback-${mediaIdSerial++}"
+        return MediaItem.Builder()
+            .setUri(Uri.parse(source))
+            .setMediaId(mediaId)
+            .build()
     }
 
     private fun refillQueue(avoidCurrent: Boolean) {
