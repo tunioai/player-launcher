@@ -96,6 +96,10 @@ final class EnhancedRadioService implements IRadioService {
   bool _hasEstablishedLiveSession = false;
   String? _pendingManualConnectToken;
   bool _serviceSuspendedMode = false;
+  // True when the current failover was entered because backend offline mode is
+  // on (as opposed to a network outage). Lets us restore live promptly once the
+  // backend turns offline mode back off, without changing outage recovery.
+  bool _offlineModeFailoverActive = false;
   String? _warningTrackPath;
 
   DateTime? _failoverOperationStartTime;
@@ -1034,6 +1038,31 @@ final class EnhancedRadioService implements IRadioService {
         _warningLoopTimer = null;
       }
 
+      // Backend offline mode: start from local cache instead of the live
+      // stream so it is honoured up-front. Skip when the station (token) just
+      // changed - the old cache is about to be replaced and would mix stations
+      // - or when nothing is cached yet; in those cases we play live and switch
+      // to cache once it is available.
+      if (SystemState.instance.offlineMode &&
+          !tokenChanged &&
+          _failoverService.cachedTracksCount > 0) {
+        Logger.warning(
+            '🛰️ CONNECTION: Offline mode enabled by backend - starting from local cache instead of live stream');
+        if (config.current != null) {
+          _downloadTrackInBackground(config.current!);
+        }
+        _currentConnectionStage = null;
+        _activateFailover(
+          RadioStateConnected(
+            token: token,
+            config: config,
+            audioState: const AudioStateIdle(),
+          ),
+          'Offline mode enabled by backend',
+        );
+        return;
+      }
+
       // STAGE 3: Start audio playback with detailed monitoring
       _currentConnectionStage = 'AUDIO_LOADING';
       Logger.info('🔄 CONNECTION: STAGE 3 - Starting audio playback...');
@@ -1127,6 +1156,7 @@ final class EnhancedRadioService implements IRadioService {
       _isFailoverOperationInProgress = false;
       _isStreamSwitchInProgress = false;
       _serviceSuspendedMode = false;
+      _offlineModeFailoverActive = false;
       _warningTrackPath = null;
       _warningLoopTimer?.cancel();
       _warningLoopTimer = null;
@@ -1356,6 +1386,18 @@ final class EnhancedRadioService implements IRadioService {
             token: connected.token,
             fallbackConfig: newConfig ?? connected.config,
           );
+          return;
+        }
+
+        // Backend turned offline mode ON: switch live playback to local cache
+        // right away instead of waiting for the next stream interruption. With
+        // nothing cached yet we fall through to keep building the cache and try
+        // again on the next refresh.
+        if (SystemState.instance.offlineMode &&
+            _failoverService.cachedTracksCount > 0) {
+          Logger.warning(
+              '🛰️ OFFLINE MODE: Backend enabled offline mode - switching from live stream to local cache');
+          _activateFailover(connected, 'Offline mode enabled by backend');
           return;
         }
 
@@ -1708,6 +1750,10 @@ final class EnhancedRadioService implements IRadioService {
 
     Logger.error('🚨 FAILOVER: Activating failover mode - $reason');
 
+    // Remember whether this failover is driven by backend offline mode so we
+    // can restore live as soon as offline mode is turned back off.
+    _offlineModeFailoverActive = SystemState.instance.offlineMode;
+
     final now = DateTime.now();
     final recentRestoreAge = _lastFailoverRestoreTime != null
         ? now.difference(_lastFailoverRestoreTime!)
@@ -1940,6 +1986,7 @@ final class EnhancedRadioService implements IRadioService {
                 );
         if (playResult.isSuccess) {
           Logger.info('✅ RESTORE: Successfully restored live stream!');
+          _offlineModeFailoverActive = false;
           _resetHealthFailures();
           _lastFailoverRestoreTime =
               DateTime.now(); // Mark restore time for grace period
@@ -2538,6 +2585,17 @@ final class EnhancedRadioService implements IRadioService {
                 '🔄 FAILOVER BACKGROUND: Failed to restore live stream after suspension clear: ${playResult.error}');
             _serviceSuspendedMode = true;
           }
+          return;
+        }
+
+        // Backend turned offline mode OFF while we were holding playback in the
+        // local cache because of it: restore the live stream now instead of
+        // waiting for the current cached track to finish.
+        if (_offlineModeFailoverActive && !SystemState.instance.offlineMode) {
+          Logger.info(
+              '🛰️ FAILOVER BACKGROUND: Offline mode disabled by backend - restoring live stream');
+          _offlineModeFailoverActive = false;
+          _tryRestoreAfterTrackEnd(failover);
           return;
         }
 

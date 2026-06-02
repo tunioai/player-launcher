@@ -64,6 +64,13 @@ final class EnhancedAudioService implements IAudioService {
   Duration _lastBufferSize = Duration.zero;
   int _stuckBufferCount = 0;
 
+  // Playback-progress stall detection. Catches the "silent" stall where the
+  // player still reports playing=true but the position stops advancing (flaky
+  // network on TVs: connectivity_plus stays online and the source never
+  // surfaces an error). Position progress is the only reliable signal here.
+  Duration _lastProgressPosition = Duration.zero;
+  DateTime? _lastProgressAt;
+
   Timer? _loadingTimeoutTimer;
   Timer? _hangDetectionTimer;
   Future<void>? _initializationFuture;
@@ -86,6 +93,10 @@ final class EnhancedAudioService implements IAudioService {
   static const Duration _hangDetectionInterval = Duration(seconds: 5);
   static const Duration _maxHangTime = Duration(seconds: 20);
   static const Duration _bufferStallThreshold = Duration(seconds: 20);
+  // How long playback position may stay frozen (while playing=true) before we
+  // treat it as a stalled stream and trigger recovery.
+  static const Duration _playbackStallTimeout = Duration(seconds: 10);
+  static const Duration _playbackStallTimeoutHls = Duration(seconds: 12);
 
   @override
   Stream<AudioState> get stateStream => _stateController.stream;
@@ -669,6 +680,11 @@ final class EnhancedAudioService implements IAudioService {
     _lastPlaybackPosition = Duration.zero;
   }
 
+  void _resetStallTracking() {
+    _lastProgressPosition = Duration.zero;
+    _lastProgressAt = null;
+  }
+
   void _handleConnectivityChange(List<ConnectivityResult> results) {
     final hasConnection = results.any((result) =>
         result == ConnectivityResult.mobile ||
@@ -801,6 +817,37 @@ final class EnhancedAudioService implements IAudioService {
     final now = DateTime.now();
     final isHls = _currentStreamUrl != null && _isHlsStream(_currentStreamUrl!);
 
+    // PLAYBACK STALL: the player still reports playing=true but the playback
+    // position has stopped advancing. This is the signature of a "silent"
+    // network stall on live/HLS streams (e.g. flaky Wi-Fi on Samsung TVs) where
+    // the source keeps the player buffering without surfacing an error and
+    // connectivity_plus stays "online". We synthesise a network error so the
+    // normal restart -> failover recovery path can run. Local failover playback
+    // is skipped here (_currentStreamUrl is null while playing a cached file).
+    if (_audioPlayer.playing &&
+        !_isPlayStreamInProgress &&
+        _currentStreamUrl != null &&
+        _streamStartTime != null) {
+      final position = _audioPlayer.position;
+      if (position > _lastProgressPosition) {
+        _lastProgressPosition = position;
+        _lastProgressAt = now;
+      } else if (_lastProgressPosition > Duration.zero) {
+        final frozenFor = now.difference(_lastProgressAt ?? now);
+        final stallTimeout =
+            isHls ? _playbackStallTimeoutHls : _playbackStallTimeout;
+        if (frozenFor >= stallTimeout) {
+          Logger.error(
+              '🚨 PLAYBACK STALL: position frozen at ${position.inSeconds}s for ${frozenFor.inSeconds}s while playing (${isHls ? 'HLS' : 'live'}) - raising network error');
+          // Reset so we don't re-fire on every tick while recovery is running.
+          _lastProgressAt = now;
+          _handlePlayerError(Exception(
+              'Network error: playback stalled for ${frozenFor.inSeconds}s without progress'));
+          return;
+        }
+      }
+    }
+
     if (_currentState.isPlaying &&
         _audioPlayer.playing &&
         _currentStreamUrl != null &&
@@ -924,6 +971,7 @@ final class EnhancedAudioService implements IAudioService {
 
         final isHls = _isHlsStream(config.streamUrl);
         _resetHlsTracking();
+        _resetStallTracking();
         if (_isCurrentLoadConfigurationHls != isHls) {
           Logger.info(
               '🎵 AUDIO_DEBUG: Rebuilding audio player for ${isHls ? 'HLS' : 'live'} buffering profile');
@@ -1133,6 +1181,7 @@ final class EnhancedAudioService implements IAudioService {
         _awaitingInterruptionResume = false;
         _lastPlaybackPosition = Duration.zero;
         _resetHlsTracking();
+        _resetStallTracking();
 
         Logger.info('🎵 FAILOVER: Creating audio source from local file...');
         final audioSource = AudioSource.file(
@@ -1258,6 +1307,7 @@ final class EnhancedAudioService implements IAudioService {
       // Reset ghost playback detection
       _stuckBufferCount = 0;
       _lastBufferSize = Duration.zero;
+      _resetStallTracking();
       _isPlayingStream = false;
       _isPlayStreamInProgress = false;
       _currentStreamUrl = null;

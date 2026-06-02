@@ -15,6 +15,7 @@ final class HlsStreamAudioSource extends StreamAudioSource {
   final Duration refreshInterval;
   final Duration segmentRequestTimeout;
   final int maxRetryAttempts;
+  final Duration maxPlaylistOutage;
   final HlsPlaylistInfoCallback? onPlaylistInfo;
 
   final List<_HlsStreamSession> _sessions = [];
@@ -26,6 +27,7 @@ final class HlsStreamAudioSource extends StreamAudioSource {
     this.refreshInterval = const Duration(seconds: 1),
     this.segmentRequestTimeout = const Duration(seconds: 10),
     this.maxRetryAttempts = 3,
+    this.maxPlaylistOutage = const Duration(seconds: 30),
     this.onPlaylistInfo,
     super.tag,
   });
@@ -42,6 +44,7 @@ final class HlsStreamAudioSource extends StreamAudioSource {
       refreshInterval: refreshInterval,
       segmentRequestTimeout: segmentRequestTimeout,
       maxRetryAttempts: maxRetryAttempts,
+      maxPlaylistOutage: maxPlaylistOutage,
       onPlaylistInfo: onPlaylistInfo,
     );
     _sessions.add(session);
@@ -90,6 +93,7 @@ class _HlsStreamSession {
   final Duration refreshInterval;
   final Duration segmentRequestTimeout;
   final int maxRetryAttempts;
+  final Duration maxPlaylistOutage;
   final HlsPlaylistInfoCallback? onPlaylistInfo;
 
   final StreamController<List<int>> _controller = StreamController<List<int>>();
@@ -98,6 +102,7 @@ class _HlsStreamSession {
 
   bool _cancelled = false;
   int? _lastSequence;
+  DateTime? _playlistFailingSince;
 
   _HlsStreamSession({
     required this.playlistUri,
@@ -105,6 +110,7 @@ class _HlsStreamSession {
     required this.refreshInterval,
     required this.segmentRequestTimeout,
     required this.maxRetryAttempts,
+    required this.maxPlaylistOutage,
     this.onPlaylistInfo,
   });
 
@@ -134,6 +140,7 @@ class _HlsStreamSession {
       while (!_cancelled && !_controller.isClosed) {
         try {
           final playlist = await _fetchPlaylist();
+          _playlistFailingSince = null;
           if (onPlaylistInfo != null) {
             final info = HlsPlaylistInfo(
               segmentCount: playlist.segments.length,
@@ -166,8 +173,26 @@ class _HlsStreamSession {
           if (_cancelled || _controller.isClosed) {
             break;
           }
-          Logger.warning('HLS playlist fetch error: $e');
+          _playlistFailingSince ??= DateTime.now();
+          final failingFor = DateTime.now().difference(_playlistFailingSince!);
+          Logger.warning(
+              'HLS playlist fetch error (failing for ${failingFor.inSeconds}s): $e');
           Logger.debug('$stackTrace');
+
+          // Sustained outage: surface a network error so just_audio reports it
+          // and the app's recovery (restart -> failover to local cache) runs,
+          // instead of the player hanging forever in a buffering state. Kept
+          // generous (default 30s) so it never pre-empts healthy buffered
+          // playback - the player's position-stall watchdog reacts sooner once
+          // the buffer actually drains; this mainly stops the silent retry loop.
+          if (failingFor >= maxPlaylistOutage && !_controller.isClosed) {
+            Logger.error(
+                '🚨 HLS: playlist unreachable for ${failingFor.inSeconds}s - surfacing network error to player');
+            _controller.addError(Exception(
+                'Network error: HLS playlist unreachable for ${failingFor.inSeconds}s'));
+            break;
+          }
+
           await Future.delayed(refreshInterval);
         }
 

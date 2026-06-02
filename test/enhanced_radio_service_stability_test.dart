@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:tunio_radio_player/core/audio_state.dart';
 import 'package:tunio_radio_player/core/result.dart';
+import 'package:tunio_radio_player/core/system_state.dart';
 import 'package:tunio_radio_player/models/current_track.dart';
 import 'package:tunio_radio_player/models/failover_event.dart';
 import 'package:tunio_radio_player/models/stream_config.dart';
@@ -188,6 +189,34 @@ void main() {
 
       expect(context.apiService.getStreamConfigCalls, greaterThanOrEqualTo(2));
       expect(context.radioService.currentState, isA<RadioStateConnected>());
+    });
+
+    test('starts from local cache when backend offline mode is enabled',
+        () async {
+      final context = await _createContext(
+        liveConfig: liveConfig,
+        cachedTracksCount: 2,
+      );
+
+      addTearDown(() async {
+        SystemState.instance.setOfflineMode(false);
+        await context.dispose();
+      });
+
+      // Backend signalled offline mode: connecting must go straight to the
+      // local cache instead of starting the live stream and waiting for an
+      // interruption.
+      SystemState.instance.setOfflineMode(true);
+
+      final connectResult = await context.radioService.connect('778899');
+      expect(connectResult.isSuccess, isTrue);
+
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateFailover);
+
+      expect(context.audioService.playStreamCalls, 0);
+      expect(context.audioService.playLocalFileCalls, greaterThanOrEqualTo(1));
+      expect(context.radioService.currentState, isA<RadioStateFailover>());
     });
   });
 }
