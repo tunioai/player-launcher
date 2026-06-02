@@ -2,7 +2,11 @@
 /// should play before the next restore attempt.
 final class FailoverRecoveryBackoff {
   static const Duration recentRestoreThreshold = Duration(minutes: 2);
-  static const List<int> _trackSkipSchedule = [0, 1, 2, 4, 6];
+  // How many cached tracks to play before the next live-restore attempt, per
+  // instability level. Kept gentle so the player keeps trying to get back to
+  // live (an appliance should return to the broadcast) rather than sitting in
+  // cache for many tracks; restore success resets the level to 0.
+  static const List<int> _trackSkipSchedule = [0, 0, 1, 1, 2];
 
   int _instabilityLevel = 0;
   int _pendingTrackSkips = 0;

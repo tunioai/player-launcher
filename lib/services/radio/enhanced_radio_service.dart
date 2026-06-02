@@ -73,7 +73,7 @@ final class EnhancedRadioService implements IRadioService {
   static const Duration _liveInterruptionDelayHls = Duration(seconds: 6);
   static const Duration _liveInterruptionDelayDefault = Duration(seconds: 3);
   static const Duration _pingFailureGracePeriod = Duration(seconds: 6);
-  static const Duration _restoreLiveAttemptTimeout = Duration(seconds: 12);
+  static const Duration _restoreLiveAttemptTimeout = Duration(seconds: 18);
   // Backstop: if we are in failover but not playing for this long (and no
   // failover operation is in progress), force recovery. Catches cache-track-end
   // paths the normal restore/next-track triggers can miss (e.g. Error -> Idle).
@@ -1947,25 +1947,17 @@ final class EnhancedRadioService implements IRadioService {
     Logger.info('🔄 RESTORE: Failover token: ${failover.token}');
     _startFailoverOperation('restore', () async {
       try {
-        final isNetworkReportedOffline = !_latestNetworkState.isConnected;
-        final configTimeout = isNetworkReportedOffline
-            ? const Duration(seconds: 2)
-            : const Duration(seconds: 5);
-        final restoreTimeout = isNetworkReportedOffline
-            ? const Duration(seconds: 4)
-            : _restoreLiveAttemptTimeout;
-        if (isNetworkReportedOffline) {
-          Logger.warning(
-              '🔄 RESTORE: Network is reported offline, running a quick restore probe to avoid getting stuck in failover');
-        }
-
-        // Attempt to get fresh config from server with a short timeout
+        // Probe for fresh config. A genuinely offline device fails this fast
+        // (socket error) and rolls to the next cached track; if it succeeds the
+        // network is really up, so we then give live playback the full time it
+        // needs below - regardless of any stale connectivity_plus report (TV
+        // boxes often misreport offline on a working Ethernet link).
         final config = await _apiService
             .getStreamConfig(failover.token, currentPing: _currentPing)
             .timeout(
-              configTimeout,
-              onTimeout: () => throw TimeoutException(
-                  'Config request timeout', configTimeout),
+              const Duration(seconds: 6),
+              onTimeout: () =>
+                  throw TimeoutException('Config request timeout'),
             );
         if (config == null) {
           Logger.warning(
@@ -1982,10 +1974,12 @@ final class EnhancedRadioService implements IRadioService {
 
         await _storageService.saveLastVolume(config.failoverVolume);
 
-        // Try to restore live stream quickly to avoid long silent gaps.
+        // Restore the live stream. No quickStart: HLS needs time to set up the
+        // playlist/segments/decoder (especially on slow TV boxes); quickStart's
+        // short window was failing there and keeping us stuck in failover.
         final playResult =
-            await _audioService.playStream(config, quickStart: true).timeout(
-                  restoreTimeout,
+            await _audioService.playStream(config).timeout(
+                  _restoreLiveAttemptTimeout,
                   onTimeout: () =>
                       const Failure('Restore live stream attempt timed out'),
                 );
