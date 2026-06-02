@@ -175,4 +175,32 @@ class AudioConfig {
       ),
     );
   }
+
+  /// Single load configuration used for both HLS and live streams, so the
+  /// AudioPlayer is created once for the app's lifetime (no per-stream-type
+  /// recreation). Tuned for stability (generous buffering) over minimal
+  /// latency, which suits an always-on radio appliance. Values are a starting
+  /// point and can be tuned by on-device measurement.
+  static AudioLoadConfiguration buildUnifiedLoadConfiguration() {
+    Logger.info(
+        '🎯 AudioConfig: Building unified load configuration (single player)',
+        'AudioConfig');
+    return AudioLoadConfiguration(
+      darwinLoadControl: const DarwinLoadControl(
+        automaticallyWaitsToMinimizeStalling: false,
+        preferredForwardBufferDuration: Duration(seconds: 30),
+        canUseNetworkResourcesForLiveStreamingWhilePaused: false,
+        preferredPeakBitRate: maxBitRateDouble,
+      ),
+      androidLoadControl: const AndroidLoadControl(
+        minBufferDuration: Duration(seconds: 10),
+        maxBufferDuration: Duration(seconds: 40),
+        bufferForPlaybackDuration: Duration(seconds: 2),
+        bufferForPlaybackAfterRebufferDuration: Duration(seconds: 5),
+        targetBufferBytes: 8 * 1024 * 1024,
+        prioritizeTimeOverSizeThresholds: true,
+        backBufferDuration: backBufferDuration,
+      ),
+    );
+  }
 }

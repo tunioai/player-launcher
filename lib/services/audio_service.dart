@@ -151,16 +151,18 @@ final class EnhancedAudioService implements IAudioService {
         url.contains('playlist.m3u8');
   }
 
-  Future<void> _initializeAudioPlayer({bool isHls = false}) async {
+  Future<void> _initializeAudioPlayer() async {
     Logger.info('🎵 INIT_DEBUG: ===== INITIALIZING AUDIO PLAYER =====');
     Logger.info('🎵 INIT_DEBUG: User agent: ${AudioConfig.userAgent}');
 
+    // Single player for the whole app lifetime: one unified load configuration
+    // that serves both HLS and live streams, so we never recreate the player
+    // for a buffer-profile switch.
     _audioPlayer = AudioPlayer(
       userAgent: AudioConfig.userAgent,
-      audioLoadConfiguration: AudioConfig.buildLoadConfiguration(isHls: isHls),
+      audioLoadConfiguration: AudioConfig.buildUnifiedLoadConfiguration(),
       useProxyForRequestHeaders: false,
     );
-    _isCurrentLoadConfigurationHls = isHls;
 
     if (!Platform.isWindows) {
       final session = await AudioSession.instance;
@@ -284,7 +286,7 @@ final class EnhancedAudioService implements IAudioService {
     _interruptionSubscription = null;
   }
 
-  Future<void> _resetAudioPlayer(String reason, {bool? isHlsOverride}) async {
+  Future<void> _resetAudioPlayer(String reason) async {
     if (_isDisposed) return;
 
     Logger.warning('🎵 AUDIO_DEBUG: Recreating AudioPlayer due to: $reason');
@@ -301,8 +303,7 @@ final class EnhancedAudioService implements IAudioService {
       Logger.error('🎵 AUDIO_DEBUG: Stack trace: $stackTrace');
     }
 
-    final isHls = isHlsOverride ?? _isCurrentLoadConfigurationHls;
-    await _initializeAudioPlayer(isHls: isHls);
+    await _initializeAudioPlayer();
     _setupPlayerSubscriptions();
 
     try {
@@ -972,11 +973,9 @@ final class EnhancedAudioService implements IAudioService {
         final isHls = _isHlsStream(config.streamUrl);
         _resetHlsTracking();
         _resetStallTracking();
-        if (_isCurrentLoadConfigurationHls != isHls) {
-          Logger.info(
-              '🎵 AUDIO_DEBUG: Rebuilding audio player for ${isHls ? 'HLS' : 'live'} buffering profile');
-          await _resetAudioPlayer('load profile switch', isHlsOverride: isHls);
-        }
+        // Single player: no recreation on an HLS<->live switch. We only record
+        // the current stream type for buffer accounting / stall thresholds and
+        // swap the source via setAudioSource on the same player below.
         _isCurrentLoadConfigurationHls = isHls;
 
         final prebufferDelay = quickStart
