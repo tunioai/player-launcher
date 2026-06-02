@@ -7,6 +7,13 @@ Goal: an appliance-grade player that "works like clockwork" — never silently
 sleeps, never hangs, always recovers (live → cache → live) on phones and on
 TVs (Samsung / Android TV / Xiaomi).
 
+**Status:** Phase 1 (single-player) ✅, Phase 2 (foreground service) ✅,
+Phase 4 (battery-optimization request) ✅ — all device-verified on Xiaomi.
+Phase 3 (unify recovery triggers) is pending and optional: it touches the
+delicate recovery state machine, so it should be done carefully with more test
+coverage; the current triggers work. Phase 0 (player-lifecycle tests) also
+pending. Recommend verifying the current build on a real Samsung TV next.
+
 **Approach: targeted evolution, not a rewrite.** Keep the hard-won edge-case
 handling (HLS recovery, service-suspended/warning mode, config polling, station
 switching, web control, autostart, visualizer, updater). Replace only the
