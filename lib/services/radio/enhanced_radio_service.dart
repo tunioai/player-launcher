@@ -74,6 +74,11 @@ final class EnhancedRadioService implements IRadioService {
   static const Duration _liveInterruptionDelayDefault = Duration(seconds: 3);
   static const Duration _pingFailureGracePeriod = Duration(seconds: 6);
   static const Duration _restoreLiveAttemptTimeout = Duration(seconds: 12);
+  // Backstop: if we are in failover but not playing for this long (and no
+  // failover operation is in progress), force recovery. Catches cache-track-end
+  // paths the normal restore/next-track triggers can miss (e.g. Error -> Idle).
+  static const Duration _failoverStuckTimeout = Duration(seconds: 12);
+  DateTime? _failoverStuckSince;
   DateTime?
       _lastFailoverRestoreTime; // Track when we last restored from failover
   DateTime?
@@ -2426,6 +2431,32 @@ final class EnhancedRadioService implements IRadioService {
         Logger.warning(
             '⚠️ FAILOVER: Operation ${_activeFailoverOperation!} running for ${elapsed.inSeconds}s');
       }
+    }
+
+    // Backstop for a stuck failover: in failover, not playing, no failover
+    // operation in progress and not suspended. The normal track-end restore /
+    // next-track triggers resolve within a couple of seconds; if we sit silent
+    // past the timeout a trigger was missed (e.g. a cache track that ended via
+    // an Error -> Idle path), so force recovery instead of staying silent.
+    if (_currentState is RadioStateFailover &&
+        !_isFailoverOperationInProgress &&
+        !_serviceSuspendedMode &&
+        !SystemState.instance.serviceSuspended) {
+      final failover = _currentState as RadioStateFailover;
+      if (failover.audioState.isPlaying) {
+        _failoverStuckSince = null;
+      } else {
+        _failoverStuckSince ??= now;
+        final stuckFor = now.difference(_failoverStuckSince!);
+        if (stuckFor > _failoverStuckTimeout) {
+          Logger.error(
+              '🚨 FAILOVER STUCK: not playing for ${stuckFor.inSeconds}s in failover - forcing recovery');
+          _failoverStuckSince = null;
+          _tryRestoreAfterTrackEnd(failover);
+        }
+      }
+    } else {
+      _failoverStuckSince = null;
     }
   }
 

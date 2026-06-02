@@ -191,6 +191,59 @@ void main() {
       expect(context.radioService.currentState, isA<RadioStateConnected>());
     });
 
+    test('recovers from a stuck failover (cache track ended via Error->Idle)',
+        () async {
+      final context = await _createContext(
+        liveConfig: liveConfig,
+        cachedTracksCount: 3,
+      );
+
+      addTearDown(() async {
+        await context.dispose();
+      });
+
+      context.audioService.enqueuePlayStreamResult(const Success(null));
+      context.audioService
+          .enqueuePlayStreamResult(const Failure<void>('restart failed'));
+      context.audioService.enqueuePlayStreamResult(const Success(null));
+
+      final connectResult = await context.radioService.connect('445566');
+      expect(connectResult.isSuccess, isTrue);
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateConnected);
+
+      // Drop into failover.
+      context.audioService.emitState(
+        AudioStateError(
+          message: 'Network error',
+          config: liveConfig,
+          isRetryable: true,
+        ),
+      );
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateFailover);
+      expect(context.audioService.playLocalFileCalls, greaterThanOrEqualTo(1));
+
+      // Simulate a cache track that ends via Error -> Idle: this slips past the
+      // normal track-end restore trigger (which requires Playing/Paused -> Idle)
+      // and would otherwise leave failover stuck silent.
+      context.audioService.emitState(
+        AudioStateError(
+          message: 'decode glitch',
+          config: liveConfig,
+          isRetryable: true,
+        ),
+      );
+      context.audioService.emitState(const AudioStateIdle());
+
+      // The stuck-failover backstop in the state monitor must force recovery.
+      await _waitUntil(
+        () => context.radioService.currentState is RadioStateConnected,
+        timeout: const Duration(seconds: 20),
+      );
+      expect(context.radioService.currentState, isA<RadioStateConnected>());
+    });
+
     test('starts from local cache when backend offline mode is enabled',
         () async {
       final context = await _createContext(
