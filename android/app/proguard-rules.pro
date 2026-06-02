@@ -9,6 +9,12 @@
 # JustAudio
 -keep class com.ryanheise.just_audio.** { *; }
 
+# audio_service / just_audio_background: the foreground service and
+# MediaButtonReceiver are referenced by name from the manifest; keep them so R8
+# does not strip/obfuscate them in release (minified) builds.
+-keep class com.ryanheise.audioservice.** { *; }
+-dontwarn com.ryanheise.audioservice.**
+
 # Keep HTTP and networking
 -keep class okhttp3.** { *; }
 -keep class okio.** { *; }
