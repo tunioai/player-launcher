@@ -21,12 +21,19 @@ void main() async {
   // when the stream stalls with the screen off. Must run before any AudioPlayer
   // is created. Not used on Windows (just_audio_windows handles playback there).
   if (Platform.isAndroid) {
-    await JustAudioBackground.init(
-      androidNotificationChannelId: 'ai.tunio.radioplayer.channel.audio',
-      androidNotificationChannelName: 'Tunio Radio',
-      androidNotificationOngoing: true,
-      androidStopForegroundOnPause: false,
-    );
+    // Never let a background-service init failure black-screen the app: on
+    // failure we just lose the foreground service, not the whole UI.
+    try {
+      await JustAudioBackground.init(
+        androidNotificationChannelId: 'ai.tunio.radioplayer.channel.audio',
+        androidNotificationChannelName: 'Tunio Radio',
+        androidNotificationOngoing: true,
+        androidStopForegroundOnPause: false,
+      );
+    } catch (e, stackTrace) {
+      Logger.error('Failed to initialize background audio service: $e');
+      Logger.error('Stack trace: $stackTrace');
+    }
   }
 
   await PlatformInfo.initialize();
