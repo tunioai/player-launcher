@@ -1909,6 +1909,23 @@ final class EnhancedRadioService implements IRadioService {
     });
   }
 
+  /// Polls [test] every 250ms until it is true or [timeout] elapses. Used to
+  /// confirm restore by the actual player state instead of awaiting playStream
+  /// (whose play() Future can resolve very late for the HLS StreamAudioSource).
+  /// [failIf] (checked after the first delay, so a stale pre-attempt error does
+  /// not trip it) lets a clearly-failed attempt bail out before the timeout.
+  Future<bool> _waitForCondition(bool Function() test, Duration timeout,
+      {bool Function()? failIf}) async {
+    final deadline = DateTime.now().add(timeout);
+    while (!test()) {
+      if (_isDisposed || !_autoLogicEnabled) return false;
+      if (!DateTime.now().isBefore(deadline)) return false;
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      if (failIf != null && failIf()) return false;
+    }
+    return true;
+  }
+
   void _tryRestoreAfterTrackEnd(RadioStateFailover failover) {
     if (!_autoLogicEnabled) {
       Logger.info(
@@ -1974,16 +1991,25 @@ final class EnhancedRadioService implements IRadioService {
 
         await _storageService.saveLastVolume(config.failoverVolume);
 
-        // Restore the live stream. No quickStart: HLS needs time to set up the
-        // playlist/segments/decoder (especially on slow TV boxes); quickStart's
-        // short window was failing there and keeping us stuck in failover.
-        final playResult =
-            await _audioService.playStream(config).timeout(
-                  _restoreLiveAttemptTimeout,
-                  onTimeout: () =>
-                      const Failure('Restore live stream attempt timed out'),
-                );
-        if (playResult.isSuccess) {
+        // Start the live stream and confirm success via the player STATE, not
+        // via playStream's return: just_audio's play() Future can resolve very
+        // late for the HLS StreamAudioSource (observed ~18s) even though audio
+        // actually starts within ~1s. Awaiting it made restore "time out" and
+        // kill an already-playing live stream, bouncing straight back to cache.
+        unawaited(_audioService.playStream(config).then((r) {
+          if (r.isFailure) {
+            Logger.warning(
+                '🔄 RESTORE: playStream reported failure: ${r.error}');
+          }
+        }, onError: (e) {
+          Logger.warning('🔄 RESTORE: playStream threw: $e');
+        }));
+        final restored = await _waitForCondition(
+          () => _audioService.currentState.isPlaying,
+          _restoreLiveAttemptTimeout,
+          failIf: () => _audioService.currentState is AudioStateError,
+        );
+        if (restored) {
           Logger.info('✅ RESTORE: Successfully restored live stream!');
           _offlineModeFailoverActive = false;
           _resetHealthFailures();
@@ -2021,7 +2047,7 @@ final class EnhancedRadioService implements IRadioService {
               DateTime.now(); // Mark restore time for grace period
         } else {
           Logger.warning(
-              '🔄 RESTORE: Live stream restore failed: ${playResult.error}, playing next failover track');
+              '🔄 RESTORE: Live stream did not start within ${_restoreLiveAttemptTimeout.inSeconds}s, playing next failover track');
           _failoverRecoveryBackoff.recordRestoreFailure();
           _logRestoreDelayPlan('Live stream playback failed');
           _releaseFailoverOperationLock();
