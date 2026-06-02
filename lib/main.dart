@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:just_audio_background/just_audio_background.dart';
 
 import 'core/service_locator.dart';
 import 'services/storage_service.dart';
@@ -14,6 +15,25 @@ import 'utils/insecure_http_overrides.dart';
 void main() async {
   HttpOverrides.global = InsecureHttpOverrides();
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Foreground media service (Android only): keeps the app process alive while
+  // a playback session is active, so background failover keeps running with the
+  // screen off. Must run before any AudioPlayer is created. Windows/macOS keep
+  // plain just_audio. androidNotificationOngoing requires the default
+  // androidStopForegroundOnPause:true (asserted by audio_service). Wrapped in
+  // try/catch so an init failure degrades to "no FGS", never a black screen.
+  if (Platform.isAndroid) {
+    try {
+      await JustAudioBackground.init(
+        androidNotificationChannelId: 'ai.tunio.radioplayer.channel.audio',
+        androidNotificationChannelName: 'Tunio Radio',
+        androidNotificationOngoing: true,
+      );
+    } catch (e, stackTrace) {
+      Logger.error('Failed to initialize background audio service: $e');
+      Logger.error('Stack trace: $stackTrace');
+    }
+  }
 
   await PlatformInfo.initialize();
 
