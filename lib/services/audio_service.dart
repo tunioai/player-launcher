@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:just_audio/just_audio.dart';
-import 'package:just_audio_background/just_audio_background.dart';
 import 'package:audio_session/audio_session.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 
@@ -993,11 +992,10 @@ final class EnhancedAudioService implements IAudioService {
 
         await _disposeActiveHlsSource();
 
-        final streamTag = MediaItem(
-          id: config.streamUrl,
-          title: config.title ?? 'Live Stream',
-          artist: config.description ?? '',
-        );
+        final streamTag = {
+          'title': config.title ?? 'Live Stream',
+          'artist': config.description ?? '',
+        };
         final streamHeaders = AudioConfig.getStreamingHeaders();
 
         final AudioSource audioSource;
@@ -1188,11 +1186,10 @@ final class EnhancedAudioService implements IAudioService {
         Logger.info('🎵 FAILOVER: Creating audio source from local file...');
         final audioSource = AudioSource.file(
           filePath,
-          tag: MediaItem(
-            id: filePath,
-            title: _currentConfig!.title ?? 'Failover Track',
-            artist: _currentConfig!.description ?? '',
-          ),
+          tag: {
+            'title': _currentConfig!.title ?? 'Failover Track',
+            'artist': _currentConfig!.description ?? '',
+          },
         );
 
         Logger.info('🎵 FAILOVER: Setting audio source...');

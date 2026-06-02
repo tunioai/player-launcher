@@ -9,16 +9,12 @@ import android.provider.Settings
 import android.util.Log
 import android.view.WindowManager
 import androidx.core.content.FileProvider
-import com.ryanheise.audioservice.AudioServiceActivity
+import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 
-// AudioServiceActivity (a thin FlutterActivity subclass) is required by
-// audio_service / just_audio_background so JustAudioBackground.init() can attach
-// to this activity's FlutterEngine. Without it init() throws and main() aborts
-// before runApp(), leaving a black screen.
-class MainActivity: AudioServiceActivity() {
+class MainActivity: FlutterActivity() {
     private val CHANNEL = "com.example.tunio_radio_player/autostart"
     private val VISUALIZER_CHANNEL = "ai.tunio/visualizer"
     private val UPDATER_CHANNEL = "ai.tunio/updater"
