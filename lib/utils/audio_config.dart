@@ -128,54 +128,6 @@ class AudioConfig {
         'AudioConfig');
   }
 
-  static AudioLoadConfiguration buildLoadConfiguration({
-    required bool isHls,
-  }) {
-    if (isHls) {
-      Logger.info(
-          '🎯 AudioConfig: Building HLS load configuration (target ${hlsTargetForwardBuffer.inSeconds}s buffer)',
-          'AudioConfig');
-      return AudioLoadConfiguration(
-        darwinLoadControl: const DarwinLoadControl(
-          automaticallyWaitsToMinimizeStalling: false,
-          preferredForwardBufferDuration: hlsTargetForwardBuffer,
-          canUseNetworkResourcesForLiveStreamingWhilePaused: true,
-          preferredPeakBitRate: maxBitRateDouble,
-        ),
-        androidLoadControl: const AndroidLoadControl(
-          minBufferDuration: hlsMinBufferDuration,
-          maxBufferDuration: hlsMaxBufferDuration,
-          bufferForPlaybackDuration: hlsPlaybackStartBuffer,
-          bufferForPlaybackAfterRebufferDuration: hlsRebufferStartBuffer,
-          targetBufferBytes: hlsTargetBufferBytes,
-          prioritizeTimeOverSizeThresholds: true,
-          backBufferDuration: backBufferDuration,
-        ),
-      );
-    }
-
-    Logger.info(
-        '🎯 AudioConfig: Building live stream load configuration (target ${liveMinBufferDuration.inSeconds}s buffer)',
-        'AudioConfig');
-    return AudioLoadConfiguration(
-      darwinLoadControl: const DarwinLoadControl(
-        automaticallyWaitsToMinimizeStalling: false,
-        preferredForwardBufferDuration: livePreferredForwardBufferDuration,
-        canUseNetworkResourcesForLiveStreamingWhilePaused: false,
-        preferredPeakBitRate: maxBitRateDouble,
-      ),
-      androidLoadControl: const AndroidLoadControl(
-        minBufferDuration: liveMinBufferDuration,
-        maxBufferDuration: liveMaxBufferDuration,
-        bufferForPlaybackDuration: livePlaybackStartBuffer,
-        bufferForPlaybackAfterRebufferDuration: liveRebufferStartBuffer,
-        targetBufferBytes: androidTargetBufferBytes,
-        prioritizeTimeOverSizeThresholds: false,
-        backBufferDuration: backBufferDuration,
-      ),
-    );
-  }
-
   /// Single load configuration used for both HLS and live streams, so the
   /// AudioPlayer is created once for the app's lifetime (no per-stream-type
   /// recreation). Tuned for stability (generous buffering) over minimal
