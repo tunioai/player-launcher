@@ -20,19 +20,10 @@ class AudioConfig {
       Duration(seconds: 30); // iOS/macOS
   static const Duration backBufferDuration = Duration(seconds: 5);
 
-  // Specialized targets for different stream types
+  // HLS playlist window used to cap the buffer-ahead display (see
+  // _handleBufferUpdate). The per-stream-type load profiles were removed with
+  // the single-player refactor - one unified config now serves HLS and live.
   static const Duration hlsTargetForwardBuffer = Duration(seconds: 35);
-  static const Duration hlsMinBufferDuration = Duration(seconds: 28);
-  static const Duration hlsMaxBufferDuration = Duration(seconds: 60);
-  static const Duration hlsPlaybackStartBuffer = Duration(seconds: 1);
-  static const Duration hlsRebufferStartBuffer = Duration(seconds: 5);
-
-  static const Duration liveMinBufferDuration = Duration(seconds: 5);
-  static const Duration liveMaxBufferDuration = Duration(seconds: 15);
-  static const Duration livePlaybackStartBuffer = Duration(milliseconds: 1500);
-  static const Duration liveRebufferStartBuffer = Duration(seconds: 3);
-  static const Duration livePreferredForwardBufferDuration =
-      Duration(seconds: 8);
 
   // Android-specific prebuffer delay
   static const Duration androidPrebufferDelay =
@@ -42,7 +33,6 @@ class AudioConfig {
   static const Duration androidSlowPrebuffer =
       Duration(seconds: 5); // Slow devices/poor network
   static const Duration androidTVPrebuffer = Duration(seconds: 4); // TV devices
-  static const int hlsTargetBufferBytes = 12 * 1024 * 1024;
 
   // Network and quality settings - Optimized for live radio streams
   static const int targetBufferBytes = 4 *
