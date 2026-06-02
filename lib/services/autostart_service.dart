@@ -16,6 +16,19 @@ class AutoStartService {
     }
   }
 
+  static Future<bool> isIgnoringBatteryOptimizations() async {
+    try {
+      final bool result =
+          await _channel.invokeMethod('isIgnoringBatteryOptimizations');
+      return result;
+    } catch (e) {
+      Logger.error(
+          'AutoStartService: Failed to check battery optimization status: $e');
+      // Assume ok on failure so we don't nag on unsupported platforms.
+      return true;
+    }
+  }
+
   static Future<bool> requestIgnoreBatteryOptimizations() async {
     try {
       final bool result =

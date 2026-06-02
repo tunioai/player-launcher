@@ -18,6 +18,7 @@ import '../core/system_state.dart';
 
 import '../services/radio_service.dart';
 import '../services/failover_service.dart';
+import '../services/autostart_service.dart';
 import '../services/app_update_service.dart';
 import '../widgets/code_input_widget.dart';
 import '../widgets/status_indicator.dart';
@@ -93,9 +94,30 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     if (_isAndroid) {
       _visualizerChannel.setMethodCallHandler(_handleVisualizerChannelCall);
+      // Once the UI is up, make sure the OS won't freeze the app in the
+      // background (battery optimization exemption) so background failover and
+      // the foreground service keep running with the screen off.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _ensureBackgroundExecutionAllowed();
+      });
     }
     _initializeService();
     _setupFocusNodes();
+  }
+
+  Future<void> _ensureBackgroundExecutionAllowed() async {
+    try {
+      final ignoring = await AutoStartService.isIgnoringBatteryOptimizations();
+      if (!ignoring) {
+        Logger.info(
+            'HomeScreen: requesting battery optimization exemption for reliable background playback');
+        await AutoStartService.requestIgnoreBatteryOptimizations();
+      } else {
+        Logger.info('HomeScreen: battery optimization already disabled');
+      }
+    } catch (e) {
+      Logger.error('HomeScreen: battery optimization check failed: $e');
+    }
   }
 
   @override

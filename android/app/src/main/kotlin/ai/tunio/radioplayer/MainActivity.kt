@@ -1,10 +1,13 @@
 package ai.tunio.radioplayer
 
+import android.annotation.SuppressLint
 import android.content.ActivityNotFoundException
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
 import android.view.WindowManager
@@ -73,6 +76,42 @@ class MainActivity: AudioServiceActivity() {
         }
     }
     
+    private fun isIgnoringBatteryOptimizations(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true
+        return try {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            pm.isIgnoringBatteryOptimizations(packageName)
+        } catch (e: Exception) {
+            Log.e("MainActivity", "isIgnoringBatteryOptimizations failed: ${e.message}")
+            true
+        }
+    }
+
+    // Ask the user to exempt the app from battery optimization so the OS does
+    // not freeze/Doze the process in the background (needed for reliable
+    // background failover). No-op if already exempt.
+    @SuppressLint("BatteryLife")
+    private fun requestIgnoreBatteryOptimizations(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true
+        if (isIgnoringBatteryOptimizations()) return true
+        try {
+            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                data = Uri.parse("package:$packageName")
+            }
+            startActivity(intent)
+            return true
+        } catch (e: Exception) {
+            Log.w("MainActivity", "Direct battery-opt request failed: ${e.message}")
+        }
+        return try {
+            startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            true
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Battery-opt settings fallback failed: ${e.message}")
+            false
+        }
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         
@@ -83,9 +122,11 @@ class MainActivity: AudioServiceActivity() {
                     val isAutoStart = intent.getBooleanExtra("auto_start", false)
                     result.success(isAutoStart)
                 }
+                "isIgnoringBatteryOptimizations" -> {
+                    result.success(isIgnoringBatteryOptimizations())
+                }
                 "requestIgnoreBatteryOptimizations" -> {
-                    // This method can be useful for TV set-top boxes
-                    result.success(true)
+                    result.success(requestIgnoreBatteryOptimizations())
                 }
 
                 else -> result.notImplemented()
