@@ -1973,8 +1973,7 @@ final class EnhancedRadioService implements IRadioService {
             .getStreamConfig(failover.token, currentPing: _currentPing)
             .timeout(
               const Duration(seconds: 6),
-              onTimeout: () =>
-                  throw TimeoutException('Config request timeout'),
+              onTimeout: () => throw TimeoutException('Config request timeout'),
             );
         if (config == null) {
           Logger.warning(
