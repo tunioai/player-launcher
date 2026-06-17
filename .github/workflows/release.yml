@@ -117,7 +117,10 @@ jobs:
         
   build-windows-x64:
     name: Build Windows x64
-    runs-on: windows-latest
+    # Pinned to windows-2022: windows-latest (now the windows-2025 image) breaks
+    # Flutter's Visual Studio detection, which then falls back to the
+    # "Visual Studio 16 2019" CMake generator and fails (VS 2019 is gone).
+    runs-on: windows-2022
     
     steps:
     - name: Checkout repository
