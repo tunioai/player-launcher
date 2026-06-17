@@ -41,16 +41,16 @@ class StreamConfig {
     final hlsUrl = json['stream_hls_url'];
     final streamUrl = (hlsUrl is String && hlsUrl.isNotEmpty)
         ? hlsUrl
-        : (json['stream_url'] ?? '');
-    final streamUuid = json['stream_uuid'] as String?;
+        : (json['stream_url']?.toString() ?? '');
+    final streamUuid = json['stream_uuid']?.toString();
     final volume = _parseVolume(json['volume']);
     final parsedMusicVolume = _parseOptionalVolume(json['music_volume']);
-    final title = json['title'];
-    final description = json['description'];
+    final title = json['title']?.toString();
+    final description = json['description']?.toString();
 
     CurrentTrack? current;
-    if (json['current'] != null) {
-      current = CurrentTrack.fromJson(json['current']);
+    if (json['current'] is Map<String, dynamic>) {
+      current = CurrentTrack.fromJson(json['current'] as Map<String, dynamic>);
     }
 
     // TODO: DO NOT REMOVE!!!

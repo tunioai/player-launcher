@@ -17,12 +17,12 @@ class CurrentTrack {
 
   factory CurrentTrack.fromJson(Map<String, dynamic> json) {
     return CurrentTrack(
-      artist: json['artist'] ?? '',
-      title: json['title'] ?? '',
-      uuid: json['uuid'] ?? '',
-      duration: json['duration'] ?? 0,
-      isMusic: json['is_music'] ?? false,
-      url: json['url'] ?? '',
+      artist: json['artist']?.toString() ?? '',
+      title: json['title']?.toString() ?? '',
+      uuid: json['uuid']?.toString() ?? '',
+      duration: json['duration'] is num ? (json['duration'] as num).toInt() : 0,
+      isMusic: json['is_music'] == true,
+      url: json['url']?.toString() ?? '',
     );
   }
 

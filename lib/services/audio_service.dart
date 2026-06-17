@@ -412,6 +412,7 @@ final class EnhancedAudioService implements IAudioService {
         isConnected: hasConnection,
         type: connectionType,
       );
+      if (_isDisposed) return;
       _networkController.add(_networkState);
 
       Logger.info(
@@ -422,6 +423,7 @@ final class EnhancedAudioService implements IAudioService {
         isConnected: true,
         type: ConnectionType.unknown,
       );
+      if (_isDisposed) return;
       _networkController.add(_networkState);
     }
   }
