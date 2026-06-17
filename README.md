@@ -1,14 +1,16 @@
 # Tunio Spot
 
-A Flutter application for Android and macOS that automatically plays online radio streams with auto-start functionality, advanced network resilience, and intelligent offline failover capabilities.
+A Flutter application for Android, Android TV, macOS, and Windows that automatically plays online radio streams with auto-start, always-on background playback (Android foreground media service), advanced network resilience, and intelligent offline failover.
 
 ## Features
 
 ### 🎵 **Core Playback**
 - **Auto-start**: Application automatically launches when device boots up
 - **API Integration**: Connects to Tunio API for stream configuration
-- **Background Playback**: Continues playing when app is minimized
-- **Enhanced Buffering**: 4-second buffer for smooth playback
+- **Always-on Background Playback**: Backed by an Android foreground media service (MediaSession) so audio — and the failover logic — keeps running with the screen off or the app in the background
+- **Media Controls**: Notification and lock-screen controls, plus hardware/Bluetooth media buttons
+- **Broad Stream Support**: Live ICY/Icecast streams and HLS (`.m3u8`) served by a single, long-lived audio engine
+- **Adaptive Buffering**: Platform-tuned for stability over latency (always-on appliance)
 - **Volume Control**: Local and remote volume management with real-time sync
 
 ### 🔄 **Advanced Network Resilience**
@@ -19,7 +21,7 @@ A Flutter application for Android and macOS that automatically plays online radi
 - **Network Status Display**: Real-time "Connected", "Disconnected", or "Offline Mode" indicators
 
 ### 💾 **Local Track Caching**
-- **Smart Track Downloads**: Automatically caches up to 20 music tracks locally
+- **Smart Track Downloads**: Automatically caches up to 40 music tracks locally
 - **Music-only Filtering**: Only downloads actual music tracks (skips ads, jingles, station IDs)
 - **TTL Management**: Auto-refreshes tracks older than 2 days
 - **Intelligent Cleanup**: Removes expired tracks and maintains cache size
@@ -32,29 +34,24 @@ A Flutter application for Android and macOS that automatically plays online radi
 - **TV Remote Support**: Complete navigation with TV remote control
 - **Focus Management**: Optimized interface for TV screens
 
-### Just-audio version
+### 📦 **Release builds**
 
-```
-v*-just-audio*
-```
+Pushing a version tag triggers GitHub Actions (`.github/workflows/release.yml`) to build and attach Android (Play `.aab` + standalone `.apk`), macOS, and Windows artifacts to a GitHub Release:
 
+```bash
+git tag v1.4.0
+git push origin v1.4.0
 ```
-git tag v1.3.0
-git push origin v1.3.0
-```
-
-example: v1.0.6-just-audio
 
 
 ## Installation
 
 ### Prerequisites
 
-- Flutter SDK (version 3.4.3 or higher)
-- Android SDK for Android builds
+- Flutter SDK 3.5.0 or higher (CI builds on 3.32.4)
+- Android SDK for Android / Android TV builds (API level 21+)
 - Xcode for macOS builds
-- Android device or emulator (API level 21+)
-- macOS device for macOS builds
+- Visual Studio (Desktop development with C++) for Windows builds
 
 ### Building the Application
 
@@ -69,14 +66,16 @@ cd tunio_radio_player
 flutter pub get
 ```
 
-3. For Android - Build APK:
+3. For Android — build a flavored APK/bundle (`standalone` = direct install with in-app self-update, `play` = Google Play):
 ```bash
-flutter build apk --release
+flutter build apk --release --flavor standalone --dart-define=APP_FLAVOR=standalone
+flutter build appbundle --release --flavor play --dart-define=APP_FLAVOR=play
 ```
 
-4. For macOS - Build app:
+4. For macOS / Windows:
 ```bash
 flutter build macos --release
+flutter build windows --release
 ```
 
 5. Install on device:
@@ -162,7 +161,7 @@ The system activates failover mode when:
 - **Smart Selection**: Prioritizes currently playing tracks for immediate availability
 
 #### **Cache Management**
-- **Storage Limit**: Maximum 20 tracks cached locally
+- **Storage Limit**: Maximum 40 tracks cached locally
 - **TTL System**: Tracks expire after 2 days and are auto-refreshed
 - **Size Optimization**: Automatic cleanup of oldest/expired tracks
 - **Quality Balance**: Optimized for storage vs. quality
@@ -251,24 +250,40 @@ The application follows a clean architecture pattern with enhanced state managem
   - `ApiError` - Structured error handling
 
 - **Services**: 
-  - `RadioService` - Enhanced radio service with failover management
+  - `EnhancedRadioService` (`services/radio/`) - Core state machine orchestrating connection, failover, and live-restore
+  - `EnhancedAudioService` (`services/audio_service.dart`) - Single long-lived `just_audio` player with `just_audio_background` integration and silent-stall detection
+  - `HlsStreamAudioSource` (`services/audio/`) - Custom HLS / streaming source that surfaces sustained playlist outages
+  - `FailoverService` - Local track caching and offline playback
+  - `FailoverRecoveryBackoff` - Backoff policy for unstable live-restore
   - `ApiService` - API communication with retry logic
-  - `AudioService` - Advanced audio playback with buffering control
-  - `StorageService` - Persistent data management
-  - `FailoverService` - Local track caching and management
   - `NetworkService` - Network monitoring and connectivity
+  - `StorageService` - Persistent data management
+  - `AppUpdateService` - In-app self-update (standalone flavor)
 
 - **UI**: 
   - `HomeScreen` - Primary interface with real-time status
   - `StatusIndicator` - Enhanced connection and mode indicators
 
+### Background Playback & Reliability
+
+The player is built to run unattended for long stretches (radio appliance / TV box), so background survival is a first-class concern:
+
+- **Foreground media service**: `just_audio_background` runs a `mediaPlayback` foreground service (`com.ryanheise.audioservice.AudioService`); `MainActivity` extends `AudioServiceActivity`. This keeps the process — and the failover/recovery logic — alive while the screen is off or the app is backgrounded.
+- **Single audio engine**: one `AudioPlayer` is created for the app's lifetime (no per-stream-type recreation), removing a class of state-loss/recreation races.
+- **Battery-optimization exemption**: on Android startup the app proactively requests `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` to avoid Doze / process-freeze stalling background failover.
+- **Silent-stall detection**: a position-based watchdog catches streams that stop advancing without raising an error and triggers recovery/failover.
+- **Proactive offline mode**: when the backend `offline_mode` flag is enabled the player switches to cached tracks immediately, instead of waiting for the next interruption.
+- **Reliable live-restore**: returning to the live stream is confirmed by actual player state (not just the `play()` future), with backoff that avoids thrashing between live and cache.
+
 ### Key Dependencies
 
-- `just_audio: ^0.9.39` - Audio playback engine
-- `shared_preferences: ^2.3.2` - Local storage
+- `just_audio: ^0.9.46` - Audio playback engine (ExoPlayer/media3 on Android)
+- `just_audio_background: ^0.0.1-beta.17` - Android foreground media service, MediaSession, notification & lock-screen controls
+- `just_audio_windows: ^0.2.2` - Windows playback backend
+- `audio_session: ^0.1.21` - Audio session / focus management
+- `connectivity_plus: ^6.1.0` - Network monitoring
+- `shared_preferences: ^2.3.3` - Local storage
 - `http: ^1.2.2` - Network requests
-- `connectivity_plus: ^6.0.5` - Network monitoring
-- `audio_session: ^0.1.21` - Audio session management
 
 ### Enhanced Network Resilience
 
@@ -287,9 +302,8 @@ The application follows a clean architecture pattern with enhanced state managem
 - **Seamless Restoration**: Automatic return to live stream between tracks
 
 #### **Buffering Strategy**
-- **Enhanced Buffering**: 4-second audio buffer for stability
-- **Adaptive Buffering**: Adjusts based on network conditions
-- **Stream Continuity**: Smooth playback over temporary interruptions
+- **Unified Load Configuration**: one profile for both live and HLS — Android ~10–40 s buffer (8 MB target), Darwin 30 s forward buffer — tuned for stability over latency
+- **Stream Continuity**: smooth playback over temporary interruptions, with silent-stall detection as a backstop
 
 #### **Error Handling**
 - **Comprehensive Coverage**: Handles all network scenarios
@@ -299,17 +313,15 @@ The application follows a clean architecture pattern with enhanced state managem
 
 ### Android Permissions
 
-The application requires the following Android permissions:
+The application declares the following key Android permissions:
 
-- `INTERNET` - Internet access
-- `ACCESS_NETWORK_STATE` - Network state monitoring
-- `ACCESS_WIFI_STATE` - WiFi state monitoring
-- `RECEIVE_BOOT_COMPLETED` - Auto-start capability
+- `INTERNET`, `ACCESS_NETWORK_STATE`, `ACCESS_WIFI_STATE` - Network access & monitoring
 - `WAKE_LOCK` - Prevent device sleep during playback
-- `FOREGROUND_SERVICE` - Background playback
+- `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MEDIA_PLAYBACK` - Background media-playback service
 - `MODIFY_AUDIO_SETTINGS` - Audio configuration
-- `AUTOSTART` - Automatic startup
-- `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` - Battery optimization bypass
+- `RECEIVE_BOOT_COMPLETED`, `AUTOSTART` - Auto-start on boot
+- `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` - Battery-optimization exemption (background survival)
+- `START_FOREGROUND_SERVICES_FROM_BACKGROUND`, `USE_FULL_SCREEN_INTENT` - TV box / set-top reliability
 
 ## Development
 
@@ -318,29 +330,43 @@ The application requires the following Android permissions:
 ```
 lib/
 ├── core/
-│   ├── audio_state.dart           # Audio and radio state definitions
-│   ├── dependency_injection.dart  # Service locator pattern
-│   ├── result.dart               # Result wrapper for error handling
-│   └── service_locator.dart      # Dependency injection container
+│   ├── audio_state.dart                  # Audio & radio state definitions
+│   ├── system_state.dart                 # Global runtime state (e.g. offline_mode)
+│   ├── service_locator.dart              # Dependency injection container
+│   └── result.dart                       # Result wrapper for error handling
 ├── models/
-│   ├── api_error.dart            # Structured API error handling
-│   ├── current_track.dart        # Track metadata with music classification
-│   └── stream_config.dart        # Enhanced stream configuration
+│   ├── stream_config.dart                # Stream configuration & metadata
+│   ├── current_track.dart                # Track metadata with music classification
+│   ├── failover_event.dart               # Failover reporting events
+│   └── api_error.dart                    # Structured API error handling
 ├── screens/
-│   └── home_screen.dart          # Primary UI with real-time status
+│   └── home_screen.dart                  # Primary UI; requests battery exemption on start
 ├── services/
-│   ├── api_service.dart          # Enhanced API communication with retry
-│   ├── audio_service.dart        # Advanced audio playback management
-│   ├── failover_service.dart     # Local track caching and management
-│   ├── network_service.dart      # Network monitoring and connectivity
-│   ├── radio_service.dart        # Main service with failover orchestration
-│   └── storage_service.dart      # Persistent data management
+│   ├── radio/
+│   │   ├── enhanced_radio_service.dart   # Core state machine (connect/failover/restore)
+│   │   ├── failover_recovery_backoff.dart  # Backoff for unstable live-restore
+│   │   ├── retry_manager.dart            # Reconnection retry policy
+│   │   └── i_radio_service.dart          # Service interface
+│   ├── audio/
+│   │   └── hls_stream_audio_source.dart  # Custom HLS / streaming source
+│   ├── audio_service.dart                # Single just_audio player + background service
+│   ├── failover_service.dart             # Local track caching & offline playback
+│   ├── failover_reporting_service.dart   # Failover telemetry reporting
+│   ├── network_service.dart              # Network monitoring & connectivity
+│   ├── api_service.dart                  # API communication with retry
+│   ├── app_update_service.dart           # In-app self-update (standalone flavor)
+│   ├── autostart_service.dart            # Boot auto-start + battery-exemption helpers
+│   ├── local_web_server.dart             # On-device web management interface
+│   └── storage_service.dart              # Persistent data management
 ├── utils/
-│   ├── constants.dart            # Application constants and cache settings
-│   └── logger.dart               # Enhanced logging with categorization
+│   ├── audio_config.dart                 # Unified player load configuration
+│   ├── constants.dart                    # Cache settings (max tracks, TTL)
+│   ├── platform_info.dart                # Platform detection / user agent
+│   └── logger.dart                       # Categorized logging
 ├── widgets/
-│   └── status_indicator.dart     # Enhanced status display widgets
-└── main.dart                     # Application entry point
+│   ├── status_indicator.dart             # Status display widgets
+│   └── code_input_widget.dart            # PIN / API-key input
+└── main.dart                             # Application entry point
 ```
 
 ### Platform Support
@@ -348,7 +374,7 @@ lib/
 - **Android**: Full support with auto-start functionality
 - **Android TV**: Optimized for TV screens with full remote control support
 - **macOS**: Full support for desktop usage
-- **windows**: Full support for desktop usage
+- **Windows**: Full support for desktop usage (x64)
 
 ## Build Configuration
 
@@ -366,13 +392,17 @@ flutter pub run flutter_launcher_icons
 - Minimum version: macOS 10.14
 - Supports both Intel and Apple Silicon
 
+### Windows
+- 64-bit (x64) desktop build
+- Playback via `just_audio_windows`
+
 ## ⚙️ Configuration & Performance
 
 ### Failover Configuration
 ```dart
 // In lib/utils/constants.dart
 class AppConstants {
-  static const int maxFailoverTracks = 20;          // Max cached tracks
+  static const int maxFailoverTracks = 40;          // Max cached tracks
   static const Duration trackCacheTTL = Duration(days: 2);  // Track expiration
   static const String failoverCacheDir = 'failover_cache';  // Cache directory
 }
@@ -382,7 +412,7 @@ class AppConstants {
 - **Fast Network Detection**: 10-second ping intervals (vs 30-second default)
 - **Rapid State Monitoring**: 1-second connection checks (vs 3-second default)
 - **Quick Recovery**: 5-second force recovery (vs 10-second default)
-- **Enhanced Buffering**: 4-second audio buffer (vs 2-second default)
+- **Stability-first Buffering**: generous platform-tuned buffers (see `lib/utils/audio_config.dart`)
 - **Smart Caching**: Music-only filtering reduces storage by ~60%
 
 ### Monitoring & Debugging
@@ -403,8 +433,8 @@ class AppConstants {
 
 ### Storage Requirements
 - **Base App**: ~15-30 MB
-- **Cached Tracks**: ~2-4 MB per track (40-80 MB total for 20 tracks)
-- **Total Storage**: ~60-110 MB maximum
+- **Cached Tracks**: ~2-4 MB per track (~80-160 MB total for 40 tracks)
+- **Total Storage**: ~95-190 MB maximum
 
 ## Contributing
 
