@@ -1287,9 +1287,10 @@ class _HomeScreenState extends State<HomeScreen> {
                                 icon: Icon(_radioState is RadioStateDisconnected
                                     ? Icons.login
                                     : Icons.edit),
-                                label: Text(_radioState is RadioStateDisconnected
-                                    ? 'Connect'
-                                    : 'Change PIN'),
+                                label: Text(
+                                    _radioState is RadioStateDisconnected
+                                        ? 'Connect'
+                                        : 'Change PIN'),
                                 style: ElevatedButton.styleFrom(
                                   padding:
                                       const EdgeInsets.symmetric(vertical: 10),
