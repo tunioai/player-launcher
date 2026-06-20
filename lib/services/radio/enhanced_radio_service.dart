@@ -297,6 +297,22 @@ final class EnhancedRadioService implements IRadioService {
 
     if (audioState.isPlaying) {
       _resetHealthFailures();
+      // External transport controls (notification / lock screen / Bluetooth)
+      // drive the player directly via just_audio_background and never go through
+      // playPause(). Mirror the in-app resume here so auto recovery is
+      // re-enabled once playback actually resumes after such a pause.
+      if (_userPaused) {
+        _resumeAutoRecovery();
+      }
+    } else if (audioState is AudioStatePaused &&
+        !_isConnectionInProgress &&
+        !_isStreamSwitchInProgress) {
+      // A clean pause is only ever produced by an explicit pause() — e.g. the
+      // notification pause button, which bypasses playPause() and therefore
+      // never sets _userPaused. Treat it exactly like the in-app pause button:
+      // suspend auto recovery so the "stream unexpectedly stopped" detection
+      // (and network/failover recovery) does not immediately restart playback.
+      _suspendAutoRecovery();
     }
 
     // Update radio state based on audio state
