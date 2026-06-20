@@ -100,6 +100,11 @@ final class EnhancedRadioService implements IRadioService {
   bool _hasLoggedPlannedSwitchStateSuppression = false;
   bool _hasEstablishedLiveSession = false;
   String? _pendingManualConnectToken;
+  // Bumped on every disconnect so a connection attempt still in flight (e.g.
+  // waiting on the config API or about to start playback) can detect it has
+  // been superseded and bail out instead of resurrecting the old stream after
+  // the user switched PIN / pressed "Change PIN".
+  int _connectionGeneration = 0;
   bool _serviceSuspendedMode = false;
   // True when the current failover was entered because backend offline mode is
   // on (as opposed to a network outage). Lets us restore live promptly once the
@@ -860,6 +865,7 @@ final class EnhancedRadioService implements IRadioService {
 
     _isConnectionInProgress = true;
     _isStreamSwitchInProgress = true;
+    final generation = _connectionGeneration;
 
     final attempt = isRetry ? _retryManager.currentAttempt + 1 : 1;
 
@@ -891,7 +897,7 @@ final class EnhancedRadioService implements IRadioService {
 
     try {
       final result = await tryResultAsync(() async {
-        await _performConnection(token);
+        await _performConnection(token, generation, isRetry: isRetry);
       });
 
       connectingTimeout.cancel();
@@ -904,8 +910,13 @@ final class EnhancedRadioService implements IRadioService {
             apiError.isFromBackend &&
             (apiError.statusCode == 401 ||
                 errorMessage.toLowerCase().contains('invalid'));
+        // Backend says the stream is offline: surface it as a non-retryable
+        // error (toast) instead of hammering the retry loop.
+        final isStreamOffline = apiError != null &&
+            apiError.isFromBackend &&
+            errorMessage.toLowerCase().contains('offline');
 
-        if (isInvalidToken) {
+        if (isInvalidToken || isStreamOffline) {
           _autoReconnectEnabled = false;
           _updateState(RadioStateError(
             message: errorMessage,
@@ -981,7 +992,8 @@ final class EnhancedRadioService implements IRadioService {
     }
   }
 
-  Future<void> _performConnection(String token) async {
+  Future<void> _performConnection(String token, int generation,
+      {required bool isRetry}) async {
     Logger.info('🔄 CONNECTION: ===== STARTING CONNECTION PROCESS =====');
     Logger.info(
         '🐛 DEBUG: _performConnection called with token: ${token.substring(0, 2)}****');
@@ -1029,6 +1041,29 @@ final class EnhancedRadioService implements IRadioService {
           '🔄 CONNECTION: STAGE 1 COMPLETED - API response received in ${apiDuration.inMilliseconds}ms');
       Logger.info('🔄 CONNECTION: Stream URL: ${config.streamUrl}');
 
+      // Abort before persisting anything if the user disconnected / switched
+      // streams while we were fetching the config. Otherwise STAGE 2 would
+      // re-save the token the user just cleared, and the app would auto-reconnect
+      // to the abandoned stream on the next launch.
+      if (generation != _connectionGeneration) {
+        Logger.warning(
+            '🔄 CONNECTION: Attempt superseded during config fetch (gen $generation != $_connectionGeneration) - aborting before save');
+        _currentConnectionStage = null;
+        return;
+      }
+
+      // The stream exists but the backend reports it as not playable right now
+      // (status != "online"). Don't attempt playback and don't start a retry
+      // loop — surface it as a toast. Only for a user-initiated connect: during
+      // an auto-reconnect/retry a transient offline must NOT permanently stop
+      // recovery, so let those proceed and fail/retry naturally.
+      if (!isRetry && !config.isOnline) {
+        Logger.warning(
+            '🔄 CONNECTION: Stream status is "${config.status}" (not online) - aborting connect');
+        _currentConnectionStage = null;
+        throw ApiError(message: 'Stream is offline', isFromBackend: true);
+      }
+
       // STAGE 2: Save configuration
       _currentConnectionStage = 'SAVING_CONFIG';
       Logger.info('🔄 CONNECTION: STAGE 2 - Saving configuration...');
@@ -1057,6 +1092,17 @@ final class EnhancedRadioService implements IRadioService {
         _warningTrackPath = null;
         _warningLoopTimer?.cancel();
         _warningLoopTimer = null;
+      }
+
+      // Bail out if a disconnect / stream switch happened between saving the
+      // config and starting playback: starting playback now would resurrect the
+      // stream the user just left (the classic "keeps reconnecting to the old
+      // stream" bug).
+      if (generation != _connectionGeneration) {
+        Logger.warning(
+            '🔄 CONNECTION: Attempt superseded (gen $generation != $_connectionGeneration) - aborting before playback');
+        _currentConnectionStage = null;
+        return;
       }
 
       // Backend offline mode: start from local cache instead of the live
@@ -1130,6 +1176,19 @@ final class EnhancedRadioService implements IRadioService {
       Logger.info(
           '🔄 CONNECTION: STAGE 3 COMPLETED - Audio started in ${audioDuration.inMilliseconds}ms');
 
+      // If the user disconnected / switched streams while playback was starting,
+      // stop the stream we just (re)started so the old station does not keep
+      // playing. This is safe against a concurrent switch: the superseding
+      // connect is still fetching its own config at this point, so it has not
+      // started playback yet and we are only stopping the old stream.
+      if (generation != _connectionGeneration) {
+        Logger.warning(
+            '🔄 CONNECTION: Attempt superseded during playback start (gen $generation != $_connectionGeneration) - stopping playback');
+        _currentConnectionStage = null;
+        await _audioService.stop();
+        return;
+      }
+
       if (tokenChanged) {
         Logger.info(
             '🧹 CLEANUP: PIN changed - clearing failover cache to avoid mixing stations');
@@ -1172,6 +1231,11 @@ final class EnhancedRadioService implements IRadioService {
     return tryResultAsync(() async {
       Logger.info('Disconnecting');
 
+      // Invalidate any connection attempt still in flight so it won't restart
+      // playback of the stream we are leaving, and drop any queued manual
+      // connect so it cannot fire after the user explicitly stopped.
+      _connectionGeneration++;
+      _pendingManualConnectToken = null;
       _autoReconnectEnabled = false;
       _isConnectionInProgress = false;
       _isFailoverOperationInProgress = false;

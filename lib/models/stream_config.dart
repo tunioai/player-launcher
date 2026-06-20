@@ -10,6 +10,7 @@ class StreamConfig {
   final CurrentTrack? current;
   final String? visualizerUrl;
   final String? streamUuid;
+  final String? status;
 
   const StreamConfig({
     required this.streamUrl,
@@ -20,7 +21,16 @@ class StreamConfig {
     this.current,
     this.visualizerUrl,
     this.streamUuid,
+    this.status,
   });
+
+  /// Whether the backend reports the stream as playable. A missing/empty
+  /// status is treated as online so older/cached configs keep working; only
+  /// an explicit non-"online" status (e.g. "offline") blocks playback.
+  bool get isOnline {
+    final s = status?.trim().toLowerCase();
+    return s == null || s.isEmpty || s == 'online';
+  }
 
   /// Returns the volume value scaled for failover playback.
   ///
@@ -43,6 +53,7 @@ class StreamConfig {
         ? hlsUrl
         : (json['stream_url']?.toString() ?? '');
     final streamUuid = json['stream_uuid']?.toString();
+    final status = json['status']?.toString();
     final volume = _parseVolume(json['volume']);
     final parsedMusicVolume = _parseOptionalVolume(json['music_volume']);
     final title = json['title']?.toString();
@@ -82,6 +93,7 @@ class StreamConfig {
       current: current,
       visualizerUrl: visualizerUrl,
       streamUuid: streamUuid,
+      status: status,
     );
   }
 
@@ -95,6 +107,7 @@ class StreamConfig {
       'description': description,
       'current': current?.toJson(),
       if (visualizerUrl != null) 'visualizer_url': visualizerUrl,
+      if (status != null) 'status': status,
     };
   }
 
@@ -109,12 +122,13 @@ class StreamConfig {
         other.title == title &&
         other.description == description &&
         other.current == current &&
-        other.streamUuid == streamUuid;
+        other.streamUuid == streamUuid &&
+        other.status == status;
   }
 
   @override
   int get hashCode => Object.hash(streamUrl, volume, musicVolume, visualizerUrl,
-      title, description, current, streamUuid);
+      title, description, current, streamUuid, status);
 
   static double _parseVolume(dynamic raw, [double defaultValue = 1.0]) {
     if (raw == null) return defaultValue;

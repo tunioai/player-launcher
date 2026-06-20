@@ -458,6 +458,16 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
+    // If a session/reconnect loop is active for a *different* PIN, tear it down
+    // first. Otherwise a manual connect to a new stream gets queued behind the
+    // current (possibly endlessly retrying) connection, so the player keeps
+    // reconnecting to the old stream instead of switching to the new one.
+    final activeToken = _radioState.token;
+    if (_radioState is! RadioStateDisconnected && activeToken != _currentCode) {
+      await _radioService.disconnect();
+      if (!mounted) return;
+    }
+
     final maskedCode = _currentCode.length >= 2
         ? '${_currentCode.substring(0, 2)}****'
         : '****';
@@ -473,6 +483,20 @@ class _HomeScreenState extends State<HomeScreen> {
         _showError(error);
       },
     );
+  }
+
+  Future<void> _changePin() async {
+    // Stop the current stream (and any auto-reconnect loop) immediately, clear
+    // the PIN field and focus it, so the user can calmly type a new code
+    // without the player fighting to reconnect to the old stream.
+    Logger.info('HomeScreen: Change PIN requested - stopping current stream');
+    await _radioService.disconnect();
+    if (!mounted) return;
+    setState(() {
+      _currentCode = '';
+      _isUserEditingCode = true;
+    });
+    _codeFocusNode.requestFocus();
   }
 
   Widget _buildVisualizerOverlay() {
@@ -1237,49 +1261,40 @@ class _HomeScreenState extends State<HomeScreen> {
                                 });
                               },
                               onSubmitted: () {
-                                if (!_radioState.isConnecting) {
-                                  _connect();
-                                }
+                                _connect();
                               },
-                              enabled: !_radioState.isConnecting,
+                              // Keep the field editable at all times. Disabling
+                              // it while a (re)connection was in progress made the
+                              // input drop focus and close the keyboard mid-edit,
+                              // so the user could not switch to another stream
+                              // while the current one was reconnecting.
+                              enabled: true,
                               focusNode: _codeFocusNode,
                             ),
                             const SizedBox(height: 12),
                             Focus(
                               focusNode: _connectButtonFocusNode,
                               child: ElevatedButton.icon(
-                                onPressed:
-                                    _radioState.isConnecting ? null : _connect,
-                                icon: _radioState.isConnecting
-                                    ? const SizedBox(
-                                        width: 16,
-                                        height: 16,
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                          valueColor:
-                                              AlwaysStoppedAnimation<Color>(
-                                                  Colors.white),
-                                        ),
-                                      )
-                                    : Icon(_radioState.isConnected
-                                        ? Icons.sync
-                                        : Icons.login),
-                                label: Text(_radioState.isConnecting
-                                    ? 'Connecting...'
-                                    : (_radioState.isConnected
-                                        ? 'Change PIN & Reconnect'
-                                        : 'Connect')),
+                                // Disconnected -> "Connect". Any active session
+                                // (connected, failover, connecting, or stuck in a
+                                // retry loop) -> "Change PIN", which stops the
+                                // current stream and clears the field for a new
+                                // code. The button is never disabled, so the user
+                                // can always break out of a reconnect loop.
+                                onPressed: _radioState is RadioStateDisconnected
+                                    ? _connect
+                                    : _changePin,
+                                icon: Icon(_radioState is RadioStateDisconnected
+                                    ? Icons.login
+                                    : Icons.edit),
+                                label: Text(_radioState is RadioStateDisconnected
+                                    ? 'Connect'
+                                    : 'Change PIN'),
                                 style: ElevatedButton.styleFrom(
                                   padding:
                                       const EdgeInsets.symmetric(vertical: 10),
-                                  backgroundColor: _radioState.isConnecting
-                                      ? TunioColors.primary
-                                          .withValues(alpha: 0.7)
-                                      : TunioColors.primary,
+                                  backgroundColor: TunioColors.primary,
                                   foregroundColor: Colors.white,
-                                  disabledBackgroundColor: TunioColors.primary
-                                      .withValues(alpha: 0.7),
-                                  disabledForegroundColor: Colors.white,
                                   side: _connectButtonFocusNode.hasFocus
                                       ? BorderSide(
                                           color: TunioColors.primary, width: 2)
