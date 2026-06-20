@@ -73,27 +73,34 @@ android {
 
     flavorDimensions += "distribution"
     productFlavors {
+        // Google Play distribution
         play {
             dimension = "distribution"
+            signingConfig signingConfigs.release
         }
+        // Direct/standalone APK with in-app self-update
         standalone {
             dimension = "distribution"
+            signingConfig signingConfigs.release
+        }
+        // RuStore distribution: separate signing key, no self-update.
+        // Signing config is set per-flavor (not per-buildType) so the release
+        // build type can use the right key for each distribution channel.
+        rustore {
+            dimension = "distribution"
+            if (keystorePropertiesFile.exists() && keystoreProperties['rustoreKeyAlias']) {
+                signingConfig signingConfigs.rustore
+            } else {
+                signingConfig signingConfigs.release
+            }
         }
     }
 
     buildTypes {
+        // No signingConfig here: the release build type inherits the signing
+        // config from the active product flavor (see productFlavors above).
+        // The implicit debug build type keeps its own debug signing config.
         release {
-            signingConfig = signingConfigs.release
-            minifyEnabled = true
-            shrinkResources = false
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-        }
-        rustore {
-            if (keystorePropertiesFile.exists() && keystoreProperties['rustoreKeyAlias']) {
-                signingConfig = signingConfigs.rustore
-            } else {
-                signingConfig = signingConfigs.release
-            }
             minifyEnabled = true
             shrinkResources = false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
