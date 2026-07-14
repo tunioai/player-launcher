@@ -11,6 +11,7 @@ import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.os.StatFs
 import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
@@ -64,9 +65,18 @@ class VisualizerActivity : Activity() {
         const val EXTRA_LOW_PERFORMANCE_MODE = "low_performance_mode"
         private const val TAG = "VisualizerActivity"
         private const val VIDEO_CACHE_DIR_NAME = "visualizer_video_cache"
+        // Hard ceiling for the on-disk video cache. The effective cap is
+        // min(this, a fraction of currently-free space) — see resolveVideoCacheMaxBytes.
         private const val VIDEO_CACHE_MAX_BYTES = 3L * 1024L * 1024L * 1024L // 3 GB
-        private const val VIDEO_PREFETCH_MAX_ITEMS = 1
-        private const val VIDEO_PREFETCH_MAX_BYTES_PER_ITEM = 8L * 1024L * 1024L // 8 MB
+        // Always keep at least this much free on the volume the cache lives on.
+        private const val VIDEO_CACHE_FREE_SPACE_RESERVE_BYTES = 1L * 1024L * 1024L * 1024L // 1 GB
+        // Never use more than this fraction of the free space available at creation time.
+        private const val VIDEO_CACHE_FREE_SPACE_FRACTION = 0.5
+        // Stop prefetching once the cache is this full, so a pass never evicts the clips
+        // it just wrote (the LRU evictor still hard-caps the total on disk regardless).
+        private const val VIDEO_PREFETCH_CACHE_FILL_FRACTION = 0.9
+        // How many distinct playlist clips to prefetch (whole clips, for offline playback).
+        private const val VIDEO_PREFETCH_MAX_ITEMS = 64
         private const val PLAYBACK_GUARD_CHECK_INTERVAL_MS = 3000L
         private const val PLAYBACK_GUARD_STALL_TIMEOUT_MS = 12000L
         private const val PLAYBACK_GUARD_RECOVERY_COOLDOWN_MS = 2500L
@@ -81,7 +91,13 @@ class VisualizerActivity : Activity() {
         @Volatile
         private var sharedDatabaseProvider: StandaloneDatabaseProvider? = null
 
-        private fun obtainSharedVideoCache(context: Context, cacheDir: File): SimpleCache {
+        // The cap the shared cache was actually created with. The SimpleCache is a
+        // process-wide singleton, so its LRU cap is fixed at first creation; callers
+        // read this back to keep their prefetch budget aligned with the real cap.
+        @Volatile
+        private var sharedVideoCacheMaxBytes: Long = VIDEO_CACHE_MAX_BYTES
+
+        private fun obtainSharedVideoCache(context: Context, cacheDir: File, maxBytes: Long): SimpleCache {
             synchronized(this) {
                 val desiredPath = cacheDir.absolutePath
                 val existing = sharedVideoCache
@@ -103,11 +119,12 @@ class VisualizerActivity : Activity() {
                 }
                 val cache = SimpleCache(
                     cacheDir,
-                    LeastRecentlyUsedCacheEvictor(VIDEO_CACHE_MAX_BYTES),
+                    LeastRecentlyUsedCacheEvictor(maxBytes),
                     provider,
                 )
                 sharedVideoCache = cache
                 sharedVideoCachePath = desiredPath
+                sharedVideoCacheMaxBytes = maxBytes
                 return cache
             }
         }
@@ -150,7 +167,10 @@ class VisualizerActivity : Activity() {
     private var prefetchFuture: Future<*>? = null
     @Volatile
     private var prefetchToken: Int = 0
+    @Volatile
+    private var activeCacheWriter: CacheWriter? = null
     private lateinit var videoCache: SimpleCache
+    private var videoCacheMaxBytes: Long = VIDEO_CACHE_MAX_BYTES
     private val knownSources = linkedSetOf<String>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -312,8 +332,13 @@ class VisualizerActivity : Activity() {
     private fun initVideoCaching() {
         val cacheDir = resolveVideoCacheDirectory()
         val appContext = applicationContext
-        val cache = obtainSharedVideoCache(appContext, cacheDir)
+        val desiredCap = resolveVideoCacheMaxBytes(cacheDir)
+        val cache = obtainSharedVideoCache(appContext, cacheDir, desiredCap)
         videoCache = cache
+        // The cache is a process-wide singleton whose cap is fixed at first creation;
+        // read that real cap back so the prefetch budget can't overshoot it.
+        videoCacheMaxBytes = sharedVideoCacheMaxBytes
+        Log.d(TAG, "Video cache cap=${videoCacheMaxBytes / (1024L * 1024L)}MB dir=${cacheDir.absolutePath}")
         val httpFactory = DefaultHttpDataSource.Factory().setAllowCrossProtocolRedirects(true)
         val upstreamFactory = DefaultDataSource.Factory(appContext, httpFactory)
         val cacheKeyFactory = CacheKeyFactory { dataSpec ->
@@ -359,6 +384,26 @@ class VisualizerActivity : Activity() {
         }
 
         return File(cacheDir, VIDEO_CACHE_DIR_NAME).apply { mkdirs() }
+    }
+
+    // Size the cache from how much space the target volume actually has right now:
+    // take at most VIDEO_CACHE_FREE_SPACE_FRACTION of the free space after reserving
+    // VIDEO_CACHE_FREE_SPACE_RESERVE_BYTES, capped at VIDEO_CACHE_MAX_BYTES. This is
+    // what keeps the flash from filling up and the box from hanging on a small drive.
+    private fun resolveVideoCacheMaxBytes(cacheDir: File): Long {
+        return try {
+            val stat = StatFs(cacheDir.absolutePath)
+            val usableFree = stat.availableBytes - VIDEO_CACHE_FREE_SPACE_RESERVE_BYTES
+            if (usableFree <= 0L) {
+                0L
+            } else {
+                (usableFree.toDouble() * VIDEO_CACHE_FREE_SPACE_FRACTION).toLong()
+                    .coerceIn(0L, VIDEO_CACHE_MAX_BYTES)
+            }
+        } catch (error: Throwable) {
+            Log.d(TAG, "Cache size probe failed, using default cap: ${error.message}")
+            VIDEO_CACHE_MAX_BYTES
+        }
     }
 
     private fun ensureDirectoryWritable(dir: File): Boolean {
@@ -841,6 +886,9 @@ class VisualizerActivity : Activity() {
     }
 
     private fun scheduleVideoPrefetch(playlistSnapshot: List<String>, excludeSource: String?) {
+        // Prefetch the whole playlist (not just the next clip) as complete files, so the
+        // rotation keeps playing from local cache when the network drops. The current
+        // clip is excluded — it is already streaming into the player.
         val targets = playlistSnapshot
             .asSequence()
             .filter { it.isNotBlank() && it != excludeSource }
@@ -849,14 +897,21 @@ class VisualizerActivity : Activity() {
             .toList()
 
         cancelVideoPrefetch()
-        if (targets.isEmpty()) {
+        if (targets.isEmpty() || videoCacheMaxBytes <= 0L) {
             return
         }
 
         val token = ++prefetchToken
+        val fillLimit = (videoCacheMaxBytes.toDouble() * VIDEO_PREFETCH_CACHE_FILL_FRACTION).toLong()
         prefetchFuture = prefetchExecutor.submit {
             for (source in targets) {
                 if (Thread.currentThread().isInterrupted || token != prefetchToken) {
+                    return@submit
+                }
+                // The LRU evictor hard-caps the cache on disk; stopping here just avoids
+                // downloading clips that would immediately evict ones cached this pass.
+                if (currentCacheBytes() >= fillLimit) {
+                    Log.d(TAG, "Prefetch budget reached (${fillLimit / (1024L * 1024L)}MB), stopping")
                     return@submit
                 }
                 prefetchVideoToCache(source, token)
@@ -866,20 +921,35 @@ class VisualizerActivity : Activity() {
 
     private fun cancelVideoPrefetch() {
         prefetchToken += 1
+        try {
+            activeCacheWriter?.cancel()
+        } catch (_: Throwable) {
+            // no-op
+        }
         prefetchFuture?.cancel(true)
         prefetchFuture = null
     }
 
+    private fun currentCacheBytes(): Long {
+        return try {
+            videoCache.cacheSpace
+        } catch (_: Throwable) {
+            0L
+        }
+    }
+
     private fun prefetchVideoToCache(source: String, token: Int) {
+        var writer: CacheWriter? = null
         try {
             if (token != prefetchToken) {
                 return
             }
             val uri = Uri.parse(source)
+            // No length set -> DataSpec defaults to the whole resource, so the clip is
+            // cached in full and can play end-to-end offline.
             val dataSpec = DataSpec.Builder()
                 .setUri(uri)
                 .setKey(buildVideoCacheKey(uri))
-                .setLength(VIDEO_PREFETCH_MAX_BYTES_PER_ITEM)
                 .build()
             val cacheWriter = CacheWriter(
                 prefetchCacheDataSourceFactory.createDataSource(),
@@ -887,11 +957,17 @@ class VisualizerActivity : Activity() {
                 null,
                 null,
             )
+            writer = cacheWriter
+            activeCacheWriter = cacheWriter
             cacheWriter.cache()
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
         } catch (error: Throwable) {
             Log.d(TAG, "Video prefetch skipped for $source: ${error.message}")
+        } finally {
+            if (activeCacheWriter === writer) {
+                activeCacheWriter = null
+            }
         }
     }
 
