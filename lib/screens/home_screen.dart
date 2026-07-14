@@ -458,8 +458,20 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    Logger.info(
-        'HomeScreen: Connecting with code: ${_currentCode.substring(0, 2)}****');
+    // If a session/reconnect loop is active for a *different* PIN, tear it down
+    // first. Otherwise a manual connect to a new stream gets queued behind the
+    // current (possibly endlessly retrying) connection, so the player keeps
+    // reconnecting to the old stream instead of switching to the new one.
+    final activeToken = _radioState.token;
+    if (_radioState is! RadioStateDisconnected && activeToken != _currentCode) {
+      await _radioService.disconnect();
+      if (!mounted) return;
+    }
+
+    final maskedCode = _currentCode.length >= 2
+        ? '${_currentCode.substring(0, 2)}****'
+        : '****';
+    Logger.info('HomeScreen: Connecting with code: $maskedCode');
 
     final result = await _radioService.connect(_currentCode);
     result.fold(
@@ -471,6 +483,20 @@ class _HomeScreenState extends State<HomeScreen> {
         _showError(error);
       },
     );
+  }
+
+  Future<void> _changePin() async {
+    // Stop the current stream (and any auto-reconnect loop) immediately, clear
+    // the PIN field and focus it, so the user can calmly type a new code
+    // without the player fighting to reconnect to the old stream.
+    Logger.info('HomeScreen: Change PIN requested - stopping current stream');
+    await _radioService.disconnect();
+    if (!mounted) return;
+    setState(() {
+      _currentCode = '';
+      _isUserEditingCode = true;
+    });
+    _codeFocusNode.requestFocus();
   }
 
   Widget _buildVisualizerOverlay() {
@@ -1163,311 +1189,328 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildMainContent(Widget? visualizerButton) {
-    return Padding(
-      padding: const EdgeInsets.all(12.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // TIP Card - compact version
-          Card(
-            color: Colors.grey[300],
-            child: InkWell(
-              onTap: _launchPersonalCabinet,
-              borderRadius: BorderRadius.circular(8),
+    return SafeArea(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          return SingleChildScrollView(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(minHeight: constraints.maxHeight),
               child: Padding(
-                padding: const EdgeInsets.all(8.0),
-                child: Row(
+                padding: const EdgeInsets.all(12.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Icon(
-                      Icons.lightbulb_outline,
-                      color: TunioColors.primary,
-                      size: 18,
-                    ),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Text(
-                        'TIP: Get PIN code at cp.tunio.ai/spot-links',
-                        style: TextStyle(
-                          color: Colors.black87,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w500,
+                    // TIP Card - compact version
+                    Card(
+                      color: Colors.grey[300],
+                      child: InkWell(
+                        onTap: _launchPersonalCabinet,
+                        borderRadius: BorderRadius.circular(8),
+                        child: Padding(
+                          padding: const EdgeInsets.all(8.0),
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.lightbulb_outline,
+                                color: TunioColors.primary,
+                                size: 18,
+                              ),
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: Text(
+                                  'TIP: Get PIN code at cp.tunio.ai/spot-links',
+                                  style: TextStyle(
+                                    color: Colors.black87,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ),
+                              Icon(
+                                Icons.open_in_new,
+                                color: TunioColors.primary,
+                                size: 14,
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                     ),
-                    Icon(
-                      Icons.open_in_new,
-                      color: TunioColors.primary,
-                      size: 14,
+                    const SizedBox(height: 12),
+
+                    // Connection Card - compact version
+                    Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(12.0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            CodeInputWidget(
+                              value: _currentCode,
+                              onChanged: (code) {
+                                setState(() {
+                                  _currentCode = code;
+                                  _isUserEditingCode =
+                                      true; // Mark that user is editing
+                                });
+                              },
+                              onTap: () {
+                                setState(() {
+                                  _isUserEditingCode =
+                                      true; // Mark that user is editing
+                                });
+                              },
+                              onSubmitted: () {
+                                _connect();
+                              },
+                              // Keep the field editable at all times. Disabling
+                              // it while a (re)connection was in progress made the
+                              // input drop focus and close the keyboard mid-edit,
+                              // so the user could not switch to another stream
+                              // while the current one was reconnecting.
+                              enabled: true,
+                              focusNode: _codeFocusNode,
+                            ),
+                            const SizedBox(height: 12),
+                            Focus(
+                              focusNode: _connectButtonFocusNode,
+                              child: ElevatedButton.icon(
+                                // Disconnected -> "Connect". Any active session
+                                // (connected, failover, connecting, or stuck in a
+                                // retry loop) -> "Change PIN", which stops the
+                                // current stream and clears the field for a new
+                                // code. The button is never disabled, so the user
+                                // can always break out of a reconnect loop.
+                                onPressed: _radioState is RadioStateDisconnected
+                                    ? _connect
+                                    : _changePin,
+                                icon: Icon(_radioState is RadioStateDisconnected
+                                    ? Icons.login
+                                    : Icons.edit),
+                                label: Text(
+                                    _radioState is RadioStateDisconnected
+                                        ? 'Connect'
+                                        : 'Change PIN'),
+                                style: ElevatedButton.styleFrom(
+                                  padding:
+                                      const EdgeInsets.symmetric(vertical: 10),
+                                  backgroundColor: TunioColors.primary,
+                                  foregroundColor: Colors.white,
+                                  side: _connectButtonFocusNode.hasFocus
+                                      ? BorderSide(
+                                          color: TunioColors.primary, width: 2)
+                                      : null,
+                                ),
+                              ),
+                            ),
+
+                            // Show connected status if connected
+                            if (_radioState.isConnected)
+                              Container(
+                                margin: const EdgeInsets.only(top: 8),
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 12, vertical: 8),
+                                decoration: BoxDecoration(
+                                  color: Colors.green.withValues(alpha: 0.1),
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(
+                                    color: Colors.green.withValues(alpha: 0.3),
+                                  ),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(Icons.check_circle,
+                                        color: Colors.green, size: 16),
+                                    const SizedBox(width: 6),
+                                    Text(
+                                      'Connected - Running in Background',
+                                      style: TextStyle(
+                                        color: Colors.green,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
                     ),
+                    const SizedBox(height: 12),
+
+                    // Player Card (compact layout)
+                    Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16.0),
+                        child: Column(
+                          children: [
+                            Text(
+                              _radioState.config?.title ?? '',
+                              style: const TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(height: 16),
+                            FocusTraversalGroup(
+                              policy: WidgetOrderTraversalPolicy(),
+                              child: Row(
+                                children: [
+                                  // Circular play/pause button
+                                  FocusTraversalOrder(
+                                    order: const NumericFocusOrder(1),
+                                    child: Focus(
+                                      focusNode: _playButtonFocusNode,
+                                      child: ElevatedButton(
+                                        onPressed: _radioState.isConnecting
+                                            ? null
+                                            : () => _onPlayButtonPressed(),
+                                        style: ElevatedButton.styleFrom(
+                                          shape: const CircleBorder(),
+                                          padding: const EdgeInsets.all(16),
+                                          side: _playButtonFocusNode.hasFocus
+                                              ? BorderSide(
+                                                  color: TunioColors.primary,
+                                                  width: 3)
+                                              : null,
+                                        ),
+                                        child: Icon(
+                                          _getPlayPauseIcon(),
+                                          size: 32,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+
+                                  if (visualizerButton != null) ...[
+                                    FocusTraversalOrder(
+                                      order: const NumericFocusOrder(2),
+                                      child: visualizerButton,
+                                    ),
+                                    const SizedBox(width: 12),
+                                  ],
+
+                                  // Compact indicators wrap to multiple rows on small screens
+                                  Expanded(
+                                    child: _buildCompactIndicators(),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+
+                    // Status indicator and metrics
+                    Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16.0),
+                        child: LayoutBuilder(
+                          builder: (context, constraints) {
+                            final isMobile = constraints.maxWidth < 600;
+
+                            if (isMobile) {
+                              // Mobile layout: Column (status above, metrics below)
+                              return Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  // Status indicator
+                                  StatusIndicator(
+                                    audioState: _getAudioState() ??
+                                        const AudioStateIdle(),
+                                    isConnected: _radioState.isConnected,
+                                    statusMessage: _getStatusText(),
+                                  ),
+                                  const SizedBox(height: 16),
+
+                                  // Metrics chips in wrapped layout
+                                  _buildMetricsChips(),
+                                ],
+                              );
+                            } else {
+                              // Tablet/Desktop layout: Row (status left, metrics right)
+                              return Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  // Status indicator (left side) - takes only needed space
+                                  StatusIndicator(
+                                    audioState: _getAudioState() ??
+                                        const AudioStateIdle(),
+                                    isConnected: _radioState.isConnected,
+                                    statusMessage: _getStatusText(),
+                                  ),
+
+                                  // Metrics chips (right side) - aligned to right
+                                  _buildMetricsChips(),
+                                ],
+                              );
+                            }
+                          },
+                        ),
+                      ),
+                    ),
+
+                    // Diagnostic indicator at the bottom
+                    if (_radioState.isConnecting ||
+                        _radioState is RadioStateError)
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            vertical: 4, horizontal: 8),
+                        margin: const EdgeInsets.only(top: 8),
+                        decoration: BoxDecoration(
+                          color: _radioState.isConnecting
+                              ? Colors.blue.withValues(alpha: 0.1)
+                              : Colors.red.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                            color: _radioState.isConnecting
+                                ? Colors.blue.withValues(alpha: 0.3)
+                                : Colors.red.withValues(alpha: 0.3),
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (_radioState.isConnecting)
+                              SizedBox(
+                                width: 12,
+                                height: 12,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  valueColor: AlwaysStoppedAnimation<Color>(
+                                      Colors.blue),
+                                ),
+                              )
+                            else
+                              Icon(Icons.error_outline,
+                                  size: 12, color: Colors.red),
+                            const SizedBox(width: 6),
+                            Text(
+                              _getDiagnosticText(),
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w500,
+                                color: _radioState.isConnecting
+                                    ? Colors.blue
+                                    : Colors.red,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                   ],
                 ),
               ),
             ),
-          ),
-          const SizedBox(height: 12),
-
-          // Connection Card - compact version
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(12.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  CodeInputWidget(
-                    value: _currentCode,
-                    onChanged: (code) {
-                      setState(() {
-                        _currentCode = code;
-                        _isUserEditingCode = true; // Mark that user is editing
-                      });
-                    },
-                    onTap: () {
-                      setState(() {
-                        _isUserEditingCode = true; // Mark that user is editing
-                      });
-                    },
-                    onSubmitted: () {
-                      if (!_radioState.isConnecting) {
-                        _connect();
-                      }
-                    },
-                    enabled: !_radioState.isConnecting,
-                    focusNode: _codeFocusNode,
-                  ),
-                  const SizedBox(height: 12),
-                  Focus(
-                    focusNode: _connectButtonFocusNode,
-                    child: ElevatedButton.icon(
-                      onPressed: _radioState.isConnecting ? null : _connect,
-                      icon: _radioState.isConnecting
-                          ? const SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                valueColor:
-                                    AlwaysStoppedAnimation<Color>(Colors.white),
-                              ),
-                            )
-                          : Icon(_radioState.isConnected
-                              ? Icons.sync
-                              : Icons.login),
-                      label: Text(_radioState.isConnecting
-                          ? 'Connecting...'
-                          : (_radioState.isConnected
-                              ? 'Change PIN & Reconnect'
-                              : 'Connect')),
-                      style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 10),
-                        backgroundColor: _radioState.isConnecting
-                            ? TunioColors.primary.withValues(alpha: 0.7)
-                            : TunioColors.primary,
-                        foregroundColor: Colors.white,
-                        disabledBackgroundColor:
-                            TunioColors.primary.withValues(alpha: 0.7),
-                        disabledForegroundColor: Colors.white,
-                        side: _connectButtonFocusNode.hasFocus
-                            ? BorderSide(color: TunioColors.primary, width: 2)
-                            : null,
-                      ),
-                    ),
-                  ),
-
-                  // Show connected status if connected
-                  if (_radioState.isConnected)
-                    Container(
-                      margin: const EdgeInsets.only(top: 8),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: Colors.green.withValues(alpha: 0.1),
-                        borderRadius: BorderRadius.circular(6),
-                        border: Border.all(
-                          color: Colors.green.withValues(alpha: 0.3),
-                        ),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(Icons.check_circle,
-                              color: Colors.green, size: 16),
-                          const SizedBox(width: 6),
-                          Text(
-                            'Connected - Running in Background',
-                            style: TextStyle(
-                              color: Colors.green,
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 12),
-
-          // Player Card (compact layout)
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                children: [
-                  Text(
-                    _radioState.config?.title ?? '',
-                    style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  FocusTraversalGroup(
-                    policy: WidgetOrderTraversalPolicy(),
-                    child: Row(
-                      children: [
-                        // Circular play/pause button
-                        FocusTraversalOrder(
-                          order: const NumericFocusOrder(1),
-                          child: Focus(
-                            focusNode: _playButtonFocusNode,
-                            child: ElevatedButton(
-                              onPressed: _radioState.isConnecting
-                                  ? null
-                                  : () => _onPlayButtonPressed(),
-                              style: ElevatedButton.styleFrom(
-                                shape: const CircleBorder(),
-                                padding: const EdgeInsets.all(16),
-                                side: _playButtonFocusNode.hasFocus
-                                    ? BorderSide(
-                                        color: TunioColors.primary, width: 3)
-                                    : null,
-                              ),
-                              child: Icon(
-                                _getPlayPauseIcon(),
-                                size: 32,
-                              ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-
-                        if (visualizerButton != null) ...[
-                          FocusTraversalOrder(
-                            order: const NumericFocusOrder(2),
-                            child: visualizerButton,
-                          ),
-                          const SizedBox(width: 12),
-                        ],
-
-                        // Compact indicators wrap to multiple rows on small screens
-                        Expanded(
-                          child: _buildCompactIndicators(),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 12),
-
-          // Status indicator and metrics
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  final isMobile = constraints.maxWidth < 600;
-
-                  if (isMobile) {
-                    // Mobile layout: Column (status above, metrics below)
-                    return Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        // Status indicator
-                        StatusIndicator(
-                          audioState:
-                              _getAudioState() ?? const AudioStateIdle(),
-                          isConnected: _radioState.isConnected,
-                          statusMessage: _getStatusText(),
-                        ),
-                        const SizedBox(height: 16),
-
-                        // Metrics chips in wrapped layout
-                        _buildMetricsChips(),
-                      ],
-                    );
-                  } else {
-                    // Tablet/Desktop layout: Row (status left, metrics right)
-                    return Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        // Status indicator (left side) - takes only needed space
-                        StatusIndicator(
-                          audioState:
-                              _getAudioState() ?? const AudioStateIdle(),
-                          isConnected: _radioState.isConnected,
-                          statusMessage: _getStatusText(),
-                        ),
-
-                        // Metrics chips (right side) - aligned to right
-                        _buildMetricsChips(),
-                      ],
-                    );
-                  }
-                },
-              ),
-            ),
-          ),
-
-          // Diagnostic indicator at the bottom
-          if (_radioState.isConnecting || _radioState is RadioStateError)
-            Container(
-              padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
-              margin: const EdgeInsets.only(top: 8),
-              decoration: BoxDecoration(
-                color: _radioState.isConnecting
-                    ? Colors.blue.withValues(alpha: 0.1)
-                    : Colors.red.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                  color: _radioState.isConnecting
-                      ? Colors.blue.withValues(alpha: 0.3)
-                      : Colors.red.withValues(alpha: 0.3),
-                ),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (_radioState.isConnecting)
-                    SizedBox(
-                      width: 12,
-                      height: 12,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
-                      ),
-                    )
-                  else
-                    Icon(Icons.error_outline, size: 12, color: Colors.red),
-                  const SizedBox(width: 6),
-                  Text(
-                    _getDiagnosticText(),
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w500,
-                      color:
-                          _radioState.isConnecting ? Colors.blue : Colors.red,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-        ],
+          );
+        },
       ),
     );
   }
