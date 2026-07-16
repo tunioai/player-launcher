@@ -134,6 +134,14 @@ class VisualizerActivity : Activity() {
         // last frame stays on screen instead of dropping to black.
         private const val CLEAR_HANDOVER_GRACE_MS = 350L
         private const val PLAYBACK_GUARD_CHECK_INTERVAL_MS = 3000L
+        // Watchdog for a decoder that never emits the first frame — without it
+        // a pre-first-frame stall left the screen black forever (the regular
+        // guard deliberately skips the waitingForFirstFrame phase).
+        private const val FIRST_FRAME_STALL_TIMEOUT_MS = 8000L
+        // After a "sceneEnding" hint a finished clip freezes on its last frame
+        // instead of restarting; if the promised scene switch never comes, the
+        // rotation resumes after this long.
+        private const val SCENE_ENDING_HOLD_MAX_MS = 12_000L
         private const val PLAYBACK_GUARD_STALL_TIMEOUT_MS = 12000L
         private const val PLAYBACK_GUARD_RECOVERY_COOLDOWN_MS = 2500L
         private const val PLAYBACK_PROGRESS_EPSILON_MS = 250L
@@ -362,10 +370,15 @@ class VisualizerActivity : Activity() {
     private var pendingRevealAfterTransform = false
     private var suppressWaitingBlackout = false
     private var pendingClearRunnable: Runnable? = null
-    // Prewarmed playlist is prepared paused on its first frame; playback starts
-    // when the real setPlaylist of the visible scene arrives, so scenes timed
-    // to clip durations don't lose their opening seconds.
+    // Prewarmed playlist plays only until its first frame, then pauses and
+    // seeks back to 0 (old Amlogic decoders emit no frame while paused, so a
+    // paused prepare never reported readiness). Playback resumes when the real
+    // setPlaylist of the visible scene arrives, so scenes timed to clip
+    // durations don't lose their opening seconds.
     private var awaitingPrewarmActivation = false
+    private var firstFrameWaitStartedAtMs = 0L
+    private var sceneEndingHold = false
+    private var sceneEndingHoldSetAtMs = 0L
     private val closeTapSlop by lazy { ViewConfiguration.get(this).scaledTouchSlop.toFloat() }
     private var closeTapDownX: Float = 0f
     private var closeTapDownY: Float = 0f
@@ -529,11 +542,23 @@ class VisualizerActivity : Activity() {
                         }
                         markPlaybackProgressIfAdvanced()
                         if (playbackState == Player.STATE_ENDED) {
-                            hardCutToNext()
+                            if (sceneEndingHold) {
+                                // The page is about to switch scenes: freeze on
+                                // the last frame instead of visibly restarting.
+                                Log.d(TAG, "clip ended during sceneEnding hold, freezing last frame")
+                            } else {
+                                hardCutToNext()
+                            }
                         }
                     }
 
                     override fun onRenderedFirstFrame() {
+                        if (awaitingPrewarmActivation) {
+                            player?.apply {
+                                pause()
+                                seekTo(0)
+                            }
+                        }
                         if (waitingForFirstFrame) {
                             pendingRevealAfterTransform = true
                             maybeRevealVideoAfterFirstFrame()
@@ -1065,6 +1090,10 @@ class VisualizerActivity : Activity() {
             "clear" -> requestClearNativeVideo(json.optString("ownerId"))
             "setMarquee" -> marqueeOverlayController.setMarquee(json)
             "clearMarquee" -> marqueeOverlayController.clearMarquee(json.optString("ownerId"))
+            "sceneEnding" -> {
+                sceneEndingHold = true
+                sceneEndingHoldSetAtMs = SystemClock.elapsedRealtime()
+            }
             else -> {
                 // no-op
             }
@@ -1427,12 +1456,15 @@ class VisualizerActivity : Activity() {
         applyPlacement(json.optJSONObject("rect"), currentDimAlpha)
         if (samePlaylist) {
             Log.d(TAG, "setPlaylist skipped restart (same owner/playlist), owner=$ownerId")
-            if (!prewarm && awaitingPrewarmActivation) {
-                awaitingPrewarmActivation = false
-                player?.playWhenReady = true
-                player?.play()
-                markPlaybackProgressIfAdvanced(forceRefresh = true)
-                Log.d(TAG, "prewarmed playlist activated, owner=$ownerId")
+            if (!prewarm) {
+                sceneEndingHold = false
+                if (awaitingPrewarmActivation) {
+                    awaitingPrewarmActivation = false
+                    player?.playWhenReady = true
+                    player?.play()
+                    markPlaybackProgressIfAdvanced(forceRefresh = true)
+                    Log.d(TAG, "prewarmed playlist activated, owner=$ownerId")
+                }
             }
             notifyNativeVideoReady(ownerId)
             return
@@ -1454,8 +1486,9 @@ class VisualizerActivity : Activity() {
         playlist = nextPlaylist
         currentPlaylistKey = nextPlaylistKey
         awaitingPrewarmActivation = prewarm
+        sceneEndingHold = false
         refillQueue(avoidCurrent = false)
-        startPlaybackPipeline(startPaused = prewarm)
+        startPlaybackPipeline()
         scheduleVideoPrefetch(playlist)
     }
 
@@ -1477,6 +1510,8 @@ class VisualizerActivity : Activity() {
         pendingRevealAfterTransform = false
         suppressWaitingBlackout = false
         awaitingPrewarmActivation = false
+        firstFrameWaitStartedAtMs = 0L
+        sceneEndingHold = false
         transitionOverlayView.animate().cancel()
         transitionOverlayView.alpha = 0f
         videoPlayerView.alpha = 0f
@@ -1678,7 +1713,7 @@ class VisualizerActivity : Activity() {
         return true
     }
 
-    private fun startPlaybackPipeline(startPaused: Boolean = false) {
+    private fun startPlaybackPipeline() {
         if (playlist.isEmpty()) {
             return
         }
@@ -1707,12 +1742,10 @@ class VisualizerActivity : Activity() {
             addMediaItem(firstMediaItem)
             addNextMediaItem()
             prepare()
-            // Paused prewarm still decodes and renders the first frame once
-            // READY, which drives the reveal/ready notification.
-            playWhenReady = !startPaused
-            if (!startPaused) {
-                play()
-            }
+            // Prewarm also starts playing: old decoders emit no frame while
+            // paused. onRenderedFirstFrame pauses + seeks back to 0.
+            playWhenReady = true
+            play()
         }
     }
 
@@ -1720,6 +1753,7 @@ class VisualizerActivity : Activity() {
         waitingForFirstFrame = true
         pendingRevealAfterTransform = false
         suppressWaitingBlackout = false
+        firstFrameWaitStartedAtMs = SystemClock.elapsedRealtime()
         transitionOverlayView.animate().cancel()
         transitionOverlayView.alpha = 1f
         videoPlayerView.alpha = 0f
@@ -1733,6 +1767,7 @@ class VisualizerActivity : Activity() {
         waitingForFirstFrame = true
         pendingRevealAfterTransform = false
         suppressWaitingBlackout = true
+        firstFrameWaitStartedAtMs = SystemClock.elapsedRealtime()
         transitionOverlayView.animate().cancel()
         transitionOverlayView.alpha = 0f
         videoPlayerView.alpha = 0f
@@ -1859,11 +1894,36 @@ class VisualizerActivity : Activity() {
 
     private fun runPlaybackGuardCycle() {
         val instance = player ?: return
-        if (playlist.isEmpty() || videoLayer.visibility != View.VISIBLE || waitingForFirstFrame) {
+        if (playlist.isEmpty() || videoLayer.visibility != View.VISIBLE) {
             return
         }
+
+        if (waitingForFirstFrame) {
+            val waitedMs = SystemClock.elapsedRealtime() - firstFrameWaitStartedAtMs
+            if (firstFrameWaitStartedAtMs > 0L && waitedMs >= FIRST_FRAME_STALL_TIMEOUT_MS) {
+                Log.w(TAG, "PlaybackGuard: no first frame after ${waitedMs}ms, recovering")
+                firstFrameWaitStartedAtMs = SystemClock.elapsedRealtime()
+                if (awaitingPrewarmActivation) {
+                    instance.playWhenReady = true
+                    instance.play()
+                } else if (!tryPlayRandomCachedFallback()) {
+                    hardCutToNext()
+                }
+            }
+            return
+        }
+
         if (awaitingPrewarmActivation) {
             // Deliberately paused on the first frame until the scene shows.
+            return
+        }
+
+        if (sceneEndingHold && instance.playbackState == Player.STATE_ENDED) {
+            if (SystemClock.elapsedRealtime() - sceneEndingHoldSetAtMs >= SCENE_ENDING_HOLD_MAX_MS) {
+                Log.w(TAG, "sceneEnding hold expired without a scene switch, resuming rotation")
+                sceneEndingHold = false
+                hardCutToNext()
+            }
             return
         }
 
