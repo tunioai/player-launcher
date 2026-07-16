@@ -1,7 +1,10 @@
 package ai.tunio.radioplayer
 
+import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.Typeface
 import android.os.Build
 import android.util.Log
@@ -29,12 +32,12 @@ class MarqueeOverlayController(private val context: Context) {
 
     companion object {
         private const val TAG = "MarqueeOverlay"
-        // Visual parity with the web marquee: 42px base font with
-        // text-shadow 0 2px 8px rgba(0,0,0,0.55), scaled with the font.
+        // Visual parity with the web marquee base-text style: 42px base font
+        // with a ~1px black outline (four 1px solid shadows in CSS), so the
+        // text stays readable on light backgrounds. Scales with the font.
         private const val BASE_FONT_PX = 42f
-        private const val SHADOW_RADIUS_FACTOR = 8f / BASE_FONT_PX
-        private const val SHADOW_DY_FACTOR = 2f / BASE_FONT_PX
-        private const val SHADOW_COLOR = 0x8C000000.toInt()
+        private const val OUTLINE_WIDTH_FACTOR = 2f / BASE_FONT_PX
+        private const val OUTLINE_COLOR = 0xD1000000.toInt()
         private const val MIN_TRAVEL_DURATION_MS = 2500L
         private const val LAYOUT_RETRY_DELAY_MS = 16L
         private const val LAYOUT_RETRY_LIMIT = 120
@@ -52,10 +55,50 @@ class MarqueeOverlayController(private val context: Context) {
 
     private class Overlay(
         val container: FrameLayout,
-        val textView: TextView,
+        val textView: OutlineTextView,
     ) {
         var spec: MarqueeSpec? = null
         var cycleToken: Int = 0
+    }
+
+    // TextView has no text stroke support; the outline is drawn as a stroke
+    // pass under the regular fill pass. setTextColor() inside onDraw would
+    // schedule invalidate() and loop forever, hence the suppression flag.
+    @SuppressLint("ViewConstructor", "AppCompatCustomView")
+    private class OutlineTextView(context: Context) : TextView(context) {
+        var outlineWidthPx: Float = 0f
+
+        private var suppressInvalidate = false
+
+        override fun invalidate() {
+            if (suppressInvalidate) {
+                return
+            }
+            super.invalidate()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            if (outlineWidthPx <= 0f) {
+                super.onDraw(canvas)
+                return
+            }
+
+            val fillColors = textColors
+            suppressInvalidate = true
+            try {
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = outlineWidthPx
+                paint.strokeJoin = Paint.Join.ROUND
+                setTextColor(OUTLINE_COLOR)
+                super.onDraw(canvas)
+
+                paint.style = Paint.Style.FILL
+                setTextColor(fillColors)
+            } finally {
+                suppressInvalidate = false
+            }
+            super.onDraw(canvas)
+        }
     }
 
     val layer: FrameLayout = FrameLayout(context)
@@ -134,7 +177,7 @@ class MarqueeOverlayController(private val context: Context) {
     }
 
     private fun createOverlay(params: FrameLayout.LayoutParams): Overlay {
-        val textView = TextView(context).apply {
+        val textView = OutlineTextView(context).apply {
             isSingleLine = true
             maxLines = 1
             ellipsize = null
@@ -161,12 +204,7 @@ class MarqueeOverlayController(private val context: Context) {
             typeface = resolveTypeface(spec.fontWeight)
             letterSpacing = -0.01f
             alpha = spec.alpha
-            setShadowLayer(
-                spec.fontSizePx * SHADOW_RADIUS_FACTOR,
-                0f,
-                spec.fontSizePx * SHADOW_DY_FACTOR,
-                SHADOW_COLOR,
-            )
+            outlineWidthPx = spec.fontSizePx * OUTLINE_WIDTH_FACTOR
         }
         // FrameLayout caps WRAP_CONTENT children at its own width, so the text
         // width is measured manually and set as an exact size to let the view
