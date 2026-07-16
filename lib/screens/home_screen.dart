@@ -47,8 +47,13 @@ class _HomeScreenState extends State<HomeScreen> {
   final AppUpdateService _appUpdateService = AppUpdateService();
   bool _isCheckingForUpdates = false;
   bool _isDownloadingUpdate = false;
+  bool _isUpdateAvailable = false;
   double? _updateDownloadProgress;
   String? _updateStatusText;
+  Timer? _updateAvailabilityTimer;
+  Timer? _updateAvailabilityRetryTimer;
+  static const Duration _updateAvailabilityCheckInterval = Duration(hours: 6);
+  static const Duration _updateAvailabilityRetryDelay = Duration(minutes: 5);
 
   // Focus nodes for TV remote navigation
   final FocusNode _codeFocusNode = FocusNode();
@@ -103,6 +108,41 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     _initializeService();
     _setupFocusNodes();
+    if (_appUpdateService.isSupported) {
+      _refreshUpdateAvailability();
+      _updateAvailabilityTimer = Timer.periodic(
+        _updateAvailabilityCheckInterval,
+        (_) => _refreshUpdateAvailability(),
+      );
+    }
+  }
+
+  Future<void> _refreshUpdateAvailability() async {
+    if (!_appUpdateService.isSupported ||
+        _isCheckingForUpdates ||
+        _isDownloadingUpdate) {
+      return;
+    }
+    var manifestLoaded = false;
+    try {
+      final result = await _appUpdateService.checkForUpdate();
+      if (!mounted) return;
+      manifestLoaded = result.latestRelease != null;
+      if (result.isUpdateAvailable != _isUpdateAvailable) {
+        setState(() {
+          _isUpdateAvailable = result.isUpdateAvailable;
+        });
+      }
+    } catch (e) {
+      Logger.error('HomeScreen: silent update check failed: $e');
+    }
+    if (!manifestLoaded && mounted) {
+      // Boot-time checks often race the network coming up — retry soon
+      // instead of waiting for the next periodic tick.
+      _updateAvailabilityRetryTimer?.cancel();
+      _updateAvailabilityRetryTimer =
+          Timer(_updateAvailabilityRetryDelay, _refreshUpdateAvailability);
+    }
   }
 
   Future<void> _ensureBackgroundExecutionAllowed() async {
@@ -139,6 +179,10 @@ class _HomeScreenState extends State<HomeScreen> {
     _visualizerController = null;
     _visualizerHeartbeatTimer?.cancel();
     _visualizerHeartbeatTimer = null;
+    _updateAvailabilityTimer?.cancel();
+    _updateAvailabilityTimer = null;
+    _updateAvailabilityRetryTimer?.cancel();
+    _updateAvailabilityRetryTimer = null;
     super.dispose();
   }
 
@@ -179,6 +223,10 @@ class _HomeScreenState extends State<HomeScreen> {
         });
         return;
       }
+
+      setState(() {
+        _isUpdateAvailable = checkResult.isUpdateAvailable;
+      });
 
       final approved = await showDialog<bool>(
             context: context,
@@ -1164,7 +1212,25 @@ class _HomeScreenState extends State<HomeScreen> {
                                   ),
                                 ),
                               )
-                            : const Icon(Icons.system_update_alt),
+                            : Stack(
+                                clipBehavior: Clip.none,
+                                children: [
+                                  const Icon(Icons.system_update_alt),
+                                  if (_isUpdateAvailable)
+                                    Positioned(
+                                      top: -3,
+                                      right: -3,
+                                      child: Container(
+                                        width: 9,
+                                        height: 9,
+                                        decoration: const BoxDecoration(
+                                          color: Colors.red,
+                                          shape: BoxShape.circle,
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
                         tooltip: _updateStatusText ?? 'Check updates',
                       ),
                     ),
