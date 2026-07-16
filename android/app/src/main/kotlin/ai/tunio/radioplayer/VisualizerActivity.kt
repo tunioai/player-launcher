@@ -339,6 +339,7 @@ class VisualizerActivity : Activity() {
     private lateinit var dimOverlayView: View
     private lateinit var transitionOverlayView: View
     private lateinit var webView: WebView
+    private lateinit var marqueeOverlayController: MarqueeOverlayController
 
     private var player: ExoPlayer? = null
     private var playlist: List<String> = emptyList()
@@ -398,6 +399,7 @@ class VisualizerActivity : Activity() {
         setupWindow()
         initPlayer()
 
+        marqueeOverlayController = MarqueeOverlayController(this)
         webView = createWebView()
         setContentView(createLayout())
 
@@ -426,6 +428,7 @@ class VisualizerActivity : Activity() {
             VisualizerController.currentActivity = null
         }
         clearNativeVideo()
+        marqueeOverlayController.clearAll()
         cancelVideoPrefetch()
         prefetchExecutor.shutdownNow()
         cancelImagePrefetch()
@@ -730,6 +733,9 @@ class VisualizerActivity : Activity() {
 
                 override fun onPageFinished(view: WebView?, url: String?) {
                     Log.d(TAG, "onPageFinished url=$url")
+                    // A fresh page re-registers its marquees; drop overlays the
+                    // previous page never got to clear (crash, reload).
+                    marqueeOverlayController.clearAll()
                     enforceWebViewMediaMuted(view)
                     syncPageTransparencyForNativeVideo(view)
                     applyLowPerformanceWebMode(view)
@@ -918,6 +924,7 @@ class VisualizerActivity : Activity() {
 
         rootLayout.addView(videoLayer, FrameLayout.LayoutParams(matchParent))
         rootLayout.addView(webView, FrameLayout.LayoutParams(matchParent))
+        rootLayout.addView(marqueeOverlayController.layer, FrameLayout.LayoutParams(matchParent))
 
         rootLayout.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
             val newWidth = right - left
@@ -939,6 +946,7 @@ class VisualizerActivity : Activity() {
     }
 
     private fun loadUrl(url: String) {
+        marqueeOverlayController.clearAll()
         webView.loadUrl(url)
     }
 
@@ -1042,6 +1050,8 @@ class VisualizerActivity : Activity() {
                 // tail frames from previous scenes when returning to video scenes.
                 clearNativeVideo()
             }
+            "setMarquee" -> marqueeOverlayController.setMarquee(json)
+            "clearMarquee" -> marqueeOverlayController.clearMarquee(json.optString("ownerId"))
             else -> {
                 // no-op
             }
@@ -1986,6 +1996,11 @@ class VisualizerActivity : Activity() {
     private inner class NativeVideoJsBridge {
         @JavascriptInterface
         fun isAvailable(): Boolean = true
+
+        // The SPA probes this before offloading features to the native layer;
+        // older APKs lack the method, so the web falls back to DOM rendering.
+        @JavascriptInterface
+        fun getCapabilities(): String = """{"nativeVideo":true,"nativeMarquee":true}"""
 
         @JavascriptInterface
         fun postMessage(payload: String?) {
