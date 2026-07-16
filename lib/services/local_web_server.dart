@@ -12,6 +12,7 @@ import '../utils/logger.dart';
 import '../utils/platform_info.dart';
 import 'storage_service.dart';
 import 'failover_service.dart';
+import 'screen_cache_service.dart';
 import 'radio/i_radio_service.dart';
 
 class LocalWebServer implements Disposable {
@@ -29,6 +30,7 @@ class LocalWebServer implements Disposable {
   final StorageService _storageService;
   final IRadioService _radioService;
   final IFailoverService _failoverService;
+  final ScreenCacheService _screenCache = ScreenCacheService();
   final int port;
   HttpServer? _server;
 
@@ -193,6 +195,30 @@ class LocalWebServer implements Disposable {
           {'ok': false, 'error': result.error ?? 'Connection failed'},
           statusCode: HttpStatus.badRequest,
         );
+      }
+
+      if (request.method == 'GET' && path == '/api/screen-cache') {
+        final info = await _screenCache.getInfo();
+        if (info == null) {
+          return _sendJson(
+            request,
+            {'ok': false, 'error': 'Screen cache unavailable'},
+            statusCode: HttpStatus.serviceUnavailable,
+          );
+        }
+        return _sendJson(request, {'ok': true, ...info});
+      }
+
+      if (request.method == 'POST' && path == '/api/screen-cache/clear') {
+        final cleared = await _screenCache.clear();
+        if (!cleared) {
+          return _sendJson(
+            request,
+            {'ok': false, 'error': 'Failed to clear screen cache'},
+            statusCode: HttpStatus.internalServerError,
+          );
+        }
+        return _sendJson(request, {'ok': true});
       }
 
       return _sendNotFound(request);
@@ -363,6 +389,12 @@ class LocalWebServer implements Disposable {
     .input{padding:10px 12px;border-radius:8px;border:1px solid #2a3140;background:#0f1115;color:#e8eaed;min-width:200px;}
     .primary{background:#62a0f6;color:#0f1115;}
     .muted{color:#9aa4b2;}
+    #cache-clear{margin-top:0;background:#3a2530;color:#ff8080;}
+    #screen-cache-list{max-height:70vh;overflow:auto;font-size:13px;}
+    #screen-cache-list li{background:#1b2029;border:1px solid #2a3140;border-radius:8px;padding:8px 10px;word-break:break-all;display:flex;flex-direction:column;gap:6px;}
+    #screen-cache-list a{color:#84b8ff;text-decoration:none;}
+    #screen-cache-list a:hover{text-decoration:underline;}
+    #screen-cache-list img{width:100%;max-width:320px;border-radius:6px;background:#0f1115;display:block;}
     .report-list{list-style:none;padding:0;margin:16px 0 0;display:flex;flex-direction:column;gap:10px;}
     .report-item{background:#1b2029;border:1px solid #2a3140;border-radius:12px;padding:10px 12px;}
     .report-meta{display:flex;gap:10px;flex-wrap:wrap;font-size:12px;color:#9aa4b2;}
@@ -383,6 +415,7 @@ class LocalWebServer implements Disposable {
     <div class="tabs">
       <button class="tab active" type="button" data-tab="status">Status</button>
       <button class="tab" type="button" data-tab="reports">Reports</button>
+      <button class="tab" type="button" data-tab="screencache">Screen Cache</button>
     </div>
     <div id="tab-status" class="tab-panel active">
       <div class="row badges-row">
@@ -437,6 +470,15 @@ class LocalWebServer implements Disposable {
       <div id="reports-empty" class="muted" style="margin-top:12px;">No events yet</div>
       <ul id="reports-list" class="report-list"></ul>
     </div>
+    <div id="tab-screencache" class="tab-panel">
+      <div class="row" style="justify-content:space-between;align-items:center;">
+        <span class="badge">Screen Cache</span>
+        <button id="cache-clear" type="button">Clear cache</button>
+      </div>
+      <div id="screen-cache-summary" class="muted" style="margin-top:12px;">Loading...</div>
+      <ul id="screen-cache-list" class="report-list"></ul>
+      <span id="screen-cache-status" class="muted"></span>
+    </div>
   </div>
   <script>
     (function(){
@@ -475,6 +517,7 @@ class LocalWebServer implements Disposable {
           tab.classList.add('active');
           var activePanel = document.getElementById('tab-' + target);
           if (activePanel) activePanel.classList.add('active');
+          if (target === 'screencache') refreshScreenCache();
         });
       });
 
@@ -728,6 +771,114 @@ class LocalWebServer implements Disposable {
           refreshReports();
         });
       }
+
+      var cacheClearBtn = document.getElementById('cache-clear');
+      var cacheSummary = document.getElementById('screen-cache-summary');
+      var cacheList = document.getElementById('screen-cache-list');
+      var cacheStatusEl = document.getElementById('screen-cache-status');
+
+      function fmtBytes(n){
+        if (!n || n < 1) return '0 B';
+        var units = ['B','KB','MB','GB','TB'];
+        var i = 0; var v = n;
+        while (v >= 1024 && i < units.length - 1){ v /= 1024; i += 1; }
+        return (i === 0 ? Math.round(v) : (v >= 10 ? Math.round(v) : v.toFixed(1))) + ' ' + units[i];
+      }
+      function fmtDate(ms){
+        if (!ms) return '-';
+        try { return new Date(ms).toLocaleString(); } catch (e) { return '-'; }
+      }
+      function previewUrlFor(it){
+        var name = it && it.name;
+        if (!name) return '';
+        var dot = name.lastIndexOf('.');
+        var uuid = dot > 0 ? name.substring(0, dot) : name;
+        if (!uuid) return '';
+        var origin = 'https://cdn.tunio.ai';
+        if (it.url){
+          try { origin = new URL(it.url).origin; } catch (e) {}
+        }
+        return origin + '/wallpapers_short_backgrounds/previews/' + uuid + '.webp';
+      }
+      function renderScreenCache(data){
+        if (!cacheSummary) return;
+        var video = (data && data.video) || {count:0, bytes:0, items:[]};
+        var images = (data && data.images) || {count:0, bytes:0};
+        var total = (video.bytes || 0) + (images.bytes || 0);
+        cacheSummary.textContent =
+          (video.count || 0) + ' clips · ' + (images.count || 0) + ' images · ' +
+          fmtBytes(total) + ' · last cached: ' + fmtDate(data && data.newestMs);
+        if (!cacheList) return;
+        cacheList.innerHTML = '';
+        var items = (video.items || []);
+        if (items.length === 0){
+          var empty = document.createElement('li');
+          empty.className = 'muted';
+          empty.textContent = 'No cached video clips';
+          cacheList.appendChild(empty);
+          return;
+        }
+        items.forEach(function(it){
+          var li = document.createElement('li');
+          var head = document.createElement('div');
+          if (it.url){
+            var a = document.createElement('a');
+            a.textContent = (it.name || 'clip');
+            a.href = it.url;
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+            head.appendChild(a);
+          } else {
+            var nameSpan = document.createElement('span');
+            nameSpan.textContent = (it.name || 'clip');
+            head.appendChild(nameSpan);
+          }
+          var sizeSpan = document.createElement('span');
+          sizeSpan.className = 'muted';
+          sizeSpan.textContent = '  -  ' + fmtBytes(it.bytes || 0);
+          head.appendChild(sizeSpan);
+          li.appendChild(head);
+          var previewUrl = previewUrlFor(it);
+          if (previewUrl){
+            // Static webp preview instead of a video player. loading="lazy"
+            // means the browser only fetches previews scrolled into view, so a
+            // long list never downloads all of them at once. Hidden on 404.
+            var img = document.createElement('img');
+            img.src = previewUrl;
+            img.alt = it.name || 'preview';
+            img.loading = 'lazy';
+            img.onerror = function(){ img.style.display = 'none'; };
+            li.appendChild(img);
+          }
+          cacheList.appendChild(li);
+        });
+      }
+      function refreshScreenCache(){
+        fetch('/api/screen-cache', {headers:{'Accept':'application/json'}})
+          .then(function(r){ return r.json(); })
+          .then(function(data){
+            if (data && data.ok){ renderScreenCache(data); }
+            else if (cacheSummary){ cacheSummary.textContent = 'Screen cache unavailable'; }
+          })
+          .catch(function(){ if (cacheSummary){ cacheSummary.textContent = 'Screen cache unavailable'; } });
+      }
+      if (cacheClearBtn){
+        cacheClearBtn.addEventListener('click', function(){
+          if (!window.confirm('Clear all cached screen video and images?')) return;
+          cacheClearBtn.disabled = true;
+          if (cacheStatusEl) cacheStatusEl.textContent = 'Clearing...';
+          fetch('/api/screen-cache/clear', {method:'POST', headers:{'Accept':'application/json'}})
+            .then(function(r){ return r.json(); })
+            .then(function(data){
+              if (cacheStatusEl) cacheStatusEl.textContent = (data && data.ok) ? 'Cache cleared' : 'Clear failed';
+              refreshScreenCache();
+            })
+            .catch(function(){ if (cacheStatusEl) cacheStatusEl.textContent = 'Clear failed'; })
+            .then(function(){ cacheClearBtn.disabled = false; });
+        });
+      }
+      refreshScreenCache();
+      setInterval(refreshScreenCache, 30000);
     })();
   </script>
 </body>

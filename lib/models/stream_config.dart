@@ -24,6 +24,12 @@ class StreamConfig {
     this.status,
   });
 
+  /// Whether the backend attached a playable audio stream to this point. When
+  /// false (no `stream_url`/`stream_hls_url`), the app runs in "screen-only"
+  /// mode: it opens the visualizer/webview but never initializes music
+  /// playback. A stream appearing later (via config polling) starts playback.
+  bool get hasStream => streamUrl.trim().isNotEmpty;
+
   /// Whether the backend reports the stream as playable. A missing/empty
   /// status is treated as online so older/cached configs keep working; only
   /// an explicit non-"online" status (e.g. "offline") blocks playback.

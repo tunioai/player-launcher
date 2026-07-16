@@ -1015,6 +1015,16 @@ class _HomeScreenState extends State<HomeScreen> {
     return Icons.play_arrow;
   }
 
+  /// The play/pause control is only meaningful when the backend attached a
+  /// stream. In screen-only mode (no stream_url) there is nothing to play, so
+  /// the button is hidden; it appears as soon as a stream_url arrives from the
+  /// backend (or if audio is somehow already playing).
+  bool get _shouldShowPlayButton {
+    final isPlaying = _getAudioState()?.isPlaying ?? false;
+    final hasStream = _radioState.config?.hasStream ?? false;
+    return hasStream || isPlaying;
+  }
+
   Future<void> _onPlayButtonPressed() async {
     if (_radioState.isConnecting) {
       return;
@@ -1358,32 +1368,34 @@ class _HomeScreenState extends State<HomeScreen> {
                               policy: WidgetOrderTraversalPolicy(),
                               child: Row(
                                 children: [
-                                  // Circular play/pause button
-                                  FocusTraversalOrder(
-                                    order: const NumericFocusOrder(1),
-                                    child: Focus(
-                                      focusNode: _playButtonFocusNode,
-                                      child: ElevatedButton(
-                                        onPressed: _radioState.isConnecting
-                                            ? null
-                                            : () => _onPlayButtonPressed(),
-                                        style: ElevatedButton.styleFrom(
-                                          shape: const CircleBorder(),
-                                          padding: const EdgeInsets.all(16),
-                                          side: _playButtonFocusNode.hasFocus
-                                              ? BorderSide(
-                                                  color: TunioColors.primary,
-                                                  width: 3)
-                                              : null,
-                                        ),
-                                        child: Icon(
-                                          _getPlayPauseIcon(),
-                                          size: 32,
+                                  if (_shouldShowPlayButton) ...[
+                                    // Circular play/pause button
+                                    FocusTraversalOrder(
+                                      order: const NumericFocusOrder(1),
+                                      child: Focus(
+                                        focusNode: _playButtonFocusNode,
+                                        child: ElevatedButton(
+                                          onPressed: _radioState.isConnecting
+                                              ? null
+                                              : () => _onPlayButtonPressed(),
+                                          style: ElevatedButton.styleFrom(
+                                            shape: const CircleBorder(),
+                                            padding: const EdgeInsets.all(16),
+                                            side: _playButtonFocusNode.hasFocus
+                                                ? BorderSide(
+                                                    color: TunioColors.primary,
+                                                    width: 3)
+                                                : null,
+                                          ),
+                                          child: Icon(
+                                            _getPlayPauseIcon(),
+                                            size: 32,
+                                          ),
                                         ),
                                       ),
                                     ),
-                                  ),
-                                  const SizedBox(width: 12),
+                                    const SizedBox(width: 12),
+                                  ],
 
                                   if (visualizerButton != null) ...[
                                     FocusTraversalOrder(

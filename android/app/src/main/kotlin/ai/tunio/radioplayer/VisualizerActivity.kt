@@ -20,7 +20,10 @@ import android.view.WindowInsets
 import android.view.WindowManager
 import android.util.Log
 import android.webkit.JavascriptInterface
+import android.webkit.ConsoleMessage
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -33,10 +36,12 @@ import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.CacheKeyFactory
 import androidx.media3.datasource.cache.CacheWriter
+import androidx.media3.datasource.cache.ContentMetadata
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.exoplayer.ExoPlayer
@@ -44,15 +49,53 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import org.json.JSONObject
+import java.io.BufferedInputStream
+import java.io.BufferedOutputStream
 import java.io.File
+import java.io.FileInputStream
+import java.io.InterruptedIOException
+import java.net.HttpURLConnection
+import java.net.URL
+import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
+import java.util.concurrent.Semaphore
 import kotlin.random.Random
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
 class VisualizerActivity : Activity() {
+    private class BandwidthLimitedDataSource(
+        private val upstream: DataSource,
+        private val maxBytesPerSecond: Long,
+    ) : DataSource by upstream {
+        private var openedAtMs = 0L
+        private var transferredBytes = 0L
+
+        override fun open(dataSpec: DataSpec): Long {
+            openedAtMs = SystemClock.elapsedRealtime()
+            transferredBytes = 0L
+            return upstream.open(dataSpec)
+        }
+
+        override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+            val readBytes = upstream.read(buffer, offset, length)
+            if (readBytes > 0) {
+                transferredBytes += readBytes
+                throttleBackgroundTransfer(transferredBytes, openedAtMs, maxBytesPerSecond)
+            }
+            return readBytes
+        }
+
+        override fun close() {
+            upstream.close()
+            openedAtMs = 0L
+            transferredBytes = 0L
+        }
+    }
+
     private data class VideoPlacement(
         val x: Float,
         val y: Float,
@@ -65,22 +108,55 @@ class VisualizerActivity : Activity() {
         const val EXTRA_LOW_PERFORMANCE_MODE = "low_performance_mode"
         private const val TAG = "VisualizerActivity"
         private const val VIDEO_CACHE_DIR_NAME = "visualizer_video_cache"
-        // Hard ceiling for the on-disk video cache. The effective cap is
-        // min(this, a fraction of currently-free space) — see resolveVideoCacheMaxBytes.
+        private const val IMAGE_CACHE_DIR_NAME = "visualizer_image_cache"
+        private const val IMAGE_CACHE_MAX_BYTES = 512L * 1024L * 1024L // 512 MB
+        private const val IMAGE_CACHE_MAX_ITEM_BYTES = 32L * 1024L * 1024L // 32 MB
+        private const val IMAGE_CACHE_FREE_SPACE_FRACTION = 0.25
+        private const val IMAGE_PREFETCH_MAX_ITEMS = 512
+        private const val IMAGE_PREFETCH_DELAY_MS = 150L
+        private const val IMAGE_DOWNLOAD_CONNECT_TIMEOUT_MS = 10_000
+        private const val IMAGE_DOWNLOAD_READ_TIMEOUT_MS = 30_000
+        // Video/image prefetch shares this single budget. Keeping it below a
+        // typical radio stream prevents background cache warming from taking
+        // over a weak connection.
+        private const val MEDIA_PREFETCH_MAX_BYTES_PER_SECOND = 32L * 1024L
+        // Hard ceiling for the on-disk video cache. The effective cap preserves existing
+        // cached clips and only grows from currently-free space — see resolveVideoCacheMaxBytes.
         private const val VIDEO_CACHE_MAX_BYTES = 3L * 1024L * 1024L * 1024L // 3 GB
-        // Always keep at least this much free on the volume the cache lives on.
-        private const val VIDEO_CACHE_FREE_SPACE_RESERVE_BYTES = 1L * 1024L * 1024L * 1024L // 1 GB
-        // Never use more than this fraction of the free space available at creation time.
+        // Do not allocate additional cache space from this reserved part of free storage.
+        private const val MEDIA_CACHE_FREE_SPACE_RESERVE_BYTES = 1L * 1024L * 1024L * 1024L // 1 GB
+        // Never add more than this fraction of the usable free space at creation time.
         private const val VIDEO_CACHE_FREE_SPACE_FRACTION = 0.5
-        // Stop prefetching once the cache is this full, so a pass never evicts the clips
-        // it just wrote (the LRU evictor still hard-caps the total on disk regardless).
-        private const val VIDEO_PREFETCH_CACHE_FILL_FRACTION = 0.9
         // How many distinct playlist clips to prefetch (whole clips, for offline playback).
         private const val VIDEO_PREFETCH_MAX_ITEMS = 64
         private const val PLAYBACK_GUARD_CHECK_INTERVAL_MS = 3000L
         private const val PLAYBACK_GUARD_STALL_TIMEOUT_MS = 12000L
         private const val PLAYBACK_GUARD_RECOVERY_COOLDOWN_MS = 2500L
         private const val PLAYBACK_PROGRESS_EPSILON_MS = 250L
+
+        private fun throttleBackgroundTransfer(
+            transferredBytes: Long,
+            startedAtMs: Long,
+            maxBytesPerSecond: Long,
+        ) {
+            if (startedAtMs <= 0L || maxBytesPerSecond <= 0L) {
+                return
+            }
+            val expectedElapsedMs = transferredBytes * 1000L / maxBytesPerSecond
+            val actualElapsedMs = SystemClock.elapsedRealtime() - startedAtMs
+            val delayMs = expectedElapsedMs - actualElapsedMs
+            if (delayMs <= 0L) {
+                return
+            }
+            try {
+                Thread.sleep(delayMs)
+            } catch (error: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw InterruptedIOException("Media prefetch interrupted").apply {
+                    initCause(error)
+                }
+            }
+        }
 
         @Volatile
         private var sharedVideoCache: SimpleCache? = null
@@ -128,6 +204,133 @@ class VisualizerActivity : Activity() {
                 return cache
             }
         }
+
+        fun ensureDirectoryWritable(dir: File): Boolean {
+            return try {
+                if (!dir.exists() && !dir.mkdirs()) {
+                    return false
+                }
+                dir.isDirectory && dir.canWrite()
+            } catch (_: Throwable) {
+                false
+            }
+        }
+
+        fun resolveVideoCacheDir(context: Context): File {
+            val externalDirs = context.getExternalFilesDirs(null).filterNotNull()
+            val removableDir = externalDirs.firstOrNull {
+                Environment.isExternalStorageRemovable(it) && ensureDirectoryWritable(it)
+            }
+            if (removableDir != null) {
+                return File(removableDir, VIDEO_CACHE_DIR_NAME).apply { mkdirs() }
+            }
+            val internalExternalDir = externalDirs.firstOrNull {
+                !Environment.isExternalStorageRemovable(it) && ensureDirectoryWritable(it)
+            }
+            if (internalExternalDir != null) {
+                return File(internalExternalDir, VIDEO_CACHE_DIR_NAME).apply { mkdirs() }
+            }
+            val internalDir = context.cacheDir.takeIf { ensureDirectoryWritable(it) }
+            if (internalDir != null) {
+                return File(internalDir, VIDEO_CACHE_DIR_NAME).apply { mkdirs() }
+            }
+            return File(context.cacheDir, VIDEO_CACHE_DIR_NAME).apply { mkdirs() }
+        }
+
+        private fun imageCacheDirFor(context: Context): File {
+            val root = resolveVideoCacheDir(context).parentFile ?: context.cacheDir
+            return File(root, IMAGE_CACHE_DIR_NAME).apply { mkdirs() }
+        }
+
+        private fun shortNameFromUrl(url: String): String {
+            val withoutQuery = url.substringBefore('?')
+            val last = withoutQuery.substringAfterLast('/')
+            return if (last.isNotEmpty()) last else url
+        }
+
+        // Snapshot of the on-device screen cache for the web-admin "Screen Cache"
+        // card. Returns primitives/lists that MethodChannel serializes as-is.
+        fun collectScreenCacheInfo(context: Context): Map<String, Any?> {
+            val videoDir = resolveVideoCacheDir(context)
+            val imageDir = imageCacheDirFor(context)
+
+            val videoItems = ArrayList<Map<String, Any?>>()
+            var videoBytes = 0L
+            var videoCount = 0
+            val cache = sharedVideoCache
+            if (cache != null) {
+                for (key in HashSet(cache.keys)) {
+                    val bytes = try {
+                        cache.getCachedBytes(key, 0, Long.MAX_VALUE)
+                    } catch (_: Throwable) {
+                        0L
+                    }
+                    videoBytes += bytes
+                    videoCount++
+                    videoItems.add(
+                        mapOf(
+                            "name" to shortNameFromUrl(key),
+                            // Cache key is "video:<absolute source URL>" — strip the
+                            // prefix to expose the original CDN URL for a view link.
+                            "url" to key.removePrefix("video:"),
+                            "bytes" to bytes,
+                        ),
+                    )
+                }
+            } else {
+                // No live SimpleCache instance: fall back to a directory size probe
+                // (chunks can't be mapped back to clip URLs without opening it).
+                videoDir.walkTopDown().filter { it.isFile }.forEach {
+                    videoBytes += it.length()
+                    videoCount++
+                }
+            }
+
+            val imageFiles = imageDir.listFiles()
+                ?.filter { it.isFile && it.name.endsWith(".webp", ignoreCase = true) }
+                ?: emptyList()
+            val imageBytes = imageFiles.fold(0L) { acc, file -> acc + file.length() }
+
+            var newestMs = 0L
+            imageFiles.forEach { if (it.lastModified() > newestMs) newestMs = it.lastModified() }
+            videoDir.walkTopDown().filter { it.isFile }.forEach {
+                if (it.lastModified() > newestMs) newestMs = it.lastModified()
+            }
+
+            videoItems.sortByDescending { (it["bytes"] as? Long) ?: 0L }
+
+            return mapOf(
+                "video" to mapOf(
+                    "count" to videoCount,
+                    "bytes" to videoBytes,
+                    "items" to videoItems.take(100),
+                ),
+                "images" to mapOf(
+                    "count" to imageFiles.size,
+                    "bytes" to imageBytes,
+                ),
+                "newestMs" to newestMs,
+            )
+        }
+
+        fun clearScreenCache(context: Context) {
+            val cache = sharedVideoCache
+            if (cache != null) {
+                for (key in HashSet(cache.keys)) {
+                    try {
+                        cache.removeResource(key)
+                    } catch (_: Throwable) {
+                        // best effort
+                    }
+                }
+            } else {
+                // Safe to delete on disk only when no SimpleCache instance holds it.
+                resolveVideoCacheDir(context).listFiles()?.forEach { it.deleteRecursively() }
+            }
+            imageCacheDirFor(context).listFiles()
+                ?.filter { it.isFile && it.name.endsWith(".webp", ignoreCase = true) }
+                ?.forEach { it.delete() }
+        }
     }
 
     private lateinit var rootLayout: FrameLayout
@@ -163,6 +366,7 @@ class VisualizerActivity : Activity() {
     private var lastRecoveryAttemptRealtimeMs: Long = 0L
     private lateinit var playbackCacheDataSourceFactory: CacheDataSource.Factory
     private lateinit var prefetchCacheDataSourceFactory: CacheDataSource.Factory
+    private val mediaPrefetchPermit = Semaphore(1, true)
     private val prefetchExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private var prefetchFuture: Future<*>? = null
     @Volatile
@@ -172,10 +376,25 @@ class VisualizerActivity : Activity() {
     private lateinit var videoCache: SimpleCache
     private var videoCacheMaxBytes: Long = VIDEO_CACHE_MAX_BYTES
     private val knownSources = linkedSetOf<String>()
+    private lateinit var imageCacheDir: File
+    private var imageCacheMaxBytes: Long = IMAGE_CACHE_MAX_BYTES
+    private val imageCacheLocks = ConcurrentHashMap<String, Any>()
+    private val imagePrefetchExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    private var imagePrefetchFuture: Future<*>? = null
+    @Volatile
+    private var imagePrefetchToken: Int = 0
+    @Volatile
+    private var activeImagePrefetchConnection: HttpURLConnection? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         lowPerformanceMode = intent?.getBooleanExtra(EXTRA_LOW_PERFORMANCE_MODE, false) ?: false
+        // Allow inspecting the screen-player WebView from desktop Chrome via
+        // chrome://inspect (Elements/Console/Performance/Paint-flashing) — only
+        // in debuggable builds, so production/release stays locked down.
+        if (0 != (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)) {
+            WebView.setWebContentsDebuggingEnabled(true)
+        }
         setupWindow()
         initPlayer()
 
@@ -209,6 +428,8 @@ class VisualizerActivity : Activity() {
         clearNativeVideo()
         cancelVideoPrefetch()
         prefetchExecutor.shutdownNow()
+        cancelImagePrefetch()
+        imagePrefetchExecutor.shutdownNow()
         videoPlayerView.player = null
         player?.release()
         player = null
@@ -244,6 +465,7 @@ class VisualizerActivity : Activity() {
 
     private fun initPlayer() {
         initVideoCaching()
+        initImageCaching()
         val mediaSourceFactory = DefaultMediaSourceFactory(playbackCacheDataSourceFactory)
         val silentVideoAttrs = AudioAttributes.Builder()
             .setUsage(C.USAGE_MEDIA)
@@ -330,7 +552,7 @@ class VisualizerActivity : Activity() {
     }
 
     private fun initVideoCaching() {
-        val cacheDir = resolveVideoCacheDirectory()
+        val cacheDir = resolveVideoCacheDir(this)
         val appContext = applicationContext
         val desiredCap = resolveVideoCacheMaxBytes(cacheDir)
         val cache = obtainSharedVideoCache(appContext, cacheDir, desiredCap)
@@ -341,79 +563,90 @@ class VisualizerActivity : Activity() {
         Log.d(TAG, "Video cache cap=${videoCacheMaxBytes / (1024L * 1024L)}MB dir=${cacheDir.absolutePath}")
         val httpFactory = DefaultHttpDataSource.Factory().setAllowCrossProtocolRedirects(true)
         val upstreamFactory = DefaultDataSource.Factory(appContext, httpFactory)
+        val limitedPrefetchUpstreamFactory = DataSource.Factory {
+            BandwidthLimitedDataSource(
+                upstreamFactory.createDataSource(),
+                MEDIA_PREFETCH_MAX_BYTES_PER_SECOND,
+            )
+        }
         val cacheKeyFactory = CacheKeyFactory { dataSpec ->
             buildVideoCacheKey(dataSpec.uri)
         }
         Log.d(TAG, "Video cache directory: ${cacheDir.absolutePath}")
 
-        // Playback must not write into cache on the critical rendering path.
+        // Let normal playback populate the cache. Otherwise the active video
+        // and its background prefetch download the same bytes twice.
         playbackCacheDataSourceFactory = CacheDataSource.Factory()
             .setCache(cache)
             .setUpstreamDataSourceFactory(upstreamFactory)
             .setCacheKeyFactory(cacheKeyFactory)
-            .setCacheWriteDataSinkFactory(null)
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
 
         // Background prefetch fills cache out-of-band.
         prefetchCacheDataSourceFactory = CacheDataSource.Factory()
             .setCache(cache)
-            .setUpstreamDataSourceFactory(upstreamFactory)
+            .setUpstreamDataSourceFactory(limitedPrefetchUpstreamFactory)
             .setCacheKeyFactory(cacheKeyFactory)
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
     }
 
-    private fun resolveVideoCacheDirectory(): File {
-        val externalDirs = getExternalFilesDirs(null).filterNotNull()
-        val removableDir = externalDirs.firstOrNull {
-            Environment.isExternalStorageRemovable(it) && ensureDirectoryWritable(it)
-        }
-        if (removableDir != null) {
-            return File(removableDir, VIDEO_CACHE_DIR_NAME).apply { mkdirs() }
-        }
 
-        val internalExternalDir = externalDirs.firstOrNull {
-            !Environment.isExternalStorageRemovable(it) && ensureDirectoryWritable(it)
-        }
-        if (internalExternalDir != null) {
-            return File(internalExternalDir, VIDEO_CACHE_DIR_NAME).apply { mkdirs() }
-        }
-
-        val internalDir = cacheDir.takeIf { ensureDirectoryWritable(it) }
-        if (internalDir != null) {
-            return File(internalDir, VIDEO_CACHE_DIR_NAME).apply { mkdirs() }
-        }
-
-        return File(cacheDir, VIDEO_CACHE_DIR_NAME).apply { mkdirs() }
-    }
-
-    // Size the cache from how much space the target volume actually has right now:
-    // take at most VIDEO_CACHE_FREE_SPACE_FRACTION of the free space after reserving
-    // VIDEO_CACHE_FREE_SPACE_RESERVE_BYTES, capped at VIDEO_CACHE_MAX_BYTES. This is
-    // what keeps the flash from filling up and the box from hanging on a small drive.
+    // Preserve the cache already on disk, then allow it to grow by a fraction of currently
+    // usable free space. Counting existing data separately is important: availableBytes does
+    // not include it, and using only availableBytes would shrink and evict the offline cache
+    // every time the process starts.
     private fun resolveVideoCacheMaxBytes(cacheDir: File): Long {
         return try {
             val stat = StatFs(cacheDir.absolutePath)
-            val usableFree = stat.availableBytes - VIDEO_CACHE_FREE_SPACE_RESERVE_BYTES
-            if (usableFree <= 0L) {
-                0L
-            } else {
-                (usableFree.toDouble() * VIDEO_CACHE_FREE_SPACE_FRACTION).toLong()
-                    .coerceIn(0L, VIDEO_CACHE_MAX_BYTES)
-            }
+            val existingCacheBytes = cacheDirectoryBytes(cacheDir, VIDEO_CACHE_MAX_BYTES)
+                .coerceIn(0L, VIDEO_CACHE_MAX_BYTES)
+            val usableFree = (stat.availableBytes - MEDIA_CACHE_FREE_SPACE_RESERVE_BYTES)
+                .coerceAtLeast(0L)
+            val growthBudget = (usableFree.toDouble() * VIDEO_CACHE_FREE_SPACE_FRACTION).toLong()
+            (existingCacheBytes + growthBudget)
+                .coerceAtMost(VIDEO_CACHE_MAX_BYTES)
         } catch (error: Throwable) {
             Log.d(TAG, "Cache size probe failed, using default cap: ${error.message}")
             VIDEO_CACHE_MAX_BYTES
         }
     }
 
-    private fun ensureDirectoryWritable(dir: File): Boolean {
-        return try {
-            if (!dir.exists() && !dir.mkdirs()) {
-                return false
+    private fun cacheDirectoryBytes(cacheDir: File, maxBytes: Long): Long {
+        return cacheDir.walkTopDown()
+            .filter { it.isFile }
+            .fold(0L) { total, file ->
+                (total + file.length()).coerceAtMost(maxBytes)
             }
-            dir.isDirectory && dir.canWrite()
-        } catch (_: Throwable) {
-            false
+    }
+
+    private fun initImageCaching() {
+        val videoCacheDir = resolveVideoCacheDir(this)
+        val mediaCacheRoot = videoCacheDir.parentFile ?: cacheDir
+        imageCacheDir = File(mediaCacheRoot, IMAGE_CACHE_DIR_NAME).apply { mkdirs() }
+        imageCacheDir.listFiles()
+            ?.filter { it.isFile && it.name.endsWith(".tmp") }
+            ?.forEach { it.delete() }
+        imageCacheMaxBytes = resolveImageCacheMaxBytes(imageCacheDir)
+        trimImageCache()
+        Log.d(
+            TAG,
+            "Image cache cap=${imageCacheMaxBytes / (1024L * 1024L)}MB dir=${imageCacheDir.absolutePath}",
+        )
+    }
+
+    private fun resolveImageCacheMaxBytes(cacheDir: File): Long {
+        return try {
+            val stat = StatFs(cacheDir.absolutePath)
+            val existingCacheBytes = cacheDirectoryBytes(cacheDir, IMAGE_CACHE_MAX_BYTES)
+                .coerceIn(0L, IMAGE_CACHE_MAX_BYTES)
+            val usableFree = (stat.availableBytes - MEDIA_CACHE_FREE_SPACE_RESERVE_BYTES)
+                .coerceAtLeast(0L)
+            val growthBudget = (usableFree.toDouble() * IMAGE_CACHE_FREE_SPACE_FRACTION).toLong()
+            (existingCacheBytes + growthBudget)
+                .coerceAtMost(IMAGE_CACHE_MAX_BYTES)
+        } catch (error: Throwable) {
+            Log.d(TAG, "Image cache size probe failed, using default cap: ${error.message}")
+            IMAGE_CACHE_MAX_BYTES
         }
     }
 
@@ -421,33 +654,10 @@ class VisualizerActivity : Activity() {
         if (uri == null) {
             return "video:unknown"
         }
-
-        val quality = uri.pathSegments
-            .firstOrNull { it.equals("hd", ignoreCase = true) || it.equals("low", ignoreCase = true) }
-            ?.lowercase()
-
-        val fileName = uri.lastPathSegment
-            ?.substringAfterLast('/')
-            ?.substringBefore('?')
-            ?.lowercase()
-            .orEmpty()
-
-        if (fileName.isNotEmpty()) {
-            if (!quality.isNullOrEmpty()) {
-                val dotIndex = fileName.lastIndexOf('.')
-                val withQuality = if (dotIndex > 0) {
-                    val base = fileName.substring(0, dotIndex)
-                    val ext = fileName.substring(dotIndex)
-                    "${base}_${quality}${ext}"
-                } else {
-                    "${fileName}_${quality}"
-                }
-                return "video:$withQuality"
-            }
-            return "video:$fileName"
-        }
-
-        val normalized = uri.buildUpon().clearQuery().fragment(null).build().toString()
+        // Keep the complete absolute URL so equal file names from different paths or hosts
+        // can never share cached spans. Only fragments are excluded because they are not sent
+        // to the server and therefore cannot identify different media bytes.
+        val normalized = uri.buildUpon().fragment(null).build().toString()
         return "video:$normalized"
     }
 
@@ -488,8 +698,36 @@ class VisualizerActivity : Activity() {
                 false
             }
             addJavascriptInterface(NativeVideoJsBridge(), "TunioNativeVideo")
-            webChromeClient = WebChromeClient()
+            addJavascriptInterface(NativeImageCacheJsBridge(), "TunioNativeImageCache")
+            webChromeClient = object : WebChromeClient() {
+                override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
+                    val message = consoleMessage?.message().orEmpty()
+                    if (message.startsWith("[TunioImage]")) {
+                        Log.d(
+                            TAG,
+                            "Image component ${message.removePrefix("[TunioImage]").trim()}",
+                        )
+                        return true
+                    }
+                    return super.onConsoleMessage(consoleMessage)
+                }
+            }
             webViewClient = object : WebViewClient() {
+                override fun shouldInterceptRequest(
+                    view: WebView?,
+                    request: WebResourceRequest?,
+                ): WebResourceResponse? {
+                    if (request?.method != "GET") {
+                        return null
+                    }
+                    return interceptCachedImageRequest(request.url)
+                }
+
+                @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+                override fun shouldInterceptRequest(view: WebView?, url: String?): WebResourceResponse? {
+                    return interceptCachedImageRequest(url?.let(Uri::parse))
+                }
+
                 override fun onPageFinished(view: WebView?, url: String?) {
                     Log.d(TAG, "onPageFinished url=$url")
                     enforceWebViewMediaMuted(view)
@@ -814,6 +1052,302 @@ class VisualizerActivity : Activity() {
         syncPageTransparencyForNativeVideo(webView)
     }
 
+    private fun handleNativeImageCacheMessage(payload: String) {
+        val json = try {
+            JSONObject(payload)
+        } catch (_: Throwable) {
+            return
+        }
+        if (json.optString("action") != "setSources") {
+            return
+        }
+
+        val sourceJson = json.optJSONArray("sources") ?: return
+        val sources = buildList {
+            for (index in 0 until sourceJson.length()) {
+                val source = sourceJson.optString(index)
+                if (source.isNotBlank() && isCacheableImageUri(Uri.parse(source))) {
+                    add(source)
+                }
+            }
+        }.distinct().take(IMAGE_PREFETCH_MAX_ITEMS)
+        scheduleImagePrefetch(sources)
+    }
+
+    private fun scheduleImagePrefetch(sources: List<String>) {
+        cancelImagePrefetch()
+        if (sources.isEmpty() || imageCacheMaxBytes <= 0L) {
+            return
+        }
+
+        val token = ++imagePrefetchToken
+        imagePrefetchFuture = imagePrefetchExecutor.submit {
+            setBackgroundPrefetchPriority()
+            for (source in sources) {
+                if (Thread.currentThread().isInterrupted || token != imagePrefetchToken) {
+                    return@submit
+                }
+                val wasCached = imageCacheFileForSource(source).isFile
+                try {
+                    mediaPrefetchPermit.acquire()
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return@submit
+                }
+                val cachedFile = try {
+                    if (token != imagePrefetchToken) {
+                        return@submit
+                    }
+                    getOrDownloadCachedImage(source, isPrefetch = true)
+                } finally {
+                    mediaPrefetchPermit.release()
+                }
+                if (!wasCached && cachedFile != null) {
+                    try {
+                        Thread.sleep(IMAGE_PREFETCH_DELAY_MS)
+                    } catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        return@submit
+                    }
+                }
+            }
+        }
+    }
+
+    private fun cancelImagePrefetch() {
+        imagePrefetchToken += 1
+        activeImagePrefetchConnection?.disconnect()
+        activeImagePrefetchConnection = null
+        imagePrefetchFuture?.cancel(true)
+        imagePrefetchFuture = null
+    }
+
+    private fun interceptCachedImageRequest(uri: Uri?): WebResourceResponse? {
+        val imageUri = uri ?: return null
+        if (!isCacheableImageUri(imageUri)) {
+            return null
+        }
+        val startedAtMs = SystemClock.elapsedRealtime()
+        val cacheFileBeforeRequest = imageCacheFileForSource(imageUri.toString())
+        val wasCached = cacheFileBeforeRequest.isFile && hasWebpSignature(cacheFileBeforeRequest)
+        val cacheFile = getOrDownloadCachedImage(imageUri.toString()) ?: return null
+        Log.d(
+            TAG,
+            "Image request cache=${if (wasCached) "hit" else "miss"} " +
+                "duration=${SystemClock.elapsedRealtime() - startedAtMs}ms " +
+                "bytes=${cacheFile.length()} path=${imageUri.path}",
+        )
+        return try {
+            WebResourceResponse("image/webp", null, FileInputStream(cacheFile))
+        } catch (error: Throwable) {
+            Log.d(TAG, "Cached image open failed for $uri: ${error.message}")
+            null
+        }
+    }
+
+    private fun isCacheableImageUri(uri: Uri?): Boolean {
+        if (uri == null || !uri.scheme.equals("https", ignoreCase = true)) {
+            return false
+        }
+        if (!uri.host.equals("cdn.tunio.ai", ignoreCase = true)) {
+            return false
+        }
+        val path = uri.path.orEmpty()
+        return path.startsWith("/screens_media/") && path.endsWith(".webp", ignoreCase = true)
+    }
+
+    private fun getOrDownloadCachedImage(source: String, isPrefetch: Boolean = false): File? {
+        val uri = Uri.parse(source)
+        if (!isCacheableImageUri(uri)) {
+            return null
+        }
+
+        val cacheKey = hashImageCacheKey(source)
+        val cacheFile = imageCacheFileForSource(source)
+        readCompleteCachedImage(cacheFile)?.let { return it }
+        if (imageCacheMaxBytes <= 0L) {
+            return null
+        }
+
+        val lock = imageCacheLocks.getOrPut(cacheKey) { Any() }
+        return synchronized(lock) {
+            readCompleteCachedImage(cacheFile) ?: downloadImageToCache(source, cacheFile, isPrefetch)
+        }
+    }
+
+    private fun readCompleteCachedImage(cacheFile: File): File? {
+        if (!cacheFile.isFile || !hasWebpSignature(cacheFile)) {
+            cacheFile.delete()
+            return null
+        }
+        cacheFile.setLastModified(System.currentTimeMillis())
+        return cacheFile
+    }
+
+    private fun downloadImageToCache(source: String, cacheFile: File, isPrefetch: Boolean): File? {
+        val tempFile = File(imageCacheDir, "${cacheFile.name}.tmp")
+        val maxCacheableBytes = minOf(IMAGE_CACHE_MAX_ITEM_BYTES, imageCacheMaxBytes)
+        var connection: HttpURLConnection? = null
+        try {
+            if (Thread.currentThread().isInterrupted) {
+                return null
+            }
+            connection = (URL(source).openConnection() as HttpURLConnection).apply {
+                connectTimeout = IMAGE_DOWNLOAD_CONNECT_TIMEOUT_MS
+                readTimeout = IMAGE_DOWNLOAD_READ_TIMEOUT_MS
+                instanceFollowRedirects = true
+                requestMethod = "GET"
+                useCaches = false
+            }
+            if (isPrefetch) {
+                activeImagePrefetchConnection = connection
+            }
+            connection.connect()
+            if (connection.responseCode !in 200..299) {
+                return null
+            }
+            val contentType = connection.contentType
+                ?.substringBefore(';')
+                ?.trim()
+                ?.lowercase()
+            val supportedContentType = contentType == "image/webp" ||
+                contentType == "image/x-webp" ||
+                contentType == "application/octet-stream"
+            if (!supportedContentType) {
+                Log.d(TAG, "Image cache rejected content type for $source: $contentType")
+                return null
+            }
+            val declaredLength = connection.getHeaderField("Content-Length")?.toLongOrNull() ?: -1L
+            if (declaredLength > maxCacheableBytes) {
+                Log.d(TAG, "Image cache item too large: $source ($declaredLength bytes)")
+                return null
+            }
+
+            var writtenBytes = 0L
+            val transferStartedAtMs = SystemClock.elapsedRealtime()
+            BufferedInputStream(connection.inputStream).use { input ->
+                BufferedOutputStream(tempFile.outputStream()).use { output ->
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    while (true) {
+                        if (Thread.currentThread().isInterrupted) {
+                            throw InterruptedException("Image prefetch interrupted")
+                        }
+                        val readBytes = input.read(buffer)
+                        if (readBytes < 0) {
+                            break
+                        }
+                        writtenBytes += readBytes
+                        if (writtenBytes > maxCacheableBytes) {
+                            throw IllegalStateException("Image exceeds cache item limit")
+                        }
+                        output.write(buffer, 0, readBytes)
+                        if (isPrefetch) {
+                            throttleBackgroundTransfer(
+                                writtenBytes,
+                                transferStartedAtMs,
+                                MEDIA_PREFETCH_MAX_BYTES_PER_SECOND,
+                            )
+                        }
+                    }
+                }
+            }
+            if (writtenBytes <= 0L || (declaredLength >= 0L && writtenBytes != declaredLength)) {
+                return null
+            }
+            if (!hasWebpSignature(tempFile)) {
+                Log.d(TAG, "Image cache rejected invalid WebP body: $source")
+                return null
+            }
+            if (!tempFile.renameTo(cacheFile)) {
+                return null
+            }
+            cacheFile.setLastModified(System.currentTimeMillis())
+            trimImageCache(cacheFile)
+            return cacheFile
+        } catch (error: Throwable) {
+            Log.d(TAG, "Image cache download failed for $source: ${error.message}")
+            return null
+        } finally {
+            if (activeImagePrefetchConnection === connection) {
+                activeImagePrefetchConnection = null
+            }
+            connection?.disconnect()
+            if (tempFile.exists()) {
+                tempFile.delete()
+            }
+        }
+    }
+
+    private fun hasWebpSignature(file: File): Boolean {
+        if (!file.isFile || file.length() < 12L) {
+            return false
+        }
+        return try {
+            val header = ByteArray(12)
+            FileInputStream(file).use { input ->
+                var offset = 0
+                while (offset < header.size) {
+                    val readBytes = input.read(header, offset, header.size - offset)
+                    if (readBytes < 0) {
+                        return false
+                    }
+                    offset += readBytes
+                }
+            }
+            header[0] == 'R'.code.toByte() &&
+                header[1] == 'I'.code.toByte() &&
+                header[2] == 'F'.code.toByte() &&
+                header[3] == 'F'.code.toByte() &&
+                header[8] == 'W'.code.toByte() &&
+                header[9] == 'E'.code.toByte() &&
+                header[10] == 'B'.code.toByte() &&
+                header[11] == 'P'.code.toByte()
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    private fun trimImageCache(protectedFile: File? = null) {
+        try {
+            val files = imageCacheDir.listFiles()
+                ?.filter { it.isFile && it.extension.equals("webp", ignoreCase = true) }
+                ?.sortedBy { it.lastModified() }
+                .orEmpty()
+            var totalBytes = files.sumOf { it.length() }
+            for (file in files) {
+                if (totalBytes <= imageCacheMaxBytes) {
+                    break
+                }
+                if (file == protectedFile) {
+                    continue
+                }
+                val fileBytes = file.length()
+                if (file.delete()) {
+                    totalBytes -= fileBytes
+                }
+            }
+        } catch (error: Throwable) {
+            Log.d(TAG, "Image cache trim failed: ${error.message}")
+        }
+    }
+
+    private fun hashImageCacheKey(source: String): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(source.toByteArray(Charsets.UTF_8))
+        return digest.joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+    }
+
+    private fun imageCacheFileForSource(source: String): File {
+        return File(imageCacheDir, "${hashImageCacheKey(source)}.webp")
+    }
+
+    private fun setBackgroundPrefetchPriority() {
+        try {
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+        } catch (_: Throwable) {
+            // Prefetch remains safe on its dedicated executor if priority adjustment is unavailable.
+        }
+    }
+
     private fun handleSetPlaylist(json: JSONObject) {
         val ownerId = json.optString("ownerId")
         if (ownerId.isEmpty()) {
@@ -857,8 +1391,7 @@ class VisualizerActivity : Activity() {
         currentPlaylistKey = nextPlaylistKey
         refillQueue(avoidCurrent = false)
         startPlaybackPipeline()
-        val currentSource = playlist.getOrNull(currentIndex)
-        scheduleVideoPrefetch(playlist, currentSource)
+        scheduleVideoPrefetch(playlist)
     }
 
     private fun clearNativeVideo() {
@@ -885,13 +1418,14 @@ class VisualizerActivity : Activity() {
         player?.stop()
     }
 
-    private fun scheduleVideoPrefetch(playlistSnapshot: List<String>, excludeSource: String?) {
-        // Prefetch the whole playlist (not just the next clip) as complete files, so the
-        // rotation keeps playing from local cache when the network drops. The current
-        // clip is excluded — it is already streaming into the player.
+    private fun scheduleVideoPrefetch(playlistSnapshot: List<String>) {
+        // Playback itself writes the active clip to cache. Excluding it here
+        // avoids a second concurrent HTTP request for the same video.
+        val activeSource = playlistSnapshot.getOrNull(currentIndex)
         val targets = playlistSnapshot
             .asSequence()
-            .filter { it.isNotBlank() && it != excludeSource }
+            .filter { it.isNotBlank() }
+            .filter { it != activeSource }
             .distinct()
             .take(VIDEO_PREFETCH_MAX_ITEMS)
             .toList()
@@ -902,19 +1436,28 @@ class VisualizerActivity : Activity() {
         }
 
         val token = ++prefetchToken
-        val fillLimit = (videoCacheMaxBytes.toDouble() * VIDEO_PREFETCH_CACHE_FILL_FRACTION).toLong()
         prefetchFuture = prefetchExecutor.submit {
+            setBackgroundPrefetchPriority()
             for (source in targets) {
                 if (Thread.currentThread().isInterrupted || token != prefetchToken) {
                     return@submit
                 }
-                // The LRU evictor hard-caps the cache on disk; stopping here just avoids
-                // downloading clips that would immediately evict ones cached this pass.
-                if (currentCacheBytes() >= fillLimit) {
-                    Log.d(TAG, "Prefetch budget reached (${fillLimit / (1024L * 1024L)}MB), stopping")
+                // Let LRU evict older scenes while this pass makes the active scene recent.
+                // Stopping based on total cache size would leave new scenes network-only.
+                try {
+                    mediaPrefetchPermit.acquire()
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
                     return@submit
                 }
-                prefetchVideoToCache(source, token)
+                try {
+                    if (token != prefetchToken) {
+                        return@submit
+                    }
+                    prefetchVideoToCache(source, token)
+                } finally {
+                    mediaPrefetchPermit.release()
+                }
             }
         }
     }
@@ -928,14 +1471,6 @@ class VisualizerActivity : Activity() {
         }
         prefetchFuture?.cancel(true)
         prefetchFuture = null
-    }
-
-    private fun currentCacheBytes(): Long {
-        return try {
-            videoCache.cacheSpace
-        } catch (_: Throwable) {
-            0L
-        }
     }
 
     private fun prefetchVideoToCache(source: String, token: Int) {
@@ -1006,7 +1541,10 @@ class VisualizerActivity : Activity() {
             return false
         }
         return try {
-            videoCache.getCachedSpans(key).isNotEmpty()
+            val contentLength = ContentMetadata.getContentLength(
+                videoCache.getContentMetadata(key),
+            )
+            contentLength > 0L && videoCache.isCached(key, 0L, contentLength)
         } catch (_: Throwable) {
             false
         }
@@ -1457,6 +1995,16 @@ class VisualizerActivity : Activity() {
             runOnUiThread {
                 handleNativeVideoMessage(payload)
             }
+        }
+    }
+
+    private inner class NativeImageCacheJsBridge {
+        @JavascriptInterface
+        fun postMessage(payload: String?) {
+            if (payload.isNullOrBlank()) {
+                return
+            }
+            handleNativeImageCacheMessage(payload)
         }
     }
 }

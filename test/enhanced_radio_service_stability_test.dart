@@ -53,7 +53,102 @@ void main() {
       expect(context.audioService.initializeCalls, 1);
     });
 
-    test('falls back quickly when live stream restart fails', () async {
+    test(
+        'a transient pause during a transition does not permanently suspend recovery',
+        () async {
+      // Regression: the player emits a brief AudioStatePaused (playing=false
+      // with a retained position) mid-transition. Treating it as a real user
+      // pause suspended auto recovery forever (dead air), because the follow-up
+      // state was not "playing" and never re-enabled it. Recovery must survive.
+      final context = await _createContext(
+        liveConfig: liveConfig,
+        cachedTracksCount: 2,
+      );
+      addTearDown(context.dispose);
+
+      // connect (1) + a failed live restart so a later network error falls
+      // through to local failover.
+      context.audioService.enqueuePlayStreamResult(const Success(null));
+      context.audioService
+          .enqueuePlayStreamResult(const Failure<void>('restart failed'));
+
+      final connectResult = await context.radioService.connect('112233');
+      expect(connectResult.isSuccess, isTrue);
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateConnected);
+
+      // Transient pause blip immediately followed by a non-playing transition
+      // state (as happens between stop() and play() while switching sources).
+      context.audioService.emitState(
+        const AudioStatePaused(config: liveConfig, position: Duration(seconds: 3)),
+      );
+      context.audioService.emitState(
+        const AudioStateLoading(config: liveConfig),
+      );
+
+      // Wait past the external-pause confirm debounce; recovery must remain on.
+      await Future<void>.delayed(const Duration(milliseconds: 2600));
+
+      // A real network error should now still drive failover to local cache.
+      context.audioService.emitState(
+        AudioStateError(
+          message: 'Network error',
+          config: liveConfig,
+          isRetryable: true,
+        ),
+      );
+      await _waitUntil(
+        () => context.radioService.currentState is RadioStateFailover,
+        timeout: const Duration(seconds: 8),
+      );
+      expect(context.audioService.playLocalFileCalls, greaterThanOrEqualTo(1));
+    });
+
+    test('an external Stop (idle) is respected and not auto-restarted',
+        () async {
+      // A notification/Bluetooth Stop unloads the source → the player reports a
+      // clean idle. On HLS that is a user action (real failures surface as an
+      // error), so auto recovery must suspend and NOT restart or failover.
+      const hlsConfig = StreamConfig(
+        streamUrl: 'https://example.com/live.m3u8',
+        volume: 1.0,
+      );
+      final context = await _createContext(
+        liveConfig: hlsConfig,
+        cachedTracksCount: 2,
+      );
+      addTearDown(context.dispose);
+
+      final connectResult = await context.radioService.connect('445566');
+      expect(connectResult.isSuccess, isTrue);
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateConnected);
+      await _waitUntil(
+          () => context.audioService.currentState is AudioStatePlaying);
+      final playStreamCallsBefore = context.audioService.playStreamCalls;
+
+      // External transport Stop → clean idle.
+      context.audioService.emitState(const AudioStateIdle());
+      // Past the confirm debounce; recovery must now be suspended.
+      await Future<void>.delayed(const Duration(milliseconds: 2600));
+
+      // A network error afterwards must NOT restart the live stream nor fail
+      // over to cache — the user deliberately stopped playback.
+      context.audioService.emitState(
+        AudioStateError(
+          message: 'Network error',
+          config: hlsConfig,
+          isRetryable: true,
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+
+      expect(context.audioService.playStreamCalls, playStreamCallsBefore);
+      expect(context.audioService.playLocalFileCalls, 0);
+      expect(context.radioService.currentState, isA<RadioStateConnected>());
+    });
+
+    test('restarts live before failover after a network stall', () async {
       final context = await _createContext(
         liveConfig: liveConfig,
         cachedTracksCount: 2,
@@ -64,8 +159,7 @@ void main() {
       });
 
       context.audioService.enqueuePlayStreamResult(const Success(null));
-      context.audioService
-          .enqueuePlayStreamResult(const Failure<void>('restart failed'));
+      context.audioService.enqueuePlayStreamResult(const Success(null));
 
       final connectResult = await context.radioService.connect('123456');
       expect(connectResult.isSuccess, isTrue);
@@ -80,11 +174,11 @@ void main() {
         ),
       );
 
-      await _waitUntil(
-          () => context.radioService.currentState is RadioStateFailover);
+      await _waitUntil(() => context.audioService.playStreamCalls >= 2);
+      await Future<void>.delayed(const Duration(milliseconds: 400));
 
-      expect(context.audioService.playLocalFileCalls, greaterThanOrEqualTo(1));
-      expect(context.radioService.currentState, isA<RadioStateFailover>());
+      expect(context.audioService.playLocalFileCalls, 0);
+      expect(context.radioService.currentState, isA<RadioStateConnected>());
     });
 
     test(
@@ -118,12 +212,16 @@ void main() {
         ),
       );
       await _waitUntil(
-          () => context.radioService.currentState is RadioStateFailover);
+        () => context.radioService.currentState is RadioStateFailover,
+        timeout: const Duration(seconds: 8),
+      );
       expect(context.audioService.playLocalFileCalls, 1);
       context.audioService.emitNetworkState(const NetworkState(
         isConnected: true,
         type: ConnectionType.wifi,
       ));
+      context.audioService.playLocalFileDelay =
+          const Duration(milliseconds: 500);
 
       context.audioService.emitState(
         AudioStateError(
@@ -135,8 +233,136 @@ void main() {
 
       await _waitUntil(() => context.audioService.playLocalFileCalls >= 2);
 
+      // The stale restore finally block must not unlock the new local-track
+      // operation. A duplicate completion signal while that track is loading
+      // must therefore be ignored.
+      final playStreamCallsDuringNextTrack =
+          context.audioService.playStreamCalls;
+      context.audioService.emitState(
+        AudioStateError(
+          message: 'Duplicate track completion',
+          config: liveConfig,
+          isRetryable: false,
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(
+          context.audioService.playStreamCalls, playStreamCallsDuringNextTrack);
+
       expect(context.apiService.getStreamConfigCalls, greaterThanOrEqualTo(2));
       expect(context.radioService.currentState, isA<RadioStateFailover>());
+    });
+
+    test('continues cache immediately when the background HLS probe fails',
+        () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((request) async {
+        request.response.statusCode = HttpStatus.serviceUnavailable;
+        await request.response.close();
+      });
+      addTearDown(() => server.close(force: true));
+
+      final hlsConfig = StreamConfig(
+        streamUrl: 'http://${server.address.address}:${server.port}/live.m3u8',
+        volume: 1.0,
+      );
+      final context = await _createContext(
+        liveConfig: hlsConfig,
+        cachedTracksCount: 3,
+      );
+      addTearDown(context.dispose);
+
+      context.audioService.enqueuePlayStreamResult(const Success(null));
+      context.audioService
+          .enqueuePlayStreamResult(const Failure<void>('restart failed'));
+      final connectResult = await context.radioService.connect('998877');
+      expect(connectResult.isSuccess, isTrue);
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateConnected);
+
+      context.audioService.emitState(AudioStateError(
+        message: 'Network error',
+        config: hlsConfig,
+        isRetryable: true,
+      ));
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateFailover);
+      await _waitUntil(() => context.apiService.getStreamConfigCalls >= 2);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      final stopwatch = Stopwatch()..start();
+      context.audioService.emitState(AudioStateError(
+        message: 'Failover track completed',
+        config: hlsConfig,
+        isRetryable: false,
+      ));
+      await _waitUntil(
+        () => context.audioService.playLocalFileCalls >= 2,
+        timeout: const Duration(seconds: 2),
+      );
+      stopwatch.stop();
+
+      expect(context.audioService.playStreamCalls, 2);
+      expect(stopwatch.elapsed, lessThan(const Duration(seconds: 1)));
+      expect(context.radioService.currentState, isA<RadioStateFailover>());
+    });
+
+    test('restores when a network probe finishes just after a track boundary',
+        () async {
+      final context = await _createContext(
+        liveConfig: liveConfig,
+        cachedTracksCount: 3,
+      );
+      addTearDown(context.dispose);
+
+      context.audioService.enqueuePlayStreamResult(const Success(null));
+      context.audioService
+          .enqueuePlayStreamResult(const Failure<void>('restart failed'));
+      context.audioService.enqueuePlayStreamResult(const Success(null));
+
+      final connectResult = await context.radioService.connect('887766');
+      expect(connectResult.isSuccess, isTrue);
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateConnected);
+
+      context.apiService.getConfigError = const SocketException('offline');
+      context.audioService.emitState(AudioStateError(
+        message: 'Network error',
+        config: liveConfig,
+        isRetryable: true,
+      ));
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateFailover);
+
+      context.audioService.emitNetworkState(const NetworkState(
+        isConnected: false,
+        type: ConnectionType.unknown,
+      ));
+      context.apiService.getConfigError = null;
+      context.apiService.getStreamConfigDelay =
+          const Duration(milliseconds: 300);
+      context.audioService.playLocalFileDelay =
+          const Duration(milliseconds: 500);
+      context.audioService.emitNetworkState(const NetworkState(
+        isConnected: true,
+        type: ConnectionType.wifi,
+      ));
+
+      // The track boundary arrives before the restored-network probe. The
+      // service may start another cached track to avoid silence, but must use
+      // the late successful probe immediately instead of waiting for that
+      // entire track to end.
+      context.audioService.emitState(AudioStateError(
+        message: 'Failover track completed',
+        config: liveConfig,
+        isRetryable: false,
+      ));
+
+      await _waitUntil(
+        () => context.radioService.currentState is RadioStateConnected,
+        timeout: const Duration(seconds: 3),
+      );
+      expect(context.audioService.playStreamCalls, 3);
     });
 
     test('restores from failover even when connectivity state is stale offline',
@@ -189,6 +415,220 @@ void main() {
 
       expect(context.apiService.getStreamConfigCalls, greaterThanOrEqualTo(2));
       expect(context.radioService.currentState, isA<RadioStateConnected>());
+    });
+
+    test('starts the restore progress timeout after live source preparation',
+        () async {
+      final context = await _createContext(
+        liveConfig: liveConfig,
+        cachedTracksCount: 3,
+      );
+      addTearDown(context.dispose);
+
+      context.audioService.enqueuePlayStreamResult(const Success(null));
+      context.audioService
+          .enqueuePlayStreamResult(const Failure<void>('restart failed'));
+      context.audioService.enqueuePlayStreamResult(const Success(null));
+
+      final connectResult = await context.radioService.connect('334455');
+      expect(connectResult.isSuccess, isTrue);
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateConnected);
+
+      context.audioService.emitState(AudioStateError(
+        message: 'Network error',
+        config: liveConfig,
+        isRetryable: true,
+      ));
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateFailover);
+      await _waitUntil(() => context.apiService.getStreamConfigCalls >= 2);
+
+      // Reproduces the device trace: the live source installation is queued
+      // behind the ending local play operation for longer than the 8-second
+      // audible-progress window. That wait must not consume the progress
+      // timeout or force another local track.
+      context.audioService.liveSourcePreparationDelay =
+          const Duration(milliseconds: 8500);
+      context.audioService.emitState(AudioStateError(
+        message: 'Failover track completed',
+        config: liveConfig,
+        isRetryable: false,
+      ));
+      Future<void>.delayed(const Duration(seconds: 9), () {
+        context.audioService.emitState(AudioStatePlaying(
+          config: liveConfig,
+          position: const Duration(seconds: 4),
+        ));
+      }).ignore();
+
+      await _waitUntil(
+        () => context.radioService.currentState is RadioStateConnected,
+        timeout: const Duration(seconds: 12),
+      );
+      expect(context.audioService.playLocalFileCalls, 1);
+      expect(context.audioService.playStreamCalls, 3);
+    });
+
+    test('ignores a stale failover error while native audio is still playing',
+        () async {
+      final context = await _createContext(
+        liveConfig: liveConfig,
+        cachedTracksCount: 3,
+      );
+      addTearDown(context.dispose);
+
+      context.audioService.enqueuePlayStreamResult(const Success(null));
+      context.audioService
+          .enqueuePlayStreamResult(const Failure<void>('restart failed'));
+      context.audioService.enqueuePlayStreamResult(const Success(null));
+
+      final connectResult = await context.radioService.connect('556677');
+      expect(connectResult.isSuccess, isTrue);
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateConnected);
+
+      context.audioService.emitState(AudioStateError(
+        message: 'Network error',
+        config: liveConfig,
+        isRetryable: true,
+      ));
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateFailover);
+      await _waitUntil(() => context.apiService.getStreamConfigCalls >= 2);
+
+      context.audioService.playbackActiveOverride = true;
+      context.audioService.emitState(AudioStateError(
+        message: 'Stale decoder error',
+        config: liveConfig,
+        isRetryable: false,
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      expect(context.audioService.playStreamCalls, 2);
+
+      context.audioService.playbackActiveOverride = false;
+      context.audioService.emitState(const AudioStateIdle());
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateConnected);
+      expect(context.audioService.playStreamCalls, 3);
+    });
+
+    test('does not spend the progress timeout while switching sources',
+        () async {
+      final context = await _createContext(
+        liveConfig: liveConfig,
+        cachedTracksCount: 3,
+      );
+      addTearDown(context.dispose);
+
+      context.audioService.enqueuePlayStreamResult(const Success(null));
+      context.audioService
+          .enqueuePlayStreamResult(const Failure<void>('restart failed'));
+      context.audioService.enqueuePlayStreamResult(const Success(null));
+
+      final connectResult = await context.radioService.connect('667788');
+      expect(connectResult.isSuccess, isTrue);
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateConnected);
+
+      context.audioService.emitState(AudioStateError(
+        message: 'Network error',
+        config: liveConfig,
+        isRetryable: true,
+      ));
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateFailover);
+      await _waitUntil(() => context.apiService.getStreamConfigCalls >= 2);
+
+      // Model the Android local-source drain and setAudioSource work inside
+      // playStream. The audible-progress timeout must begin only after that
+      // operation has installed and started the live source.
+      context.audioService.liveSourcePreparationDelay =
+          const Duration(seconds: 9);
+      context.audioService.emitState(AudioStateError(
+        message: 'Failover source completed before output drain',
+        config: liveConfig,
+        isRetryable: false,
+      ));
+
+      await _waitUntil(
+        () => context.radioService.currentState is RadioStateConnected,
+        timeout: const Duration(seconds: 12),
+      );
+      expect(context.audioService.playLocalFileCalls, 1);
+      expect(context.audioService.playStreamCalls, 3);
+    });
+
+    test(
+        'keeps playing cache when live reports playing without position progress',
+        () async {
+      final context = await _createContext(
+        liveConfig: liveConfig,
+        cachedTracksCount: 3,
+      );
+
+      addTearDown(() async {
+        await context.dispose();
+      });
+
+      context.audioService.enqueuePlayStreamResult(const Success(null));
+      context.audioService.autoAdvanceLivePosition = false;
+      context.audioService.enqueuePlayStreamResult(const Success(null));
+
+      final connectResult = await context.radioService.connect('223344');
+      expect(connectResult.isSuccess, isTrue);
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateConnected);
+
+      context.audioService.playbackActiveOverride = false;
+      context.audioService.emitState(
+        AudioStateError(
+          message: 'Network error: playback stalled',
+          config: liveConfig,
+          isRetryable: true,
+        ),
+      );
+      await _waitUntil(
+        () => context.radioService.currentState is RadioStateFailover,
+        timeout: const Duration(seconds: 8),
+      );
+      expect(context.audioService.playLocalFileCalls, 1);
+
+      // The live source accepts play() but never advances. It must not be
+      // accepted as restored merely because its Dart state says Playing when
+      // the native player itself is not active.
+      context.audioService.enqueuePlayStreamResult(const Success(null));
+      context.audioService.emitState(
+        AudioStateError(
+          message: 'Failover track completed',
+          config: liveConfig,
+          isRetryable: false,
+        ),
+      );
+
+      await _waitUntil(
+        () => context.audioService.playLocalFileCalls >= 2,
+        timeout: const Duration(seconds: 20),
+      );
+      expect(context.radioService.currentState, isA<RadioStateFailover>());
+
+      // At the next boundary a genuinely progressing live stream restores the
+      // connected state, completing a second local -> live attempt cycle.
+      context.audioService.playbackActiveOverride = null;
+      context.audioService.autoAdvanceLivePosition = true;
+      context.audioService.enqueuePlayStreamResult(const Success(null));
+      context.audioService.emitState(
+        AudioStateError(
+          message: 'Second failover track completed',
+          config: liveConfig,
+          isRetryable: false,
+        ),
+      );
+
+      await _waitUntil(
+        () => context.radioService.currentState is RadioStateConnected,
+        timeout: const Duration(seconds: 3),
+      );
     });
 
     test('recovers from a stuck failover (cache track ended via Error->Idle)',
@@ -270,6 +710,37 @@ void main() {
       expect(context.audioService.playStreamCalls, 0);
       expect(context.audioService.playLocalFileCalls, greaterThanOrEqualTo(1));
       expect(context.radioService.currentState, isA<RadioStateFailover>());
+    });
+
+    test('connects in screen-only mode when the backend sends no stream_url',
+        () async {
+      // A point with only a screen attached (no stream_url). The app must reach
+      // a valid Connected state so the webview opens, WITHOUT initializing music
+      // and WITHOUT falling into the connection retry loop.
+      const screenOnlyConfig = StreamConfig(
+        streamUrl: '',
+        visualizerUrl: 'https://example.com/screen-player/abc',
+        volume: 1.0,
+      );
+      final context = await _createContext(
+        liveConfig: screenOnlyConfig,
+        cachedTracksCount: 0,
+      );
+      addTearDown(context.dispose);
+
+      final connectResult = await context.radioService.connect('556677');
+      expect(connectResult.isSuccess, isTrue);
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateConnected);
+
+      expect(context.audioService.playStreamCalls, 0);
+      expect(context.audioService.playLocalFileCalls, 0);
+
+      // Must settle in Connected (screen-only), not churn into failover/reconnect.
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      expect(context.radioService.currentState, isA<RadioStateConnected>());
+      expect(context.audioService.playStreamCalls, 0);
+      expect(context.audioService.playLocalFileCalls, 0);
     });
   });
 }
@@ -367,7 +838,12 @@ class _FakeAudioService implements IAudioService {
   int initializeCalls = 0;
   int playStreamCalls = 0;
   int playLocalFileCalls = 0;
+  Duration playLocalFileDelay = Duration.zero;
+  bool autoAdvanceLivePosition = true;
+  Duration liveSourcePreparationDelay = Duration.zero;
+  bool? playbackActiveOverride;
   bool _disposed = false;
+  bool _isLiveSourceActive = false;
 
   _FakeAudioService({this.initDelay = Duration.zero});
 
@@ -379,6 +855,20 @@ class _FakeAudioService implements IAudioService {
 
   @override
   AudioState get currentState => _currentState;
+
+  @override
+  Duration get position => switch (_currentState) {
+        AudioStatePlaying(:final position) => position,
+        AudioStatePaused(:final position) => position,
+        _ => Duration.zero,
+      };
+
+  @override
+  bool get isPlaybackActive =>
+      playbackActiveOverride ?? _currentState is AudioStatePlaying;
+
+  @override
+  bool get isLiveSourceActive => _isLiveSourceActive;
 
   @override
   double get volume => _volume;
@@ -419,12 +909,26 @@ class _FakeAudioService implements IAudioService {
   Future<Result<void>> playStream(StreamConfig config,
       {bool quickStart = false}) async {
     playStreamCalls++;
+    if (liveSourcePreparationDelay > Duration.zero) {
+      await Future<void>.delayed(liveSourcePreparationDelay);
+      if (_disposed) return const Failure<void>('disposed');
+    }
     final result = _playStreamResults.isNotEmpty
         ? _playStreamResults.removeFirst()
         : const Success(null);
     if (result.isSuccess) {
+      _isLiveSourceActive = true;
       emitState(AudioStatePlaying(config: config));
+      Future<void>.delayed(const Duration(milliseconds: 50), () {
+        if (!_disposed && _isLiveSourceActive && autoAdvanceLivePosition) {
+          emitState(AudioStatePlaying(
+            config: config,
+            position: const Duration(seconds: 2),
+          ));
+        }
+      }).ignore();
     } else {
+      _isLiveSourceActive = false;
       emitState(AudioStateError(
         message: result.error ?? 'playStream failed',
         config: config,
@@ -438,13 +942,21 @@ class _FakeAudioService implements IAudioService {
   Future<Result<void>> playLocalFile(String filePath,
       {StreamConfig? originalConfig}) async {
     playLocalFileCalls++;
+    if (playLocalFileDelay > Duration.zero) {
+      await Future<void>.delayed(playLocalFileDelay);
+      if (_disposed) {
+        return const Failure<void>('disposed');
+      }
+    }
     final result = _playLocalResults.isNotEmpty
         ? _playLocalResults.removeFirst()
         : const Success(null);
     final config = originalConfig ?? StreamConfig(streamUrl: filePath);
     if (result.isSuccess) {
+      _isLiveSourceActive = false;
       emitState(AudioStatePlaying(config: config));
     } else {
+      _isLiveSourceActive = false;
       emitState(AudioStateError(
         message: result.error ?? 'playLocalFile failed',
         config: config,
@@ -466,6 +978,7 @@ class _FakeAudioService implements IAudioService {
 
   @override
   Future<Result<void>> stop() async {
+    _isLiveSourceActive = false;
     emitState(const AudioStateIdle());
     return const Success(null);
   }
@@ -489,6 +1002,7 @@ class _FakeApiService extends ApiService {
   StreamConfig config;
   int getStreamConfigCalls = 0;
   Object? getConfigError;
+  Duration getStreamConfigDelay = Duration.zero;
 
   _FakeApiService({
     required super.storageService,
@@ -498,6 +1012,9 @@ class _FakeApiService extends ApiService {
   @override
   Future<StreamConfig?> getStreamConfig(String pin, {int? currentPing}) async {
     getStreamConfigCalls++;
+    if (getStreamConfigDelay > Duration.zero) {
+      await Future<void>.delayed(getStreamConfigDelay);
+    }
     final error = getConfigError;
     if (error != null) {
       throw error;

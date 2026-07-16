@@ -31,23 +31,29 @@ FAIL=0
 log() { echo "[$(date +%T)] $*" | tee -a "$RESULTS"; }
 
 proc_alive() { [ -n "$(adb shell pidof "$PKG" 2>/dev/null | tr -d '\r')" ]; }
+app_pid()    { adb shell pidof "$PKG" 2>/dev/null | tr -d '\r' | awk '{print $1}'; }
 msession()   { adb shell dumpsys media_session 2>/dev/null | tr -d '\r'; }
 mstate()     { msession | grep -oE 'state=[A-Z]+\([0-9]\)' | head -1; }
-mpos()       { msession | grep -oE 'position=[0-9]+' | head -1 | grep -oE '[0-9]+'; }
 
-# Audio is actually flowing: PLAYING and playback position advances.
-# NOTE: media_session.position is a coarse periodic snapshot (refreshes only
-# every ~3-5s), so we poll for an advance over a longer window rather than
-# comparing two samples 2s apart (which gives false negatives mid-snapshot).
-# A real stall keeps the position frozen for the whole window -> not flowing.
+# Audio is actually flowing = ground truth from AudioFlinger: our app owns an
+# AudioTrack in state:started (PCM is being written to the output). This is the
+# only reliable "sound is coming out" signal on-device.
+#
+# Why not media_session.position? For a live stream Android extrapolates the
+# effective position from (position + elapsed*speed) while it only refreshes the
+# stored `position=` field every few seconds; for a LOCAL failover file that
+# stored field is not refreshed at all (it stays frozen) even though audio plays
+# perfectly. Polling the stored field therefore gives false "stalled" negatives
+# during cache playback. The AudioTrack state does not have this problem.
 flowing() {
-  [ "$(mstate)" = "state=PLAYING(3)" ] || return 1
-  local start cur
-  start=$(mpos); [ -n "$start" ] || return 1
-  for _ in $(seq 1 12); do
+  local pid; pid=$(app_pid); [ -n "$pid" ] || return 1
+  # Poll briefly so a momentary rebuffer/reconfigure isn't misread as a stall.
+  for _ in $(seq 1 8); do
+    if adb shell dumpsys audio 2>/dev/null | tr -d '\r' \
+        | grep -Eq "type:android\.media\.AudioTrack u/pid:[0-9]+/${pid} state:started"; then
+      return 0
+    fi
     sleep 1
-    cur=$(mpos)
-    [ -n "$cur" ] && [ "$cur" != "$start" ] && return 0
   done
   return 1
 }

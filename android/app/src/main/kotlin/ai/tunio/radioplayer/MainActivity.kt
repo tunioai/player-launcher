@@ -163,6 +163,49 @@ class MainActivity: AudioServiceActivity() {
                     VisualizerController.close()
                     result.success(null)
                 }
+                "getScreenCacheInfo" -> {
+                    val appContext = applicationContext
+                    Thread {
+                        val info = try {
+                            VisualizerActivity.collectScreenCacheInfo(appContext)
+                        } catch (error: Throwable) {
+                            null
+                        }
+                        runOnUiThread {
+                            if (info != null) {
+                                result.success(info)
+                            } else {
+                                result.error(
+                                    "CACHE_INFO_FAILED",
+                                    "Failed to read screen cache",
+                                    null,
+                                )
+                            }
+                        }
+                    }.start()
+                }
+                "clearScreenCache" -> {
+                    val appContext = applicationContext
+                    Thread {
+                        val ok = try {
+                            VisualizerActivity.clearScreenCache(appContext)
+                            true
+                        } catch (error: Throwable) {
+                            false
+                        }
+                        runOnUiThread {
+                            if (ok) {
+                                result.success(null)
+                            } else {
+                                result.error(
+                                    "CACHE_CLEAR_FAILED",
+                                    "Failed to clear screen cache",
+                                    null,
+                                )
+                            }
+                        }
+                    }.start()
+                }
                 else -> result.notImplemented()
             }
         }
