@@ -108,6 +108,10 @@ class MarqueeOverlayController(private val context: Context) {
     private val overlays = mutableMapOf<String, Overlay>()
 
     fun setMarquee(json: JSONObject) {
+        setMarqueeInternal(json, 0)
+    }
+
+    private fun setMarqueeInternal(json: JSONObject, attempt: Int) {
         val ownerId = json.optString("ownerId")
         if (ownerId.isEmpty()) {
             return
@@ -120,23 +124,40 @@ class MarqueeOverlayController(private val context: Context) {
             return
         }
 
+        if (layer.width <= 0 || layer.height <= 0) {
+            if (attempt < LAYOUT_RETRY_LIMIT) {
+                layer.postDelayed({ setMarqueeInternal(json, attempt + 1) }, LAYOUT_RETRY_DELAY_MS)
+            }
+            return
+        }
+
+        // The WebView fills the same layout as this layer, so page fractions
+        // map 1:1 onto layer pixels regardless of devicePixelRatio or WebView
+        // zoom (css × dpr drifts on fractional-dpr phones and cut the band
+        // short of the screen edge). dpr stays as the fallback for web
+        // bundles that don't send the page size.
         val dpr = json.optDouble("dpr", 1.0).toFloat().coerceAtLeast(0.1f)
-        val width = (rect.optDouble("width", 0.0) * dpr).roundToInt()
-        val height = (rect.optDouble("height", 0.0) * dpr).roundToInt()
+        val pageWidth = json.optDouble("pageWidth", 0.0).toFloat()
+        val pageHeight = json.optDouble("pageHeight", 0.0).toFloat()
+        val scaleX = if (pageWidth > 0f) layer.width / pageWidth else dpr
+        val scaleY = if (pageHeight > 0f) layer.height / pageHeight else dpr
+
+        val width = (rect.optDouble("width", 0.0) * scaleX).roundToInt()
+        val height = (rect.optDouble("height", 0.0) * scaleY).roundToInt()
         if (width <= 0 || height <= 0) {
             return
         }
 
         val params = FrameLayout.LayoutParams(width, height).apply {
-            leftMargin = (rect.optDouble("left", 0.0) * dpr).roundToInt()
-            topMargin = (rect.optDouble("top", 0.0) * dpr).roundToInt()
+            leftMargin = (rect.optDouble("left", 0.0) * scaleX).roundToInt()
+            topMargin = (rect.optDouble("top", 0.0) * scaleY).roundToInt()
         }
         val spec = MarqueeSpec(
             text = text,
             color = parseColor(json.optString("color")),
             fontWeight = json.optInt("fontWeight", 700),
-            fontSizePx = (json.optDouble("fontSizePx", BASE_FONT_PX.toDouble()) * dpr).toFloat().coerceAtLeast(1f),
-            speedPxPerSecond = (json.optDouble("speedPxPerSecond", 200.0) * dpr).toFloat().coerceAtLeast(1f),
+            fontSizePx = (json.optDouble("fontSizePx", BASE_FONT_PX.toDouble()) * scaleX).toFloat().coerceAtLeast(1f),
+            speedPxPerSecond = (json.optDouble("speedPxPerSecond", 200.0) * scaleX).toFloat().coerceAtLeast(1f),
             pauseMs = (json.optDouble("pauseSeconds", 0.0) * 1000.0).roundToLong().coerceIn(0L, 10_000L),
             alpha = json.optDouble("opacity", 1.0).toFloat().coerceIn(0f, 1f),
         )
