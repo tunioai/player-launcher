@@ -1093,6 +1093,7 @@ class VisualizerActivity : Activity() {
             "sceneEnding" -> {
                 sceneEndingHold = true
                 sceneEndingHoldSetAtMs = SystemClock.elapsedRealtime()
+                trimQueueToCurrentItem()
             }
             else -> {
                 // no-op
@@ -1490,6 +1491,23 @@ class VisualizerActivity : Activity() {
         refillQueue(avoidCurrent = false)
         startPlaybackPipeline()
         scheduleVideoPrefetch(playlist)
+    }
+
+    // The queue keeps a follow-up copy for gapless looping, so a clip that
+    // matches the scene duration rolls into the copy and STATE_ENDED never
+    // fires — the sceneEnding hold could not freeze the last frame. Dropping
+    // everything after the playing item lets playback end naturally.
+    private fun trimQueueToCurrentItem() {
+        val instance = player ?: return
+        val currentItemIndex = instance.currentMediaItemIndex
+        val itemCount = instance.mediaItemCount
+        if (itemCount <= currentItemIndex + 1) {
+            return
+        }
+        for (i in currentItemIndex + 1 until itemCount) {
+            mediaIdToPlaylistIndex.remove(instance.getMediaItemAt(i).mediaId)
+        }
+        instance.removeMediaItems(currentItemIndex + 1, itemCount)
     }
 
     private fun clearNativeVideo() {
