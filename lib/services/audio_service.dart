@@ -12,12 +12,14 @@ import '../core/audio_state.dart';
 import '../models/stream_config.dart';
 import '../utils/logger.dart';
 import '../utils/audio_config.dart';
-import 'audio/hls_stream_audio_source.dart';
 
 abstract interface class IAudioService implements Disposable {
   Stream<AudioState> get stateStream;
   Stream<NetworkState> get networkStream;
   AudioState get currentState;
+  Duration get position;
+  bool get isPlaybackActive;
+  bool get isLiveSourceActive;
 
   Future<Result<void>> initialize();
   Future<Result<void>> playStream(StreamConfig config,
@@ -79,24 +81,22 @@ final class EnhancedAudioService implements IAudioService {
   bool _isDisposed = false;
   bool _isPlayingStream = false;
   bool _isPlayStreamInProgress = false; // Prevent concurrent playStream calls
+  // `_currentStreamUrl` is assigned before setAudioSource so duplicate and
+  // superseding requests can be coordinated. This flag becomes true only once
+  // the live source has actually been installed in ExoPlayer.
+  bool _isLiveSourcePrepared = false;
+  int _playbackOperationGeneration = 0;
   String? _currentStreamUrl;
   bool _userPaused = false;
   bool _awaitingInterruptionResume = false;
   bool _connectivityInitialized = false;
-  bool _isCurrentLoadConfigurationHls = false;
-  HlsStreamAudioSource? _activeHlsSource;
-  Duration? _currentHlsPlaylistWindow;
-  Duration _lastRawHlsBuffer = Duration.zero;
-  Duration _lastPlaybackPosition = Duration.zero;
-  Duration _hlsBufferedDuration = Duration.zero;
-
   static const Duration _loadingTimeout = Duration(seconds: 10);
-  static const Duration _hangDetectionInterval = Duration(seconds: 5);
+  static const Duration _hangDetectionInterval = Duration(seconds: 2);
   static const Duration _maxHangTime = Duration(seconds: 20);
   static const Duration _bufferStallThreshold = Duration(seconds: 20);
   // How long playback position may stay frozen (while playing=true) before we
   // treat it as a stalled stream and trigger recovery.
-  static const Duration _playbackStallTimeout = Duration(seconds: 10);
+  static const Duration _playbackStallTimeout = Duration(seconds: 5);
   static const Duration _playbackStallTimeoutHls = Duration(seconds: 12);
 
   @override
@@ -107,6 +107,21 @@ final class EnhancedAudioService implements IAudioService {
 
   @override
   AudioState get currentState => _currentState;
+
+  @override
+  Duration get position => _audioPlayer.position;
+
+  @override
+  bool get isPlaybackActive {
+    final playerState = _audioPlayer.playerState;
+    return playerState.playing &&
+        (playerState.processingState == ProcessingState.ready ||
+            playerState.processingState == ProcessingState.buffering);
+  }
+
+  @override
+  bool get isLiveSourceActive =>
+      _currentStreamUrl != null && _isLiveSourcePrepared;
 
   @override
   double get volume => _currentVolume;
@@ -293,8 +308,6 @@ final class EnhancedAudioService implements IAudioService {
     Logger.warning('🎵 AUDIO_DEBUG: Recreating AudioPlayer due to: $reason');
 
     await _cancelPlayerSubscriptions();
-    await _disposeActiveHlsSource();
-
     try {
       await _audioPlayer.dispose();
       Logger.info('🎵 AUDIO_DEBUG: Old AudioPlayer disposed successfully');
@@ -334,6 +347,44 @@ final class EnhancedAudioService implements IAudioService {
       Logger.error('🎵 AUDIO_DEBUG: Stack trace: $stackTrace');
       await _resetAudioPlayer('stop error while $reason');
     }
+  }
+
+  Future<void> _requestPlaybackStart({
+    required int playbackGeneration,
+    required Duration timeout,
+    required String operation,
+  }) async {
+    Object? asynchronousError;
+    unawaited(_audioPlayer.play().catchError((Object error, StackTrace stack) {
+      asynchronousError = error;
+      Logger.error('🎵 AUDIO_DEBUG: $operation failed asynchronously: $error');
+      Logger.error('🎵 AUDIO_DEBUG: $stack');
+    }));
+
+    final deadline = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(deadline)) {
+      _ensurePlaybackOperationCurrent(playbackGeneration);
+      if (_audioPlayer.playing) {
+        return;
+      }
+      if (asynchronousError != null) {
+        throw asynchronousError!;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+
+    _ensurePlaybackOperationCurrent(playbackGeneration);
+    if (_audioPlayer.playing) {
+      return;
+    }
+
+    final elapsed = timeout;
+    await _handlePlayerOperationTimeout(
+      operation: operation,
+      timeout: timeout,
+      elapsed: elapsed,
+    );
+    throw TimeoutException('$operation timed out');
   }
 
   void _observeAudioSessionInterruptions(AudioSession session) {
@@ -412,6 +463,7 @@ final class EnhancedAudioService implements IAudioService {
         isConnected: hasConnection,
         type: connectionType,
       );
+      if (_isDisposed) return;
       _networkController.add(_networkState);
 
       Logger.info(
@@ -422,6 +474,7 @@ final class EnhancedAudioService implements IAudioService {
         isConnected: true,
         type: ConnectionType.unknown,
       );
+      if (_isDisposed) return;
       _networkController.add(_networkState);
     }
   }
@@ -447,7 +500,6 @@ final class EnhancedAudioService implements IAudioService {
     if (playerState.processingState == ProcessingState.buffering &&
         !playerState.playing) {
       _currentBufferSize = Duration.zero;
-      _lastRawHlsBuffer = Duration.zero;
     }
 
     final newAudioState = _computeAudioState(playerState);
@@ -533,6 +585,19 @@ final class EnhancedAudioService implements IAudioService {
       return const AudioStateIdle();
     }
 
+    if (processingState == ProcessingState.idle &&
+        !isPlaying &&
+        _isPlayingStream &&
+        !_isPlayStreamInProgress) {
+      // The player reached idle (source unloaded) although we still expected to
+      // be playing and none of our own play/switch operations is running. That
+      // only happens on an external transport Stop (notification / Bluetooth),
+      // never from a network/stream failure (those surface as an error with the
+      // source still loaded). Emit a clean stopped state so the radio layer can
+      // honor the user's Stop instead of mistaking it for a failure to recover.
+      return const AudioStateIdle();
+    }
+
     if (!isPlaying && position.inMilliseconds > 0) {
       return AudioStatePaused(
         config: _currentConfig!,
@@ -554,18 +619,6 @@ final class EnhancedAudioService implements IAudioService {
 
   void _handlePositionUpdate(Duration position) {
     if (_currentState is AudioStatePlaying) {
-      final delta = position - _lastPlaybackPosition;
-      if (_isCurrentLoadConfigurationHls &&
-          delta > Duration.zero &&
-          _currentBufferSize > Duration.zero) {
-        final remaining = _currentBufferSize - delta;
-        _currentBufferSize = remaining.isNegative ? Duration.zero : remaining;
-        _hlsBufferedDuration = _currentBufferSize;
-        final newRaw = _lastRawHlsBuffer - delta;
-        _lastRawHlsBuffer = newRaw.isNegative ? Duration.zero : newRaw;
-      }
-      _lastPlaybackPosition = position;
-
       final playing = _currentState as AudioStatePlaying;
       _currentState = playing.copyWith(
         position: position,
@@ -584,17 +637,10 @@ final class EnhancedAudioService implements IAudioService {
     final isHls = _currentStreamUrl != null && _isHlsStream(_currentStreamUrl!);
 
     if (isHls) {
-      if (rawBufferAhead > _lastRawHlsBuffer) {
-        _hlsBufferedDuration += rawBufferAhead - _lastRawHlsBuffer;
-      }
-      _lastRawHlsBuffer = rawBufferAhead;
-
-      final playlistWindow =
-          _currentHlsPlaylistWindow ?? AudioConfig.hlsTargetForwardBuffer;
-      if (_hlsBufferedDuration > playlistWindow) {
-        _hlsBufferedDuration = playlistWindow;
-      }
-      _currentBufferSize = _hlsBufferedDuration;
+      // Native HLS exposes a real timeline and buffered position. Unlike the
+      // former byte-stream adapter, no synthetic accumulation is necessary.
+      _currentBufferSize =
+          rawBufferAhead.isNegative ? Duration.zero : rawBufferAhead;
 
       // HLS ghost playback detection - softer approach
       if (_audioPlayer.playing && _currentState.isPlaying) {
@@ -674,12 +720,8 @@ final class EnhancedAudioService implements IAudioService {
     }
   }
 
-  void _resetHlsTracking() {
-    _hlsBufferedDuration = Duration.zero;
-    _currentHlsPlaylistWindow = null;
+  void _resetBufferTracking() {
     _currentBufferSize = Duration.zero;
-    _lastRawHlsBuffer = Duration.zero;
-    _lastPlaybackPosition = Duration.zero;
   }
 
   void _resetStallTracking() {
@@ -831,8 +873,15 @@ final class EnhancedAudioService implements IAudioService {
         _currentStreamUrl != null &&
         _streamStartTime != null) {
       final position = _audioPlayer.position;
-      if (position > _lastProgressPosition) {
+      final hlsPositionChanged = isHls && position != _lastProgressPosition;
+      if (position > _lastProgressPosition || hlsPositionChanged) {
         _lastProgressPosition = position;
+        _lastProgressAt = now;
+      } else if (isHls &&
+          _audioPlayer.processingState != ProcessingState.buffering) {
+        // A sliding HLS timeline may keep or rebase the public position while
+        // ExoPlayer remains READY and audio continues normally. Never use that
+        // non-monotonic value to restart an audibly healthy native HLS stream.
         _lastProgressAt = now;
       } else if (_lastProgressPosition > Duration.zero) {
         final frozenFor = now.difference(_lastProgressAt ?? now);
@@ -909,9 +958,9 @@ final class EnhancedAudioService implements IAudioService {
     Logger.warning('🎵 AUDIO_DEBUG: Force stopping player due to $reason');
     await _stopPlayerSafely('force stop: $reason');
     _isPlayingStream = false;
+    _isLiveSourcePrepared = false;
     _currentStreamUrl = null;
-    await _disposeActiveHlsSource();
-    _resetHlsTracking();
+    _resetBufferTracking();
   }
 
   void _updatePlaybackStats() {
@@ -919,6 +968,12 @@ final class EnhancedAudioService implements IAudioService {
       reconnectCount: _playbackStats.reconnectCount + 1,
       lastReconnect: DateTime.now(),
     );
+  }
+
+  void _ensurePlaybackOperationCurrent(int generation) {
+    if (_isDisposed || generation != _playbackOperationGeneration) {
+      throw const _PlaybackOperationSuperseded();
+    }
   }
 
   @override
@@ -930,6 +985,7 @@ final class EnhancedAudioService implements IAudioService {
     }
 
     return tryResultAsync(() async {
+      final playbackGeneration = ++_playbackOperationGeneration;
       Logger.info('🎵 AUDIO_DEBUG: ===== STARTING PLAYBACK =====');
       Logger.info('🎵 AUDIO_DEBUG: Title: ${config.title}');
       Logger.info('🎵 AUDIO_DEBUG: Stream URL: ${config.streamUrl}');
@@ -939,27 +995,33 @@ final class EnhancedAudioService implements IAudioService {
           '🎵 AUDIO_DEBUG: Current _isPlayingStream: $_isPlayingStream');
       Logger.info('🎵 AUDIO_DEBUG: Current stream URL: $_currentStreamUrl');
 
-      // Prevent concurrent playStream calls
-      if (_isPlayStreamInProgress) {
-        Logger.warning(
-            '🎵 AUDIO_DEBUG: ⚠️ playStream already in progress, ignoring duplicate call');
-        return;
-      }
-
-      if (_isPlayingStream && _currentStreamUrl == config.streamUrl) {
+      if (_isPlayingStream &&
+          !_isPlayStreamInProgress &&
+          _currentStreamUrl == config.streamUrl) {
         Logger.warning(
             '🎵 AUDIO_DEBUG: ⚠️ Already playing the same stream, ignoring duplicate call');
         return;
       }
 
-      if (_isPlayingStream && _currentStreamUrl != config.streamUrl) {
+      if (_isPlayStreamInProgress) {
+        Logger.warning(
+            '🎵 AUDIO_DEBUG: Superseding an in-progress playback operation');
+      }
+
+      final hasLoadedLocalSource =
+          _currentStreamUrl == null && _currentConfig != null;
+      if (hasLoadedLocalSource ||
+          (_isPlayingStream && _currentStreamUrl != config.streamUrl)) {
         Logger.info('🎵 AUDIO_DEBUG: Stopping current stream to play new one');
         await _stopPlayerSafely('stream switch to ${config.streamUrl}');
+        _ensurePlaybackOperationCurrent(playbackGeneration);
         _isPlayingStream = false;
+        _isLiveSourcePrepared = false;
       }
 
       _isPlayStreamInProgress = true;
       _isPlayingStream = true;
+      _isLiveSourcePrepared = false;
       _currentStreamUrl = config.streamUrl;
       Logger.info('🎵 AUDIO_DEBUG: Set _isPlayingStream = true');
 
@@ -969,16 +1031,11 @@ final class EnhancedAudioService implements IAudioService {
         Logger.info('🎵 AUDIO_DEBUG: Stream start time and config set');
         _userPaused = false;
         _awaitingInterruptionResume = false;
-        _lastPlaybackPosition = Duration.zero;
-
         final isHls = _isHlsStream(config.streamUrl);
-        _resetHlsTracking();
+        _resetBufferTracking();
         _resetStallTracking();
-        // Single player: no recreation on an HLS<->live switch. We only record
-        // the current stream type for buffer accounting / stall thresholds and
-        // swap the source via setAudioSource on the same player below.
-        _isCurrentLoadConfigurationHls = isHls;
-
+        // Single player: swap the source without recreating ExoPlayer when the
+        // stream type changes.
         final prebufferDelay = quickStart
             ? Duration.zero
             : await _calculateOptimalPrebufferDelay(isHls: isHls);
@@ -986,11 +1043,10 @@ final class EnhancedAudioService implements IAudioService {
           Logger.info(
               '🎵 AUDIO_DEBUG: Pre-buffering for ${prebufferDelay.inMilliseconds}ms for stable connection...');
           await Future.delayed(prebufferDelay);
+          _ensurePlaybackOperationCurrent(playbackGeneration);
         }
 
         Logger.info('🎵 AUDIO_DEBUG: Setting audio source...');
-
-        await _disposeActiveHlsSource();
 
         final streamTag = MediaItem(
           id: config.streamUrl,
@@ -999,57 +1055,52 @@ final class EnhancedAudioService implements IAudioService {
         );
         final streamHeaders = AudioConfig.getStreamingHeaders();
 
-        final AudioSource audioSource;
+        final streamUri = Uri.parse(config.streamUrl);
+        final AudioSource audioSource = isHls
+            ? HlsAudioSource(
+                streamUri,
+                headers: streamHeaders,
+                tag: streamTag,
+              )
+            : AudioSource.uri(
+                streamUri,
+                headers: streamHeaders,
+                tag: streamTag,
+              );
         if (isHls) {
-          if (Platform.isWindows) {
-            // just_audio_windows notes byte stream support is not tested,
-            // so prefer native HLS via URL on Windows.
-            Logger.info('🎵 AUDIO_DEBUG: Using native HLS playback on Windows');
-            audioSource = AudioSource.uri(
-              Uri.parse(config.streamUrl),
-              headers: streamHeaders,
-              tag: streamTag,
-            );
-          } else {
-            audioSource = _activeHlsSource = HlsStreamAudioSource(
-              playlistUri: Uri.parse(config.streamUrl),
-              headers: streamHeaders,
-              onPlaylistInfo: (info) {
-                final total = info.totalDuration;
-                _currentHlsPlaylistWindow = total;
-              },
-              tag: streamTag,
-            );
-          }
-        } else {
-          audioSource = AudioSource.uri(
-            Uri.parse(config.streamUrl),
-            headers: streamHeaders,
-            tag: streamTag,
-          );
+          Logger.info(
+              '🎵 AUDIO_DEBUG: Using native HLS starting at ExoPlayer\'s default live position (~3×target behind edge)');
         }
 
         Logger.info('🎵 AUDIO_DEBUG: About to call setAudioSource...');
-        final setSourceTimeout = quickStart
-            ? const Duration(seconds: 5)
-            : (isHls && Platform.isMacOS
+        final setSourceTimeout = isHls
+            ? (Platform.isMacOS
                 ? const Duration(seconds: 30)
+                : const Duration(seconds: 20))
+            : (quickStart
+                ? const Duration(seconds: 5)
                 : const Duration(seconds: 15));
         final setSourceStartTime = DateTime.now();
         try {
           await _audioPlayer
               .setAudioSource(
                 audioSource,
-                initialPosition: Duration.zero,
+                // HLS: null → ExoPlayer's default live position (mid-window).
+                // Non-HLS: start from the beginning.
+                initialPosition:
+                    isHls ? AudioConfig.hlsInitialPosition : Duration.zero,
                 preload: true,
               )
               .timeout(setSourceTimeout);
+          _ensurePlaybackOperationCurrent(playbackGeneration);
+          _isLiveSourcePrepared = true;
 
           final setSourceDuration =
               DateTime.now().difference(setSourceStartTime);
           Logger.info(
               '🎵 AUDIO_DEBUG: setAudioSource completed successfully in ${setSourceDuration.inMilliseconds}ms');
         } on TimeoutException catch (_) {
+          _ensurePlaybackOperationCurrent(playbackGeneration);
           final elapsed = DateTime.now().difference(setSourceStartTime);
           await _handlePlayerOperationTimeout(
             operation: 'setAudioSource',
@@ -1058,6 +1109,7 @@ final class EnhancedAudioService implements IAudioService {
           );
           throw TimeoutException('setAudioSource operation timed out');
         } catch (e, stackTrace) {
+          _ensurePlaybackOperationCurrent(playbackGeneration);
           Logger.error('🎵 AUDIO_DEBUG: setAudioSource FAILED: $e');
           Logger.error('🎵 AUDIO_DEBUG: Stack trace: $stackTrace');
           rethrow;
@@ -1068,6 +1120,7 @@ final class EnhancedAudioService implements IAudioService {
             '🎵 AUDIO_DEBUG: Applying live stream volume override: $liveStreamVolume');
         try {
           await setVolume(liveStreamVolume);
+          _ensurePlaybackOperationCurrent(playbackGeneration);
           Logger.info('🎵 AUDIO_DEBUG: Live stream volume set successfully');
         } catch (e, stackTrace) {
           Logger.error('🎵 AUDIO_DEBUG: setVolume FAILED: $e');
@@ -1080,53 +1133,36 @@ final class EnhancedAudioService implements IAudioService {
             ? const Duration(seconds: 5)
             : const Duration(seconds: 30);
         final playStartTime = DateTime.now();
-        try {
-          await _audioPlayer.play().timeout(playTimeout);
-
-          final playDuration = DateTime.now().difference(playStartTime);
-          Logger.info(
-              '🎵 AUDIO_DEBUG: play() completed in ${playDuration.inMilliseconds}ms');
-          Logger.info(
-              '🎵 AUDIO_DEBUG: Player state after play(): ${_audioPlayer.playing}');
-        } on TimeoutException catch (_) {
-          final elapsed = DateTime.now().difference(playStartTime);
-
-          if (_audioPlayer.playing) {
-            Logger.warning(
-                '🎵 AUDIO_DEBUG: play() call timed out after ${elapsed.inSeconds}s BUT player is actually playing - ignoring timeout');
-          } else {
-            Logger.error(
-                '🎵 AUDIO_DEBUG: play() timed out after ${elapsed.inSeconds}s and player NOT playing');
-            await _handlePlayerOperationTimeout(
-              operation: 'play()',
-              timeout: playTimeout,
-              elapsed: elapsed,
-            );
-            throw TimeoutException('play operation timed out');
-          }
-        } catch (e, stackTrace) {
-          if (_audioPlayer.playing) {
-            Logger.warning(
-                '🎵 AUDIO_DEBUG: play() threw error BUT player is actually playing - ignoring error');
-            Logger.warning('🎵 AUDIO_DEBUG: Error was: $e');
-          } else {
-            Logger.error('🎵 AUDIO_DEBUG: play() FAILED: $e');
-            Logger.error('🎵 AUDIO_DEBUG: Stack trace: $stackTrace');
-            rethrow;
-          }
-        }
+        await _requestPlaybackStart(
+          playbackGeneration: playbackGeneration,
+          timeout: playTimeout,
+          operation: 'live play()',
+        );
+        final playDuration = DateTime.now().difference(playStartTime);
+        Logger.info(
+            '🎵 AUDIO_DEBUG: play() accepted in ${playDuration.inMilliseconds}ms');
 
         Logger.info(
             '🎵 AUDIO_DEBUG: ===== PLAYBACK STARTED SUCCESSFULLY =====');
       } catch (e) {
+        if (e is _PlaybackOperationSuperseded) {
+          Logger.info(
+              '🎵 AUDIO_DEBUG: Playback operation superseded by a newer source switch');
+          rethrow;
+        }
         // On error, clean up state
         Logger.error('🎵 AUDIO_DEBUG: Playback failed, cleaning up: $e');
-        _isPlayingStream = false;
-        _currentStreamUrl = null;
-        _resetHlsTracking();
+        if (playbackGeneration == _playbackOperationGeneration) {
+          _isPlayingStream = false;
+          _isLiveSourcePrepared = false;
+          _currentStreamUrl = null;
+          _resetBufferTracking();
+        }
         rethrow;
       } finally {
-        _isPlayStreamInProgress = false;
+        if (playbackGeneration == _playbackOperationGeneration) {
+          _isPlayStreamInProgress = false;
+        }
         Logger.info('🎵 AUDIO_DEBUG: playStream operation completed');
       }
     });
@@ -1141,6 +1177,7 @@ final class EnhancedAudioService implements IAudioService {
     }
 
     return tryResultAsync(() async {
+      final playbackGeneration = ++_playbackOperationGeneration;
       Logger.info('🎵 FAILOVER: ===== STARTING LOCAL FILE PLAYBACK =====');
       Logger.info('🎵 FAILOVER: File path: $filePath');
       Logger.info('🎵 FAILOVER: Original config: ${originalConfig?.title}');
@@ -1149,23 +1186,23 @@ final class EnhancedAudioService implements IAudioService {
       if (!await file.exists()) {
         throw Exception('Local file not found: $filePath');
       }
+      _ensurePlaybackOperationCurrent(playbackGeneration);
 
-      // Prevent concurrent playLocalFile calls
       if (_isPlayStreamInProgress) {
         Logger.warning(
-            '🎵 FAILOVER: ⚠️ Another playback operation in progress, waiting...');
-        // Give some time for the other operation to complete
-        await Future.delayed(const Duration(milliseconds: 500));
+            '🎵 FAILOVER: Superseding an in-progress live playback operation');
       }
 
       if (_isPlayingStream) {
         Logger.info('🎵 FAILOVER: Stopping current stream for failover');
         await _stopPlayerSafely('failover switch to $filePath');
+        _ensurePlaybackOperationCurrent(playbackGeneration);
         _isPlayingStream = false;
       }
 
       _isPlayStreamInProgress = true;
       _isPlayingStream = true;
+      _isLiveSourcePrepared = false;
       _currentStreamUrl = null;
 
       try {
@@ -1180,8 +1217,7 @@ final class EnhancedAudioService implements IAudioService {
             );
         _userPaused = false;
         _awaitingInterruptionResume = false;
-        _lastPlaybackPosition = Duration.zero;
-        _resetHlsTracking();
+        _resetBufferTracking();
         _resetStallTracking();
 
         Logger.info('🎵 FAILOVER: Creating audio source from local file...');
@@ -1205,7 +1241,9 @@ final class EnhancedAudioService implements IAudioService {
                 preload: true,
               )
               .timeout(failoverSetSourceTimeout);
+          _ensurePlaybackOperationCurrent(playbackGeneration);
         } on TimeoutException catch (_) {
+          _ensurePlaybackOperationCurrent(playbackGeneration);
           final elapsed = DateTime.now().difference(failoverSetSourceStart);
           Logger.error('🎵 FAILOVER: setAudioSource timed out');
           await _handlePlayerOperationTimeout(
@@ -1218,51 +1256,42 @@ final class EnhancedAudioService implements IAudioService {
 
         Logger.info('🎵 FAILOVER: Setting volume...');
         await _audioPlayer.setVolume(_currentVolume);
+        _ensurePlaybackOperationCurrent(playbackGeneration);
 
         Logger.info('🎵 FAILOVER: Starting playback...');
         const failoverPlayTimeout = Duration(seconds: 5);
         final failoverPlayStart = DateTime.now();
-        try {
-          await _audioPlayer.play().timeout(failoverPlayTimeout);
-        } on TimeoutException catch (_) {
-          final elapsed = DateTime.now().difference(failoverPlayStart);
-
-          if (_audioPlayer.playing) {
-            Logger.warning(
-                '🎵 FAILOVER: play() call timed out after ${elapsed.inSeconds}s BUT player is actually playing - ignoring timeout');
-          } else {
-            Logger.error(
-                '🎵 FAILOVER: play() timed out after ${elapsed.inSeconds}s and player NOT playing');
-            await _handlePlayerOperationTimeout(
-              operation: 'failover play()',
-              timeout: failoverPlayTimeout,
-              elapsed: elapsed,
-            );
-            throw TimeoutException('play operation timed out');
-          }
-        } catch (e, stackTrace) {
-          if (_audioPlayer.playing) {
-            Logger.warning(
-                '🎵 FAILOVER: play() threw error BUT player is actually playing - ignoring error');
-            Logger.warning('🎵 FAILOVER: Error was: $e');
-          } else {
-            Logger.error('🎵 FAILOVER: play() FAILED: $e');
-            Logger.error('🎵 FAILOVER: Stack trace: $stackTrace');
-            rethrow;
-          }
-        }
+        await _requestPlaybackStart(
+          playbackGeneration: playbackGeneration,
+          timeout: failoverPlayTimeout,
+          operation: 'failover play()',
+        );
+        final failoverPlayDuration =
+            DateTime.now().difference(failoverPlayStart);
+        Logger.info(
+            '🎵 FAILOVER: play() accepted in ${failoverPlayDuration.inMilliseconds}ms');
 
         Logger.info(
             '🎵 FAILOVER: ===== LOCAL FILE PLAYBACK STARTED SUCCESSFULLY =====');
       } catch (e) {
+        if (e is _PlaybackOperationSuperseded) {
+          Logger.info(
+              '🎵 FAILOVER: Local playback operation superseded by a newer source switch');
+          rethrow;
+        }
         // On error, clean up state
         Logger.error('🎵 FAILOVER: Playback failed, cleaning up: $e');
-        _isPlayingStream = false;
-        _currentStreamUrl = null;
-        _resetHlsTracking();
+        if (playbackGeneration == _playbackOperationGeneration) {
+          _isPlayingStream = false;
+          _isLiveSourcePrepared = false;
+          _currentStreamUrl = null;
+          _resetBufferTracking();
+        }
         rethrow;
       } finally {
-        _isPlayStreamInProgress = false;
+        if (playbackGeneration == _playbackOperationGeneration) {
+          _isPlayStreamInProgress = false;
+        }
       }
     });
   }
@@ -1289,15 +1318,9 @@ final class EnhancedAudioService implements IAudioService {
   @override
   Future<Result<void>> stop() async {
     return tryResultAsync(() async {
+      _playbackOperationGeneration++;
       Logger.info('🎵 AUDIO_DEBUG: Stopping playback...');
       _cancelTimeouts();
-
-      // Wait for any in-progress playback operation to complete
-      if (_isPlayStreamInProgress) {
-        Logger.warning(
-            '🎵 AUDIO_DEBUG: Waiting for in-progress playback operation...');
-        await Future.delayed(const Duration(milliseconds: 200));
-      }
 
       await _stopPlayerSafely('service stop()');
 
@@ -1312,9 +1335,9 @@ final class EnhancedAudioService implements IAudioService {
       _resetStallTracking();
       _isPlayingStream = false;
       _isPlayStreamInProgress = false;
+      _isLiveSourcePrepared = false;
       _currentStreamUrl = null;
-      await _disposeActiveHlsSource();
-      _lastPlaybackPosition = Duration.zero;
+      _resetBufferTracking();
 
       _currentState = const AudioStateIdle();
       _stateController.add(_currentState);
@@ -1376,25 +1399,11 @@ final class EnhancedAudioService implements IAudioService {
     return const Duration(seconds: 3);
   }
 
-  Future<void> _disposeActiveHlsSource() async {
-    if (_activeHlsSource == null) {
-      return;
-    }
-    try {
-      await _activeHlsSource!.close();
-    } catch (e, stackTrace) {
-      Logger.warning('Failed to dispose active HLS source: $e');
-      Logger.debug('$stackTrace');
-    } finally {
-      _activeHlsSource = null;
-      _resetHlsTracking();
-    }
-  }
-
   @override
   Future<void> dispose() async {
     if (_isDisposed) return;
     _isDisposed = true;
+    _playbackOperationGeneration++;
 
     Logger.info('Disposing AudioService');
 
@@ -1410,12 +1419,18 @@ final class EnhancedAudioService implements IAudioService {
     await _interruptionSubscription?.cancel();
 
     await _audioPlayer.dispose();
-    await _disposeActiveHlsSource();
     await _stateController.close();
     await _networkController.close();
 
     Logger.info('AudioService disposed');
   }
+}
+
+final class _PlaybackOperationSuperseded implements Exception {
+  const _PlaybackOperationSuperseded();
+
+  @override
+  String toString() => 'Playback operation superseded by a newer source switch';
 }
 
 extension AudioStatePlayingCopyWith on AudioStatePlaying {

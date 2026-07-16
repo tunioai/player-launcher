@@ -20,10 +20,15 @@ class AudioConfig {
       Duration(seconds: 30); // iOS/macOS
   static const Duration backBufferDuration = Duration(seconds: 5);
 
-  // HLS playlist window used to cap the buffer-ahead display (see
-  // _handleBufferUpdate). The per-stream-type load profiles were removed with
-  // the single-player refactor - one unified config now serves HLS and live.
-  static const Duration hlsTargetForwardBuffer = Duration(seconds: 35);
+  // Live HLS starts at ExoPlayer's default live position (no explicit seek).
+  // For a standard (non-LL) playlist with `#EXT-X-TARGETDURATION:6` this is
+  // ~3×target = ~18s behind the live edge, i.e. the middle of the ~30s window:
+  // enough forward buffer to ride out blips AND enough margin before the
+  // trailing edge to avoid BehindLiveWindow errors. Seeking to Duration.zero
+  // (the oldest segment) pinned playback to the trailing edge with zero margin
+  // and made a healthy stream drop itself. Outage resilience comes from the
+  // failover cache, not from riding the oldest segment.
+  static const Duration? hlsInitialPosition = null;
 
   // Android-specific prebuffer delay
   static const Duration androidPrebufferDelay =
@@ -134,15 +139,27 @@ class AudioConfig {
         canUseNetworkResourcesForLiveStreamingWhilePaused: false,
         preferredPeakBitRate: maxBitRateDouble,
       ),
+      // Sized for a short (~30s) live HLS window played ~18s behind the edge:
+      // ask for less forward buffer than the window can provide, and resume
+      // quickly after a rebuffer instead of demanding a third of the window.
+      // The former 28s min / 10s after-rebuffer left the player permanently
+      // "under-buffered" and churning against a window that never holds 28s.
       androidLoadControl: const AndroidLoadControl(
-        minBufferDuration: Duration(seconds: 10),
-        maxBufferDuration: Duration(seconds: 40),
+        minBufferDuration: Duration(seconds: 15),
+        maxBufferDuration: Duration(seconds: 30),
         bufferForPlaybackDuration: Duration(seconds: 2),
-        bufferForPlaybackAfterRebufferDuration: Duration(seconds: 5),
+        bufferForPlaybackAfterRebufferDuration: Duration(seconds: 4),
         targetBufferBytes: 8 * 1024 * 1024,
         prioritizeTimeOverSizeThresholds: true,
         backBufferDuration: backBufferDuration,
       ),
+      // Keep ExoPlayer's default live speed control (0.97–1.03, pitch-preserved
+      // via time-stretching) so the player actively maintains its target live
+      // offset: it eases off when drifting toward the trailing edge (preventing
+      // BehindLiveWindow) and catches up gently after a rebuffer. Pinning the
+      // speed to exactly 1.0 disabled that correction and let the player drift
+      // out of the live window.
+      androidLivePlaybackSpeedControl: const AndroidLivePlaybackSpeedControl(),
     );
   }
 }

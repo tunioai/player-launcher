@@ -10,6 +10,7 @@ class StreamConfig {
   final CurrentTrack? current;
   final String? visualizerUrl;
   final String? streamUuid;
+  final String? status;
 
   const StreamConfig({
     required this.streamUrl,
@@ -20,7 +21,22 @@ class StreamConfig {
     this.current,
     this.visualizerUrl,
     this.streamUuid,
+    this.status,
   });
+
+  /// Whether the backend attached a playable audio stream to this point. When
+  /// false (no `stream_url`/`stream_hls_url`), the app runs in "screen-only"
+  /// mode: it opens the visualizer/webview but never initializes music
+  /// playback. A stream appearing later (via config polling) starts playback.
+  bool get hasStream => streamUrl.trim().isNotEmpty;
+
+  /// Whether the backend reports the stream as playable. A missing/empty
+  /// status is treated as online so older/cached configs keep working; only
+  /// an explicit non-"online" status (e.g. "offline") blocks playback.
+  bool get isOnline {
+    final s = status?.trim().toLowerCase();
+    return s == null || s.isEmpty || s == 'online';
+  }
 
   /// Returns the volume value scaled for failover playback.
   ///
@@ -41,16 +57,17 @@ class StreamConfig {
     final hlsUrl = json['stream_hls_url'];
     final streamUrl = (hlsUrl is String && hlsUrl.isNotEmpty)
         ? hlsUrl
-        : (json['stream_url'] ?? '');
-    final streamUuid = json['stream_uuid'] as String?;
+        : (json['stream_url']?.toString() ?? '');
+    final streamUuid = json['stream_uuid']?.toString();
+    final status = json['status']?.toString();
     final volume = _parseVolume(json['volume']);
     final parsedMusicVolume = _parseOptionalVolume(json['music_volume']);
-    final title = json['title'];
-    final description = json['description'];
+    final title = json['title']?.toString();
+    final description = json['description']?.toString();
 
     CurrentTrack? current;
-    if (json['current'] != null) {
-      current = CurrentTrack.fromJson(json['current']);
+    if (json['current'] is Map<String, dynamic>) {
+      current = CurrentTrack.fromJson(json['current'] as Map<String, dynamic>);
     }
 
     // TODO: DO NOT REMOVE!!!
@@ -82,6 +99,7 @@ class StreamConfig {
       current: current,
       visualizerUrl: visualizerUrl,
       streamUuid: streamUuid,
+      status: status,
     );
   }
 
@@ -95,6 +113,7 @@ class StreamConfig {
       'description': description,
       'current': current?.toJson(),
       if (visualizerUrl != null) 'visualizer_url': visualizerUrl,
+      if (status != null) 'status': status,
     };
   }
 
@@ -109,12 +128,13 @@ class StreamConfig {
         other.title == title &&
         other.description == description &&
         other.current == current &&
-        other.streamUuid == streamUuid;
+        other.streamUuid == streamUuid &&
+        other.status == status;
   }
 
   @override
   int get hashCode => Object.hash(streamUrl, volume, musicVolume, visualizerUrl,
-      title, description, current, streamUuid);
+      title, description, current, streamUuid, status);
 
   static double _parseVolume(dynamic raw, [double defaultValue = 1.0]) {
     if (raw == null) return defaultValue;

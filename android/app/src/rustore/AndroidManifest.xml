@@ -1,0 +1,18 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+        RuStore rejects uploads that declare START_FOREGROUND_SERVICES_FROM_BACKGROUND
+        (it's on RuStore's forbidden-permissions list).
+
+        This is not a real grantable AOSP permission — stock Android ignores it,
+        and it is NOT what enables the launcher (HOME/LAUNCHER intent filters) or
+        boot auto-start (RECEIVE_BOOT_COMPLETED + BootReceiver). Removing it from
+        the merged manifest of the `rustore` flavor changes nothing functionally
+        while leaving the play/standalone manifests untouched.
+    -->
+    <uses-permission
+        android:name="android.permission.START_FOREGROUND_SERVICES_FROM_BACKGROUND"
+        tools:node="remove" />
+
+</manifest>
