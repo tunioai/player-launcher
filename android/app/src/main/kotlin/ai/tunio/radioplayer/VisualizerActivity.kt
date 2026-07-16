@@ -362,6 +362,10 @@ class VisualizerActivity : Activity() {
     private var pendingRevealAfterTransform = false
     private var suppressWaitingBlackout = false
     private var pendingClearRunnable: Runnable? = null
+    // Prewarmed playlist is prepared paused on its first frame; playback starts
+    // when the real setPlaylist of the visible scene arrives, so scenes timed
+    // to clip durations don't lose their opening seconds.
+    private var awaitingPrewarmActivation = false
     private val closeTapSlop by lazy { ViewConfiguration.get(this).scaledTouchSlop.toFloat() }
     private var closeTapDownX: Float = 0f
     private var closeTapDownY: Float = 0f
@@ -1423,6 +1427,13 @@ class VisualizerActivity : Activity() {
         applyPlacement(json.optJSONObject("rect"), currentDimAlpha)
         if (samePlaylist) {
             Log.d(TAG, "setPlaylist skipped restart (same owner/playlist), owner=$ownerId")
+            if (!prewarm && awaitingPrewarmActivation) {
+                awaitingPrewarmActivation = false
+                player?.playWhenReady = true
+                player?.play()
+                markPlaybackProgressIfAdvanced(forceRefresh = true)
+                Log.d(TAG, "prewarmed playlist activated, owner=$ownerId")
+            }
             notifyNativeVideoReady(ownerId)
             return
         }
@@ -1442,8 +1453,9 @@ class VisualizerActivity : Activity() {
         currentOwnerId = ownerId
         playlist = nextPlaylist
         currentPlaylistKey = nextPlaylistKey
+        awaitingPrewarmActivation = prewarm
         refillQueue(avoidCurrent = false)
-        startPlaybackPipeline()
+        startPlaybackPipeline(startPaused = prewarm)
         scheduleVideoPrefetch(playlist)
     }
 
@@ -1464,6 +1476,7 @@ class VisualizerActivity : Activity() {
         waitingForFirstFrame = false
         pendingRevealAfterTransform = false
         suppressWaitingBlackout = false
+        awaitingPrewarmActivation = false
         transitionOverlayView.animate().cancel()
         transitionOverlayView.alpha = 0f
         videoPlayerView.alpha = 0f
@@ -1665,7 +1678,7 @@ class VisualizerActivity : Activity() {
         return true
     }
 
-    private fun startPlaybackPipeline() {
+    private fun startPlaybackPipeline(startPaused: Boolean = false) {
         if (playlist.isEmpty()) {
             return
         }
@@ -1694,8 +1707,12 @@ class VisualizerActivity : Activity() {
             addMediaItem(firstMediaItem)
             addNextMediaItem()
             prepare()
-            playWhenReady = true
-            play()
+            // Paused prewarm still decodes and renders the first frame once
+            // READY, which drives the reveal/ready notification.
+            playWhenReady = !startPaused
+            if (!startPaused) {
+                play()
+            }
         }
     }
 
@@ -1843,6 +1860,10 @@ class VisualizerActivity : Activity() {
     private fun runPlaybackGuardCycle() {
         val instance = player ?: return
         if (playlist.isEmpty() || videoLayer.visibility != View.VISIBLE || waitingForFirstFrame) {
+            return
+        }
+        if (awaitingPrewarmActivation) {
+            // Deliberately paused on the first frame until the scene shows.
             return
         }
 
