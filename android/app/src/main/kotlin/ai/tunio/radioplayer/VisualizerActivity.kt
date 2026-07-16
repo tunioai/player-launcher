@@ -544,6 +544,19 @@ class VisualizerActivity : Activity() {
                     }
 
                     override fun onPlaybackStateChanged(playbackState: Int) {
+                        if (playbackState == Player.STATE_READY && awaitingPrewarmActivation) {
+                            // Park the prewarmed clip at 0 the moment the decoder
+                            // is ready. onRenderedFirstFrame (the other park site)
+                            // never fires on some Amlogic decoders — the unparked
+                            // clip kept playing hidden and the scene then started
+                            // seconds into it.
+                            player?.let {
+                                if (it.playWhenReady) {
+                                    it.pause()
+                                    it.seekTo(0)
+                                }
+                            }
+                        }
                         if (playbackState == Player.STATE_READY && waitingForFirstFrame) {
                             pendingRevealAfterTransform = true
                             maybeRevealVideoAfterFirstFrame()
@@ -1480,9 +1493,10 @@ class VisualizerActivity : Activity() {
                 if (awaitingPrewarmActivation) {
                     awaitingPrewarmActivation = false
                     player?.let {
-                        if (waitingForFirstFrame) {
-                            // Activated before the first frame parked the clip
-                            // at 0 — realign so the scene sees it from the top.
+                        // The park may not have happened (flaky render/ready
+                        // callbacks) — never let the scene start mid-clip.
+                        if (it.currentPosition > 150L) {
+                            Log.w(TAG, "prewarm was not parked (pos=${it.currentPosition}ms), realigning to 0")
                             it.seekTo(0)
                         }
                         it.playWhenReady = true
