@@ -77,6 +77,10 @@ class VisualizerActivity : Activity() {
         private const val VIDEO_PREFETCH_CACHE_FILL_FRACTION = 0.9
         // How many distinct playlist clips to prefetch (whole clips, for offline playback).
         private const val VIDEO_PREFETCH_MAX_ITEMS = 64
+        // How long a bridge "clear" waits before executing: the setPlaylist of
+        // the next scene arrives within the same switch and cancels it, so the
+        // last frame stays on screen instead of dropping to black.
+        private const val CLEAR_HANDOVER_GRACE_MS = 350L
         private const val PLAYBACK_GUARD_CHECK_INTERVAL_MS = 3000L
         private const val PLAYBACK_GUARD_STALL_TIMEOUT_MS = 12000L
         private const val PLAYBACK_GUARD_RECOVERY_COOLDOWN_MS = 2500L
@@ -153,6 +157,8 @@ class VisualizerActivity : Activity() {
     private var isTransitionRunning = false
     private var waitingForFirstFrame = false
     private var pendingRevealAfterTransform = false
+    private var suppressWaitingBlackout = false
+    private var pendingClearRunnable: Runnable? = null
     private val closeTapSlop by lazy { ViewConfiguration.get(this).scaledTouchSlop.toFloat() }
     private var closeTapDownX: Float = 0f
     private var closeTapDownY: Float = 0f
@@ -305,6 +311,10 @@ class VisualizerActivity : Activity() {
                         if (waitingForFirstFrame) {
                             pendingRevealAfterTransform = true
                             maybeRevealVideoAfterFirstFrame()
+                        } else {
+                            // Last-frame handover path: the layer is already
+                            // visible, just report readiness to the page.
+                            notifyNativeVideoReady(currentOwnerId)
                         }
                     }
 
@@ -647,6 +657,9 @@ class VisualizerActivity : Activity() {
             useController = false
             resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
             setShutterBackgroundColor(Color.BLACK)
+            // Keeps the last decoded frame on screen across player.stop() +
+            // new prepare — the video-to-video scene handover relies on it.
+            setKeepContentOnPlayerReset(true)
             alpha = 0f
             addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
                 val newWidth = right - left
@@ -713,7 +726,7 @@ class VisualizerActivity : Activity() {
     }
 
     private fun syncPageTransparencyForNativeVideo(view: WebView?) {
-        val forceBlackBackground = waitingForFirstFrame
+        val forceBlackBackground = waitingForFirstFrame && !suppressWaitingBlackout
         view?.evaluateJavascript(
             """
             (function() {
@@ -807,11 +820,7 @@ class VisualizerActivity : Activity() {
 
         when (json.optString("action")) {
             "setPlaylist" -> handleSetPlaylist(json)
-            "clear" -> {
-                // Always clear on explicit request from SPA. This prevents stale
-                // tail frames from previous scenes when returning to video scenes.
-                clearNativeVideo()
-            }
+            "clear" -> requestClearNativeVideo(json.optString("ownerId"))
             "setMarquee" -> marqueeOverlayController.setMarquee(json)
             "clearMarquee" -> marqueeOverlayController.clearMarquee(json.optString("ownerId"))
             else -> {
@@ -822,6 +831,28 @@ class VisualizerActivity : Activity() {
         // SPA can switch between web-rendered and native video layers without page reload.
         // Re-sync transparency on every bridge message so visual updates apply immediately.
         syncPageTransparencyForNativeVideo(webView)
+    }
+
+    // A "clear" from an unmounting scene must not kill the playlist a newer
+    // scene already owns, and same-owner clears are deferred so the setPlaylist
+    // arriving within the same switch cancels them (last-frame handover).
+    private fun requestClearNativeVideo(ownerId: String?) {
+        if (!ownerId.isNullOrEmpty() && currentOwnerId != null && ownerId != currentOwnerId) {
+            Log.d(TAG, "clear ignored, owner mismatch: $ownerId != $currentOwnerId")
+            return
+        }
+        cancelPendingClear()
+        val runnable = Runnable {
+            pendingClearRunnable = null
+            clearNativeVideo()
+        }
+        pendingClearRunnable = runnable
+        playbackGuardHandler.postDelayed(runnable, CLEAR_HANDOVER_GRACE_MS)
+    }
+
+    private fun cancelPendingClear() {
+        pendingClearRunnable?.let { playbackGuardHandler.removeCallbacks(it) }
+        pendingClearRunnable = null
     }
 
     private fun handleSetPlaylist(json: JSONObject) {
@@ -842,6 +873,9 @@ class VisualizerActivity : Activity() {
             clearNativeVideo()
             return
         }
+
+        cancelPendingClear()
+        val prewarm = json.optBoolean("prewarm", false)
         val nextPlaylistKey = nextPlaylist.joinToString("\u0001")
         val samePlaylist = ownerId == currentOwnerId &&
             nextPlaylistKey == currentPlaylistKey &&
@@ -855,12 +889,21 @@ class VisualizerActivity : Activity() {
         applyPlacement(json.optJSONObject("rect"), currentDimAlpha)
         if (samePlaylist) {
             Log.d(TAG, "setPlaylist skipped restart (same owner/playlist), owner=$ownerId")
+            notifyNativeVideoReady(ownerId)
             return
         }
 
+        val hadVisibleVideo = videoLayer.visibility == View.VISIBLE &&
+            videoPlayerView.alpha == 1f &&
+            (player?.mediaItemCount ?: 0) > 0
+
         knownSources.addAll(nextPlaylist)
-        hideUntilFirstFrame()
-        Log.d(TAG, "setPlaylist owner=$ownerId tracks=${nextPlaylist.size} transitionMs=$transitionMs")
+        when {
+            prewarm -> hideUntilFirstFrameQuietly()
+            hadVisibleVideo -> keepLastFrameForHandover()
+            else -> hideUntilFirstFrame()
+        }
+        Log.d(TAG, "setPlaylist owner=$ownerId tracks=${nextPlaylist.size} transitionMs=$transitionMs prewarm=$prewarm")
 
         currentOwnerId = ownerId
         playlist = nextPlaylist
@@ -873,6 +916,7 @@ class VisualizerActivity : Activity() {
 
     private fun clearNativeVideo() {
         Log.d(TAG, "clearNativeVideo")
+        cancelPendingClear()
         cancelVideoPrefetch()
         stopPlaybackGuard()
         playlist = emptyList()
@@ -886,6 +930,7 @@ class VisualizerActivity : Activity() {
         isTransitionRunning = false
         waitingForFirstFrame = false
         pendingRevealAfterTransform = false
+        suppressWaitingBlackout = false
         transitionOverlayView.animate().cancel()
         transitionOverlayView.alpha = 0f
         videoPlayerView.alpha = 0f
@@ -1119,11 +1164,34 @@ class VisualizerActivity : Activity() {
     private fun hideUntilFirstFrame() {
         waitingForFirstFrame = true
         pendingRevealAfterTransform = false
+        suppressWaitingBlackout = false
         transitionOverlayView.animate().cancel()
         transitionOverlayView.alpha = 1f
         videoPlayerView.alpha = 0f
         webView.setBackgroundColor(Color.BLACK)
         syncPageTransparencyForNativeVideo(webView)
+    }
+
+    // Prewarm: the current scene's opaque page keeps covering the screen, so
+    // the next clip prepares behind it without the cold-start blackout.
+    private fun hideUntilFirstFrameQuietly() {
+        waitingForFirstFrame = true
+        pendingRevealAfterTransform = false
+        suppressWaitingBlackout = true
+        transitionOverlayView.animate().cancel()
+        transitionOverlayView.alpha = 0f
+        videoPlayerView.alpha = 0f
+    }
+
+    // Video-to-video switch: keepContentOnPlayerReset holds the last decoded
+    // frame on screen until the next clip renders, so there is no black gap.
+    private fun keepLastFrameForHandover() {
+        waitingForFirstFrame = false
+        pendingRevealAfterTransform = false
+        suppressWaitingBlackout = false
+        transitionOverlayView.animate().cancel()
+        transitionOverlayView.alpha = 0f
+        videoPlayerView.alpha = 1f
     }
 
     private fun maybeRevealVideoAfterFirstFrame() {
@@ -1135,11 +1203,13 @@ class VisualizerActivity : Activity() {
         }
         waitingForFirstFrame = false
         pendingRevealAfterTransform = false
+        suppressWaitingBlackout = false
         transitionOverlayView.animate().cancel()
         transitionOverlayView.alpha = 0f
         videoPlayerView.alpha = 1f
         webView.setBackgroundColor(Color.TRANSPARENT)
         syncPageTransparencyForNativeVideo(webView)
+        notifyNativeVideoReady(currentOwnerId)
     }
 
     private fun ensureQueueDepth() {
@@ -1287,6 +1357,33 @@ class VisualizerActivity : Activity() {
         instance.playWhenReady = true
         instance.play()
         markPlaybackProgressIfAdvanced(forceRefresh = true)
+    }
+
+    // Tells the SPA the current playlist rendered a frame — the player gates
+    // scene switches on this event during prewarm.
+    private fun notifyNativeVideoReady(ownerId: String?) {
+        if (ownerId.isNullOrEmpty()) {
+            return
+        }
+        val safeOwnerId = ownerId.replace("\\", "").replace("'", "").replace("\"", "")
+        webView.evaluateJavascript(
+            """
+            (function() {
+              try {
+                var detail = { ownerId: '$safeOwnerId' };
+                var event;
+                try {
+                  event = new CustomEvent('tunio-native-video-ready', { detail: detail });
+                } catch (e) {
+                  event = document.createEvent('CustomEvent');
+                  event.initCustomEvent('tunio-native-video-ready', false, false, detail);
+                }
+                window.dispatchEvent(event);
+              } catch (e) {}
+            })();
+            """.trimIndent(),
+            null,
+        )
     }
 
     private fun runSmartFade() {
@@ -1462,7 +1559,7 @@ class VisualizerActivity : Activity() {
         // The SPA probes this before offloading features to the native layer;
         // older APKs lack the method, so the web falls back to DOM rendering.
         @JavascriptInterface
-        fun getCapabilities(): String = """{"nativeVideo":true,"nativeMarquee":true}"""
+        fun getCapabilities(): String = """{"nativeVideo":true,"nativeMarquee":true,"scenePrewarm":true}"""
 
         @JavascriptInterface
         fun postMessage(payload: String?) {
