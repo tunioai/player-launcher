@@ -32,12 +32,14 @@ class MarqueeOverlayController(private val context: Context) {
 
     companion object {
         private const val TAG = "MarqueeOverlay"
-        // Visual parity with the web marquee base-text style: 42px base font
-        // with a ~1px black outline (four 1px solid shadows in CSS), so the
-        // text stays readable on light backgrounds. Scales with the font.
-        private const val BASE_FONT_PX = 42f
-        private const val OUTLINE_WIDTH_FACTOR = 2f / BASE_FONT_PX
-        private const val OUTLINE_COLOR = 0xD1000000.toInt()
+        // Visual parity with the web marquee: 46px base font with a ~2px black
+        // outline (8-direction 2px solid shadows in CSS), so the text stays
+        // readable over arbitrary video/photo backgrounds. A stroke extends
+        // half its width outward, hence 4px stroke ≈ 2px outline. Scales with
+        // the font.
+        private const val BASE_FONT_PX = 46f
+        private const val OUTLINE_WIDTH_FACTOR = 4f / BASE_FONT_PX
+        private const val OUTLINE_COLOR = 0xE6000000.toInt()
         private const val MIN_TRAVEL_DURATION_MS = 2500L
         private const val LAYOUT_RETRY_DELAY_MS = 16L
         private const val LAYOUT_RETRY_LIMIT = 120
