@@ -3,6 +3,7 @@ package ai.tunio.radioplayer
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.RectF
 import android.net.Uri
@@ -14,6 +15,8 @@ import android.os.Looper
 import android.os.StatFs
 import android.os.SystemClock
 import android.view.MotionEvent
+import android.view.PixelCopy
+import android.view.SurfaceView
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowInsets
@@ -28,6 +31,7 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
+import android.widget.ImageView
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.AudioAttributes
@@ -348,6 +352,10 @@ class VisualizerActivity : Activity() {
     private lateinit var rootLayout: FrameLayout
     private lateinit var videoLayer: FrameLayout
     private lateinit var videoPlayerView: PlayerView
+    // Snapshot of the last video frame, shown while the player re-prepares:
+    // keepContentOnPlayerReset only works with TextureView, and on Amlogic
+    // the SurfaceView goes black the moment the codec is released.
+    private lateinit var handoverFrameView: ImageView
     private lateinit var dimOverlayView: View
     private lateinit var transitionOverlayView: View
     private lateinit var webView: WebView
@@ -545,7 +553,10 @@ class VisualizerActivity : Activity() {
                             if (sceneEndingHold) {
                                 // The page is about to switch scenes: freeze on
                                 // the last frame instead of visibly restarting.
+                                // Snapshot it — the SurfaceView goes black once
+                                // the next playlist releases the codec.
                                 Log.d(TAG, "clip ended during sceneEnding hold, freezing last frame")
+                                captureHandoverFrame()
                             } else {
                                 hardCutToNext()
                             }
@@ -553,6 +564,7 @@ class VisualizerActivity : Activity() {
                     }
 
                     override fun onRenderedFirstFrame() {
+                        clearHandoverFrame()
                         if (awaitingPrewarmActivation) {
                             player?.apply {
                                 pause()
@@ -945,6 +957,11 @@ class VisualizerActivity : Activity() {
             }
         }
 
+        handoverFrameView = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            visibility = View.GONE
+        }
+
         dimOverlayView = View(this).apply {
             setBackgroundColor(Color.BLACK)
             alpha = 0f
@@ -961,6 +978,7 @@ class VisualizerActivity : Activity() {
         )
 
         videoLayer.addView(videoPlayerView, FrameLayout.LayoutParams(matchParent))
+        videoLayer.addView(handoverFrameView, FrameLayout.LayoutParams(matchParent))
         videoLayer.addView(dimOverlayView, FrameLayout.LayoutParams(matchParent))
         videoLayer.addView(transitionOverlayView, FrameLayout.LayoutParams(matchParent))
 
@@ -1461,13 +1479,25 @@ class VisualizerActivity : Activity() {
                 sceneEndingHold = false
                 if (awaitingPrewarmActivation) {
                     awaitingPrewarmActivation = false
-                    player?.playWhenReady = true
-                    player?.play()
+                    player?.let {
+                        if (waitingForFirstFrame) {
+                            // Activated before the first frame parked the clip
+                            // at 0 — realign so the scene sees it from the top.
+                            it.seekTo(0)
+                        }
+                        it.playWhenReady = true
+                        it.play()
+                    }
                     markPlaybackProgressIfAdvanced(forceRefresh = true)
                     Log.d(TAG, "prewarmed playlist activated, owner=$ownerId")
                 }
             }
-            notifyNativeVideoReady(ownerId)
+            if (!waitingForFirstFrame) {
+                // While the first frame is still pending, readiness is reported
+                // by the reveal path — reporting here would let the page switch
+                // onto a clip that is playing but not yet parked at 0.
+                notifyNativeVideoReady(ownerId)
+            }
             return
         }
 
@@ -1491,6 +1521,48 @@ class VisualizerActivity : Activity() {
         refillQueue(avoidCurrent = false)
         startPlaybackPipeline()
         scheduleVideoPrefetch(playlist)
+    }
+
+    private fun captureHandoverFrame() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+            return
+        }
+        val surfaceView = videoPlayerView.videoSurfaceView as? SurfaceView ?: return
+        val surface = surfaceView.holder.surface
+        if (surface == null || !surface.isValid) {
+            return
+        }
+        val width = surfaceView.width
+        val height = surfaceView.height
+        if (width <= 0 || height <= 0) {
+            return
+        }
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        try {
+            PixelCopy.request(
+                surfaceView,
+                bitmap,
+                { result ->
+                    if (result == PixelCopy.SUCCESS) {
+                        handoverFrameView.setImageBitmap(bitmap)
+                        handoverFrameView.visibility = View.VISIBLE
+                    } else {
+                        Log.d(TAG, "Handover frame capture failed: $result")
+                    }
+                },
+                playbackGuardHandler,
+            )
+        } catch (error: Throwable) {
+            Log.d(TAG, "Handover frame capture failed: ${error.message}")
+        }
+    }
+
+    private fun clearHandoverFrame() {
+        if (handoverFrameView.visibility == View.GONE && handoverFrameView.drawable == null) {
+            return
+        }
+        handoverFrameView.visibility = View.GONE
+        handoverFrameView.setImageDrawable(null)
     }
 
     // The queue keeps a follow-up copy for gapless looping, so a clip that
@@ -1523,6 +1595,7 @@ class VisualizerActivity : Activity() {
         currentOwnerId = null
         currentPlaylistKey = ""
         currentPlacement = null
+        clearHandoverFrame()
         isTransitionRunning = false
         waitingForFirstFrame = false
         pendingRevealAfterTransform = false
@@ -1772,6 +1845,7 @@ class VisualizerActivity : Activity() {
         pendingRevealAfterTransform = false
         suppressWaitingBlackout = false
         firstFrameWaitStartedAtMs = SystemClock.elapsedRealtime()
+        clearHandoverFrame()
         transitionOverlayView.animate().cancel()
         transitionOverlayView.alpha = 1f
         videoPlayerView.alpha = 0f
@@ -1791,12 +1865,18 @@ class VisualizerActivity : Activity() {
         videoPlayerView.alpha = 0f
     }
 
-    // Video-to-video switch: keepContentOnPlayerReset holds the last decoded
-    // frame on screen until the next clip renders, so there is no black gap.
+    // Video-to-video switch: hold the last decoded frame on screen until the
+    // next clip renders, so there is no black gap. A snapshot overlay does the
+    // holding (unless the sceneEnding hold already captured one) — the
+    // SurfaceView itself goes black when the pipeline restart releases the
+    // codec, regardless of keepContentOnPlayerReset.
     private fun keepLastFrameForHandover() {
         waitingForFirstFrame = false
         pendingRevealAfterTransform = false
         suppressWaitingBlackout = false
+        if (handoverFrameView.visibility != View.VISIBLE) {
+            captureHandoverFrame()
+        }
         transitionOverlayView.animate().cancel()
         transitionOverlayView.alpha = 0f
         videoPlayerView.alpha = 1f
