@@ -402,7 +402,6 @@ class VisualizerActivity : Activity() {
     private var firstFrameWaitToken = 0L
     private var pendingRevealAfterTransform = false
     private var firstFrameWaitStartedAtMs = 0L
-    private var realignedAtReveal = false
     private var pendingClearRunnable: Runnable? = null
     // Scene-length awareness (0 = unknown / old web bundle): lets a clip end
     // on its last frame right before the scene switch instead of looping.
@@ -1571,7 +1570,7 @@ class VisualizerActivity : Activity() {
         if (canHandover) {
             handoverToNewPlaylist()
         } else {
-            hideUntilFirstFrame()
+            beginQuietFirstFrameWait()
             startPlaybackPipeline()
         }
         scheduleVideoPrefetch(playlist)
@@ -1778,7 +1777,7 @@ class VisualizerActivity : Activity() {
         val firstIndex = nextIndex()
         val mediaItem = if (firstIndex in playlist.indices) createMediaItemForIndex(firstIndex) else null
         if (instance == null || mediaItem == null) {
-            hideUntilFirstFrame()
+            beginQuietFirstFrameWait()
             startPlaybackPipeline()
             return
         }
@@ -1823,7 +1822,6 @@ class VisualizerActivity : Activity() {
         pendingRevealAfterTransform = false
         suppressWaitingBlackout = false
         awaitingFirstCachedClip = false
-        realignedAtReveal = false
         firstFrameWaitStartedAtMs = 0L
         currentSceneDurationMs = 0L
         scenePlaybackStartedAtMs = 0L
@@ -2091,34 +2089,20 @@ class VisualizerActivity : Activity() {
         }
     }
 
-    private fun hideUntilFirstFrame() {
-        firstFrameWaitToken += 1
-        waitingForFirstFrame = true
-        pendingRevealAfterTransform = false
-        suppressWaitingBlackout = false
-        realignedAtReveal = false
-        firstFrameWaitStartedAtMs = SystemClock.elapsedRealtime()
-        transitionOverlayView.animate().cancel()
-        transitionOverlayView.alpha = 1f
-        videoPlayerView.alpha = 0f
-        webView.setBackgroundColor(Color.BLACK)
-        syncPageTransparencyForNativeVideo(webView)
-    }
-
-    // Quiet variant of hideUntilFirstFrame: the video joins a scene that is
-    // already on screen (its first clip just finished caching), so the page
-    // keeps rendering the scene opaquely instead of blacking out; the video
-    // reveals on its first frame.
+    // Quiet first-frame wait: while the pipeline prepares, the page keeps
+    // rendering the scene opaquely (no forced black — by the time setPlaylist
+    // arrives the page is already showing the new scene); the video reveals
+    // on its first rendered frame.
     private fun beginQuietFirstFrameWait() {
         firstFrameWaitToken += 1
         waitingForFirstFrame = true
         pendingRevealAfterTransform = false
         suppressWaitingBlackout = true
-        realignedAtReveal = false
         firstFrameWaitStartedAtMs = SystemClock.elapsedRealtime()
         transitionOverlayView.animate().cancel()
         transitionOverlayView.alpha = 0f
         videoPlayerView.alpha = 0f
+        webView.setBackgroundColor(Color.TRANSPARENT)
         syncPageTransparencyForNativeVideo(webView)
     }
 
@@ -2157,17 +2141,16 @@ class VisualizerActivity : Activity() {
         if (!applyVideoCenterCropTransform()) {
             return
         }
-        // The clip has been playing hidden while the reveal was blocked (slow
-        // layout / busy WebView). Realign to zero once so the audience never
-        // sees a clip start from its middle; the reveal then happens on the
-        // frame the seek renders.
+        // The playback clock ticks even while the decoder renders late (video-
+        // only streams use the standalone clock), so on slow SoCs the clip can
+        // be seconds in by the time its first frame appears. Snap back to zero
+        // AT the reveal — never wait for another rendered frame, the same slow
+        // decoder would just drift the clock again. Viewers always see the
+        // clip from the start; the scene-end window absorbs the extra tail.
         val instance = player
-        if (instance != null && !realignedAtReveal && instance.currentPosition > REVEAL_REALIGN_THRESHOLD_MS) {
-            Log.d(TAG, "reveal realign: clip drifted to ${instance.currentPosition}ms while hidden, seeking to 0")
-            realignedAtReveal = true
-            pendingRevealAfterTransform = false
+        if (instance != null && instance.currentPosition > REVEAL_REALIGN_THRESHOLD_MS) {
+            Log.d(TAG, "reveal realign: clip drifted to ${instance.currentPosition}ms while hidden, restarting from 0")
             instance.seekTo(0)
-            return
         }
         waitingForFirstFrame = false
         pendingRevealAfterTransform = false
