@@ -169,6 +169,11 @@ class VisualizerActivity : Activity() {
         // the clip drifted past this, realign to zero so viewers never see a
         // clip start from its middle.
         private const val REVEAL_REALIGN_THRESHOLD_MS = 500L
+        // Rebuffers past this position count as mid-play (startup/seek
+        // buffering is expected and excluded); this many per clip per session
+        // marks its cache entry as bad and schedules a clean re-download.
+        private const val MID_CLIP_REBUFFER_POSITION_MS = 2_000L
+        private const val MID_CLIP_REBUFFERS_BEFORE_EVICTION = 2
         // The page announces the scene duration with setPlaylist. Inside this
         // window before the scene ends, a finishing clip freezes on its last
         // frame instead of rolling into a fresh pass that the scene switch
@@ -411,6 +416,11 @@ class VisualizerActivity : Activity() {
     // on its last frame right before the scene switch instead of looping.
     private var currentSceneDurationMs = 0L
     private var scenePlaybackStartedAtMs = 0L
+    // Cache self-heal: a clip that repeatedly rebuffers mid-play despite being
+    // "fully cached" usually has corrupt spans or wrong length metadata (a
+    // truncated download) — evict it so it re-downloads cleanly.
+    private val midClipRebufferCounts = HashMap<String, Int>()
+    private val pendingCacheEvictions = HashSet<String>()
     // Cache-only playback: true while the current playlist has no fully cached
     // clip yet — the video layer stays hidden, the page renders the scene
     // opaquely, and the first clip is being downloaded with priority.
@@ -568,6 +578,8 @@ class VisualizerActivity : Activity() {
                             }
                         }
 
+                        processPendingCacheEvictions()
+
                         dropPlayedItems()
                         ensureQueueDepth()
                         // A loop resets currentPosition to zero. Treat the item
@@ -583,14 +595,24 @@ class VisualizerActivity : Activity() {
                         if (playbackState == Player.STATE_READY && waitingForFirstFrame) {
                             scheduleFirstFrameReadyFallback()
                         }
-                        // Mid-playback rebuffer = the visible "micro-freeze": the
-                        // clip is not fully cached and the network fell behind.
+                        // Mid-playback rebuffer = the visible "micro-freeze".
                         // Cheap diagnostic, visible via `adb logcat -s VisualizerActivity`.
                         if (playbackState == Player.STATE_BUFFERING && !waitingForFirstFrame) {
-                            Log.w(
-                                TAG,
-                                "rebuffering at ${player?.currentPosition}ms of ${player?.currentMediaItem?.localConfiguration?.uri}",
-                            )
+                            val position = player?.currentPosition ?: 0L
+                            val source = player?.currentMediaItem?.localConfiguration?.uri?.toString()
+                            Log.w(TAG, "rebuffering at ${position}ms of $source")
+                            // A "fully cached" clip must never rebuffer mid-play;
+                            // when one does repeatedly, its cache entry is bad
+                            // (corrupt span / truncated length metadata) —
+                            // schedule a clean re-download.
+                            if (source != null && position > MID_CLIP_REBUFFER_POSITION_MS) {
+                                val count = (midClipRebufferCounts[source] ?: 0) + 1
+                                midClipRebufferCounts[source] = count
+                                if (count >= MID_CLIP_REBUFFERS_BEFORE_EVICTION) {
+                                    Log.w(TAG, "clip rebuffered mid-play $count times, scheduling cache eviction: $source")
+                                    pendingCacheEvictions.add(source)
+                                }
+                            }
                         }
                         markPlaybackProgressIfAdvanced()
                         if (playbackState == Player.STATE_ENDED) {
@@ -1852,6 +1874,9 @@ class VisualizerActivity : Activity() {
         videoLayer.visibility = View.GONE
         resetPlaybackGuardState()
         player?.stop()
+        player?.clearMediaItems()
+        // Nothing is playing anymore — flush any bad-cache evictions now.
+        processPendingCacheEvictions()
     }
 
     private fun scheduleVideoPrefetch(playlistSnapshot: List<String>) {
@@ -2185,6 +2210,46 @@ class VisualizerActivity : Activity() {
         }
         syncPageTransparencyForNativeVideo(webView)
         notifyNativeVideoReady(currentOwnerId)
+    }
+
+    // Cache self-heal: evict clips that repeatedly rebuffered mid-play — but
+    // never while one is the playing item (removing spans under an active
+    // reader would force it onto the network). Evicted clips drop out of the
+    // cache-only rotation and get re-downloaded cleanly by precache/trickle.
+    private fun processPendingCacheEvictions() {
+        if (pendingCacheEvictions.isEmpty()) {
+            return
+        }
+        val instance = player
+        val currentSource = instance?.currentMediaItem?.localConfiguration?.uri?.toString()
+        val iterator = pendingCacheEvictions.iterator()
+        while (iterator.hasNext()) {
+            val source = iterator.next()
+            if (source == currentSource) {
+                continue
+            }
+            try {
+                videoCache.removeResource(buildVideoCacheKey(Uri.parse(source)))
+                Log.w(TAG, "evicted repeatedly-rebuffering clip from cache: $source")
+            } catch (error: Throwable) {
+                Log.d(TAG, "cache eviction failed for $source: ${error.message}")
+            }
+            midClipRebufferCounts.remove(source)
+            iterator.remove()
+            // The now-evicted clip may still sit in the player queue as an
+            // upcoming item — playing it would stream from the network.
+            if (instance != null) {
+                var i = instance.mediaItemCount - 1
+                while (i > instance.currentMediaItemIndex) {
+                    val itemSource = instance.getMediaItemAt(i).localConfiguration?.uri?.toString()
+                    if (itemSource == source) {
+                        mediaIdToPlaylistIndex.remove(instance.getMediaItemAt(i).mediaId)
+                        instance.removeMediaItems(i, i + 1)
+                    }
+                    i -= 1
+                }
+            }
+        }
     }
 
     // True inside the final stretch of the scene: the switch is imminent, so
