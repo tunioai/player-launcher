@@ -403,6 +403,10 @@ class VisualizerActivity : Activity() {
     private var pendingRevealAfterTransform = false
     private var firstFrameWaitStartedAtMs = 0L
     private var pendingClearRunnable: Runnable? = null
+    // A handover cut is waiting for the new clip's first rendered frame; the
+    // clock may drift while a slow decoder warms up (the old clip's last frame
+    // holds meanwhile), so that first frame must realign to zero too.
+    private var handoverAwaitingFirstFrame = false
     // Scene-length awareness (0 = unknown / old web bundle): lets a clip end
     // on its last frame right before the scene switch instead of looping.
     private var currentSceneDurationMs = 0L
@@ -605,9 +609,23 @@ class VisualizerActivity : Activity() {
                             pendingRevealAfterTransform = true
                             maybeRevealVideoAfterFirstFrame()
                         } else {
-                            // Layer already visible (e.g. clip rotation):
-                            // still report readiness — older web bundles
-                            // listen for this event.
+                            // Handover cut: the clock ran while the decoder
+                            // warmed up behind the old clip's held frame —
+                            // snap the new clip back to zero, same rule as
+                            // the reveal path.
+                            if (handoverAwaitingFirstFrame) {
+                                handoverAwaitingFirstFrame = false
+                                val instance = player
+                                if (instance != null && instance.currentPosition > REVEAL_REALIGN_THRESHOLD_MS) {
+                                    Log.d(
+                                        TAG,
+                                        "handover realign: clip drifted to ${instance.currentPosition}ms before first frame, restarting from 0",
+                                    )
+                                    instance.seekTo(0)
+                                }
+                            }
+                            // Report readiness — the page anchors the scene
+                            // timer on this event.
                             notifyNativeVideoReady(currentOwnerId)
                         }
                     }
@@ -1799,6 +1817,7 @@ class VisualizerActivity : Activity() {
         instance.seekToNextMediaItem()
         instance.playWhenReady = true
         instance.play()
+        handoverAwaitingFirstFrame = true
         scenePlaybackStartedAtMs = SystemClock.elapsedRealtime()
         markPlaybackProgressIfAdvanced(forceRefresh = true)
     }
@@ -1822,6 +1841,7 @@ class VisualizerActivity : Activity() {
         pendingRevealAfterTransform = false
         suppressWaitingBlackout = false
         awaitingFirstCachedClip = false
+        handoverAwaitingFirstFrame = false
         firstFrameWaitStartedAtMs = 0L
         currentSceneDurationMs = 0L
         scenePlaybackStartedAtMs = 0L
@@ -2061,6 +2081,7 @@ class VisualizerActivity : Activity() {
             return
         }
 
+        handoverAwaitingFirstFrame = false
         resetPlaybackGuardState()
         startPlaybackGuard()
 
