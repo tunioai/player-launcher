@@ -169,6 +169,13 @@ class VisualizerActivity : Activity() {
         // the clip drifted past this, realign to zero so viewers never see a
         // clip start from its middle.
         private const val REVEAL_REALIGN_THRESHOLD_MS = 500L
+        // The page announces the scene duration with setPlaylist. Inside this
+        // window before the scene ends, a finishing clip freezes on its last
+        // frame instead of rolling into a fresh pass that the scene switch
+        // would cut off after a couple of seconds.
+        private const val SCENE_END_HOLD_WINDOW_MS = 4_000L
+        // If the promised scene switch never comes, resume the rotation.
+        private const val SCENE_END_HOLD_MAX_MS = 10_000L
         private const val PLAYBACK_GUARD_RECOVERY_COOLDOWN_MS = 2500L
         private const val PLAYBACK_PROGRESS_EPSILON_MS = 250L
 
@@ -397,6 +404,10 @@ class VisualizerActivity : Activity() {
     private var firstFrameWaitStartedAtMs = 0L
     private var realignedAtReveal = false
     private var pendingClearRunnable: Runnable? = null
+    // Scene-length awareness (0 = unknown / old web bundle): lets a clip end
+    // on its last frame right before the scene switch instead of looping.
+    private var currentSceneDurationMs = 0L
+    private var scenePlaybackStartedAtMs = 0L
     // Cache-only playback: true while the current playlist has no fully cached
     // clip yet — the video layer stays hidden, the page renders the scene
     // opaquely, and the first clip is being downloaded with priority.
@@ -580,7 +591,13 @@ class VisualizerActivity : Activity() {
                         }
                         markPlaybackProgressIfAdvanced()
                         if (playbackState == Player.STATE_ENDED) {
-                            hardCutToNext()
+                            if (isInSceneEndWindow()) {
+                                // Scene switch imminent: hold the last frame.
+                                // The guard resumes rotation if it never comes.
+                                Log.d(TAG, "clip ended inside the scene-end window, holding last frame")
+                            } else {
+                                hardCutToNext()
+                            }
                         }
                     }
 
@@ -1499,6 +1516,7 @@ class VisualizerActivity : Activity() {
         // Keep scene transitions enabled; low-performance mode should reduce
         // heavy visual effects (blur/backdrop) but not remove transitions.
         currentDimAlpha = json.optDouble("dimAlpha", 0.0).toFloat().coerceIn(0f, 1f)
+        currentSceneDurationMs = json.optLong("sceneDurationMs", 0L).coerceAtLeast(0L)
         storePlacement(json.optJSONObject("rect"))
         if (samePlaylist) {
             Log.d(TAG, "setPlaylist skipped restart (same owner/playlist), owner=$ownerId")
@@ -1523,6 +1541,8 @@ class VisualizerActivity : Activity() {
         playlist = nextPlaylist
         currentPlaylistKey = nextPlaylistKey
         currentPlaybackMode = nextPlaybackMode
+        // Anchored again when the new playlist actually shows (reveal/handover).
+        scenePlaybackStartedAtMs = 0L
 
         // Cache-only playback: never stream to the screen. If nothing from
         // this playlist is on disk yet, keep the page rendering the scene
@@ -1780,6 +1800,7 @@ class VisualizerActivity : Activity() {
         instance.seekToNextMediaItem()
         instance.playWhenReady = true
         instance.play()
+        scenePlaybackStartedAtMs = SystemClock.elapsedRealtime()
         markPlaybackProgressIfAdvanced(forceRefresh = true)
     }
 
@@ -1804,6 +1825,8 @@ class VisualizerActivity : Activity() {
         awaitingFirstCachedClip = false
         realignedAtReveal = false
         firstFrameWaitStartedAtMs = 0L
+        currentSceneDurationMs = 0L
+        scenePlaybackStartedAtMs = 0L
         transitionOverlayView.animate().cancel()
         transitionOverlayView.alpha = 0f
         videoPlayerView.alpha = 0f
@@ -2153,12 +2176,41 @@ class VisualizerActivity : Activity() {
         transitionOverlayView.alpha = 0f
         videoPlayerView.alpha = 1f
         webView.setBackgroundColor(Color.TRANSPARENT)
+        if (scenePlaybackStartedAtMs <= 0L) {
+            scenePlaybackStartedAtMs = SystemClock.elapsedRealtime()
+        }
         syncPageTransparencyForNativeVideo(webView)
         notifyNativeVideoReady(currentOwnerId)
     }
 
+    // True inside the final stretch of the scene: the switch is imminent, so
+    // clips should end naturally and freeze instead of starting a fresh pass.
+    private fun isInSceneEndWindow(): Boolean {
+        if (currentSceneDurationMs <= 0L || scenePlaybackStartedAtMs <= 0L) {
+            return false
+        }
+        val elapsedMs = SystemClock.elapsedRealtime() - scenePlaybackStartedAtMs
+        return elapsedMs >= currentSceneDurationMs - SCENE_END_HOLD_WINDOW_MS
+    }
+
+    // The queue keeps a follow-up item for gapless playback; near the scene
+    // end that follow-up must go away so the playing clip can actually END
+    // (and hold its last frame) instead of rolling into the next pass.
+    private fun trimQueueToCurrentItem() {
+        val instance = player ?: return
+        val currentItemIndex = instance.currentMediaItemIndex
+        val itemCount = instance.mediaItemCount
+        if (itemCount <= currentItemIndex + 1) {
+            return
+        }
+        for (i in currentItemIndex + 1 until itemCount) {
+            mediaIdToPlaylistIndex.remove(instance.getMediaItemAt(i).mediaId)
+        }
+        instance.removeMediaItems(currentItemIndex + 1, itemCount)
+    }
+
     private fun ensureQueueDepth() {
-        if (playlist.isEmpty()) {
+        if (playlist.isEmpty() || isInSceneEndWindow()) {
             return
         }
         // Keep a following item queued even for a one-clip playlist. Media3 can
@@ -2274,6 +2326,20 @@ class VisualizerActivity : Activity() {
                 }
             }
             return
+        }
+
+        if (isInSceneEndWindow()) {
+            // Let the playing clip end naturally right before the switch.
+            trimQueueToCurrentItem()
+            if (instance.playbackState == Player.STATE_ENDED) {
+                val elapsedMs = SystemClock.elapsedRealtime() - scenePlaybackStartedAtMs
+                if (elapsedMs >= currentSceneDurationMs + SCENE_END_HOLD_MAX_MS) {
+                    Log.w(TAG, "scene-end hold expired without a switch, resuming rotation")
+                    scenePlaybackStartedAtMs = 0L
+                    hardCutToNext()
+                }
+                return
+            }
         }
 
         markPlaybackProgressIfAdvanced()
