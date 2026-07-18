@@ -3,7 +3,6 @@ package ai.tunio.radioplayer
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
-import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.RectF
 import android.net.Uri
@@ -15,8 +14,6 @@ import android.os.Looper
 import android.os.StatFs
 import android.os.SystemClock
 import android.view.MotionEvent
-import android.view.PixelCopy
-import android.view.SurfaceView
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowInsets
@@ -31,7 +28,6 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
-import android.widget.ImageView
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.AudioAttributes
@@ -66,11 +62,15 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.Semaphore
-import kotlin.random.Random
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
 class VisualizerActivity : Activity() {
+    private enum class PlaybackMode {
+        ORDERED,
+        RANDOM,
+    }
+
     private class BandwidthLimitedDataSource(
         private val upstream: DataSource,
         private val maxBytesPerSecond: Long,
@@ -120,10 +120,13 @@ class VisualizerActivity : Activity() {
         private const val IMAGE_PREFETCH_DELAY_MS = 150L
         private const val IMAGE_DOWNLOAD_CONNECT_TIMEOUT_MS = 10_000
         private const val IMAGE_DOWNLOAD_READ_TIMEOUT_MS = 30_000
-        // Video/image prefetch shares this single budget. Keeping it below a
-        // typical radio stream prevents background cache warming from taking
-        // over a weak connection.
-        private const val MEDIA_PREFETCH_MAX_BYTES_PER_SECOND = 32L * 1024L
+        // Image prefetch stays tiny — images are small and non-urgent.
+        private const val IMAGE_PREFETCH_MAX_BYTES_PER_SECOND = 32L * 1024L
+        // Video trickle must actually GROW the cache-only rotation while a
+        // scene plays: at 32KB/s one low clip took ~85s and long scenes looped
+        // two clips forever. 96KB/s caches a low clip in ~30s while leaving a
+        // weak (~1.5-2 Mbit) link enough headroom for the radio stream.
+        private const val VIDEO_PREFETCH_MAX_BYTES_PER_SECOND = 96L * 1024L
         // Hard ceiling for the on-disk video cache. The effective cap preserves existing
         // cached clips and only grows from currently-free space — see resolveVideoCacheMaxBytes.
         private const val VIDEO_CACHE_MAX_BYTES = 3L * 1024L * 1024L * 1024L // 3 GB
@@ -133,20 +136,39 @@ class VisualizerActivity : Activity() {
         private const val VIDEO_CACHE_FREE_SPACE_FRACTION = 0.5
         // How many distinct playlist clips to prefetch (whole clips, for offline playback).
         private const val VIDEO_PREFETCH_MAX_ITEMS = 64
-        // How long a bridge "clear" waits before executing: the setPlaylist of
-        // the next scene arrives within the same switch and cancels it, so the
-        // last frame stays on screen instead of dropping to black.
-        private const val CLEAR_HANDOVER_GRACE_MS = 350L
+        // Cache-only playback: when a scene arrives with nothing cached, the
+        // first clip downloads at full speed and playback starts when it lands;
+        // on failure (network down) the download retries this often.
+        private const val PRIORITY_CLIP_RETRY_MS = 15_000L
+        // Next-scene precache (the page announces upcoming clips): make sure a
+        // couple of clips are cached before the switch — never the whole list,
+        // category playlists can hold hundreds. Rate sits between the 32KB/s
+        // trickle and full speed so the radio stream survives on weak links.
+        private const val PRECACHE_CLIPS_PER_SCENE = 2
+        private const val PRECACHE_MAX_BYTES_PER_SECOND = 128L * 1024L
+        private const val PRECACHE_MAX_SOURCES = 200
+        // A scene switch delivers "clear" (old scene unmounting) immediately
+        // followed by "setPlaylist" (new scene mounting) from the same page
+        // commit. Deferring the teardown this briefly lets that setPlaylist
+        // cancel it and take over the live pipeline (seamless video→video).
+        // If nothing follows — the next scene has no video — the teardown runs
+        // moments later, invisible behind the already-opaque page.
+        private const val CLEAR_COALESCE_MS = 150L
         private const val PLAYBACK_GUARD_CHECK_INTERVAL_MS = 3000L
         // Watchdog for a decoder that never emits the first frame — without it
         // a pre-first-frame stall left the screen black forever (the regular
         // guard deliberately skips the waitingForFirstFrame phase).
         private const val FIRST_FRAME_STALL_TIMEOUT_MS = 8000L
-        // After a "sceneEnding" hint a finished clip freezes on its last frame
-        // instead of restarting; if the promised scene switch never comes, the
-        // rotation resumes after this long.
-        private const val SCENE_ENDING_HOLD_MAX_MS = 12_000L
+        // Prefer the real rendered-frame callback. A few old hardware decoders
+        // never emit it, so use READY only as a delayed fallback after giving
+        // the SurfaceView time to receive a frame.
+        private const val FIRST_FRAME_READY_FALLBACK_MS = 750L
         private const val PLAYBACK_GUARD_STALL_TIMEOUT_MS = 12000L
+        // The pipeline plays hidden until its first rendered frame (old
+        // decoders emit no frame while paused). If the reveal got delayed and
+        // the clip drifted past this, realign to zero so viewers never see a
+        // clip start from its middle.
+        private const val REVEAL_REALIGN_THRESHOLD_MS = 500L
         private const val PLAYBACK_GUARD_RECOVERY_COOLDOWN_MS = 2500L
         private const val PLAYBACK_PROGRESS_EPSILON_MS = 250L
 
@@ -352,10 +374,6 @@ class VisualizerActivity : Activity() {
     private lateinit var rootLayout: FrameLayout
     private lateinit var videoLayer: FrameLayout
     private lateinit var videoPlayerView: PlayerView
-    // Snapshot of the last video frame, shown while the player re-prepares:
-    // keepContentOnPlayerReset only works with TextureView, and on Amlogic
-    // the SurfaceView goes black the moment the codec is released.
-    private lateinit var handoverFrameView: ImageView
     private lateinit var dimOverlayView: View
     private lateinit var transitionOverlayView: View
     private lateinit var webView: WebView
@@ -369,24 +387,23 @@ class VisualizerActivity : Activity() {
     private var currentIndex: Int = -1
     private var currentOwnerId: String? = null
     private var currentPlaylistKey: String = ""
+    private var currentPlaybackMode = PlaybackMode.RANDOM
     private var currentDimAlpha: Float = 0f
     private var currentPlacement: VideoPlacement? = null
     private var cachedSceneViewportRect: RectF? = null
-    private var transitionMs: Int = 0
-    private var isTransitionRunning = false
     private var waitingForFirstFrame = false
+    private var firstFrameWaitToken = 0L
     private var pendingRevealAfterTransform = false
-    private var suppressWaitingBlackout = false
-    private var pendingClearRunnable: Runnable? = null
-    // Prewarmed playlist plays only until its first frame, then pauses and
-    // seeks back to 0 (old Amlogic decoders emit no frame while paused, so a
-    // paused prepare never reported readiness). Playback resumes when the real
-    // setPlaylist of the visible scene arrives, so scenes timed to clip
-    // durations don't lose their opening seconds.
-    private var awaitingPrewarmActivation = false
     private var firstFrameWaitStartedAtMs = 0L
-    private var sceneEndingHold = false
-    private var sceneEndingHoldSetAtMs = 0L
+    private var realignedAtReveal = false
+    private var pendingClearRunnable: Runnable? = null
+    // Cache-only playback: true while the current playlist has no fully cached
+    // clip yet — the video layer stays hidden, the page renders the scene
+    // opaquely, and the first clip is being downloaded with priority.
+    private var awaitingFirstCachedClip = false
+    // Quiet first-frame wait: the video joins a scene already on screen, so
+    // the page keeps its normal background instead of the black shutter.
+    private var suppressWaitingBlackout = false
     private val closeTapSlop by lazy { ViewConfiguration.get(this).scaledTouchSlop.toFloat() }
     private var closeTapDownX: Float = 0f
     private var closeTapDownY: Float = 0f
@@ -398,6 +415,8 @@ class VisualizerActivity : Activity() {
     private var lastRecoveryAttemptRealtimeMs: Long = 0L
     private lateinit var playbackCacheDataSourceFactory: CacheDataSource.Factory
     private lateinit var prefetchCacheDataSourceFactory: CacheDataSource.Factory
+    private lateinit var precacheCacheDataSourceFactory: CacheDataSource.Factory
+    private var lastPrecacheKey: String = ""
     private val mediaPrefetchPermit = Semaphore(1, true)
     private val prefetchExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private var prefetchFuture: Future<*>? = null
@@ -407,7 +426,6 @@ class VisualizerActivity : Activity() {
     private var activeCacheWriter: CacheWriter? = null
     private lateinit var videoCache: SimpleCache
     private var videoCacheMaxBytes: Long = VIDEO_CACHE_MAX_BYTES
-    private val knownSources = linkedSetOf<String>()
     private lateinit var imageCacheDir: File
     private var imageCacheMaxBytes: Long = IMAGE_CACHE_MAX_BYTES
     private val imageCacheLocks = ConcurrentHashMap<String, Any>()
@@ -538,58 +556,42 @@ class VisualizerActivity : Activity() {
 
                         dropPlayedItems()
                         ensureQueueDepth()
+                        // A loop resets currentPosition to zero. Treat the item
+                        // transition itself as progress so the watchdog does not
+                        // mistake the next loop for a 12-second decoder stall.
+                        markPlaybackProgressIfAdvanced(forceRefresh = true)
 
                         // Keep transitions hard-cut here: visual overlay fade can drift
                         // behind the actual decoder frame switch on some devices.
                     }
 
                     override fun onPlaybackStateChanged(playbackState: Int) {
-                        if (playbackState == Player.STATE_READY && awaitingPrewarmActivation) {
-                            // Park the prewarmed clip at 0 the moment the decoder
-                            // is ready. onRenderedFirstFrame (the other park site)
-                            // never fires on some Amlogic decoders — the unparked
-                            // clip kept playing hidden and the scene then started
-                            // seconds into it.
-                            player?.let {
-                                if (it.playWhenReady) {
-                                    it.pause()
-                                    it.seekTo(0)
-                                }
-                            }
-                        }
                         if (playbackState == Player.STATE_READY && waitingForFirstFrame) {
-                            pendingRevealAfterTransform = true
-                            maybeRevealVideoAfterFirstFrame()
+                            scheduleFirstFrameReadyFallback()
+                        }
+                        // Mid-playback rebuffer = the visible "micro-freeze": the
+                        // clip is not fully cached and the network fell behind.
+                        // Cheap diagnostic, visible via `adb logcat -s VisualizerActivity`.
+                        if (playbackState == Player.STATE_BUFFERING && !waitingForFirstFrame) {
+                            Log.w(
+                                TAG,
+                                "rebuffering at ${player?.currentPosition}ms of ${player?.currentMediaItem?.localConfiguration?.uri}",
+                            )
                         }
                         markPlaybackProgressIfAdvanced()
                         if (playbackState == Player.STATE_ENDED) {
-                            if (sceneEndingHold) {
-                                // The page is about to switch scenes: freeze on
-                                // the last frame instead of visibly restarting.
-                                // Snapshot it — the SurfaceView goes black once
-                                // the next playlist releases the codec.
-                                Log.d(TAG, "clip ended during sceneEnding hold, freezing last frame")
-                                captureHandoverFrame()
-                            } else {
-                                hardCutToNext()
-                            }
+                            hardCutToNext()
                         }
                     }
 
                     override fun onRenderedFirstFrame() {
-                        clearHandoverFrame()
-                        if (awaitingPrewarmActivation) {
-                            player?.apply {
-                                pause()
-                                seekTo(0)
-                            }
-                        }
                         if (waitingForFirstFrame) {
                             pendingRevealAfterTransform = true
                             maybeRevealVideoAfterFirstFrame()
                         } else {
-                            // Last-frame handover path: the layer is already
-                            // visible, just report readiness to the page.
+                            // Layer already visible (e.g. clip rotation):
+                            // still report readiness — older web bundles
+                            // listen for this event.
                             notifyNativeVideoReady(currentOwnerId)
                         }
                     }
@@ -606,9 +608,8 @@ class VisualizerActivity : Activity() {
 
                     override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                         Log.w(TAG, "player error, hard cut fallback: ${error.message}")
-                        waitingForFirstFrame = false
                         transitionOverlayView.alpha = 0f
-                        if (tryPlayRandomCachedFallback()) {
+                        if (tryPlayCachedFallback()) {
                             return
                         }
                         hardCutToNext()
@@ -633,7 +634,7 @@ class VisualizerActivity : Activity() {
         val limitedPrefetchUpstreamFactory = DataSource.Factory {
             BandwidthLimitedDataSource(
                 upstreamFactory.createDataSource(),
-                MEDIA_PREFETCH_MAX_BYTES_PER_SECOND,
+                VIDEO_PREFETCH_MAX_BYTES_PER_SECOND,
             )
         }
         val cacheKeyFactory = CacheKeyFactory { dataSpec ->
@@ -653,6 +654,19 @@ class VisualizerActivity : Activity() {
         prefetchCacheDataSourceFactory = CacheDataSource.Factory()
             .setCache(cache)
             .setUpstreamDataSourceFactory(limitedPrefetchUpstreamFactory)
+            .setCacheKeyFactory(cacheKeyFactory)
+            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+
+        // Next-scene precache: faster than the trickle, gentler than playback.
+        val limitedPrecacheUpstreamFactory = DataSource.Factory {
+            BandwidthLimitedDataSource(
+                upstreamFactory.createDataSource(),
+                PRECACHE_MAX_BYTES_PER_SECOND,
+            )
+        }
+        precacheCacheDataSourceFactory = CacheDataSource.Factory()
+            .setCache(cache)
+            .setUpstreamDataSourceFactory(limitedPrecacheUpstreamFactory)
             .setCacheKeyFactory(cacheKeyFactory)
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
     }
@@ -949,9 +963,6 @@ class VisualizerActivity : Activity() {
             useController = false
             resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
             setShutterBackgroundColor(Color.BLACK)
-            // Keeps the last decoded frame on screen across player.stop() +
-            // new prepare — the video-to-video scene handover relies on it.
-            setKeepContentOnPlayerReset(true)
             alpha = 0f
             addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
                 val newWidth = right - left
@@ -970,11 +981,6 @@ class VisualizerActivity : Activity() {
             }
         }
 
-        handoverFrameView = ImageView(this).apply {
-            scaleType = ImageView.ScaleType.CENTER_CROP
-            visibility = View.GONE
-        }
-
         dimOverlayView = View(this).apply {
             setBackgroundColor(Color.BLACK)
             alpha = 0f
@@ -991,7 +997,6 @@ class VisualizerActivity : Activity() {
         )
 
         videoLayer.addView(videoPlayerView, FrameLayout.LayoutParams(matchParent))
-        videoLayer.addView(handoverFrameView, FrameLayout.LayoutParams(matchParent))
         videoLayer.addView(dimOverlayView, FrameLayout.LayoutParams(matchParent))
         videoLayer.addView(transitionOverlayView, FrameLayout.LayoutParams(matchParent))
 
@@ -1025,7 +1030,14 @@ class VisualizerActivity : Activity() {
 
     private fun syncPageTransparencyForNativeVideo(view: WebView?) {
         val forceBlackBackground = waitingForFirstFrame && !suppressWaitingBlackout
-        view?.evaluateJavascript(
+        // No renderable video yet (nothing cached, or a quiet prepare): the
+        // page must stay opaque and show the scene normally — neither the
+        // transparent video hole nor the black shutter.
+        val suppressVideoLayer = awaitingFirstCachedClip || (waitingForFirstFrame && suppressWaitingBlackout)
+        if (view == null) {
+            return
+        }
+        view.evaluateJavascript(
             """
             (function() {
               try {
@@ -1042,7 +1054,8 @@ class VisualizerActivity : Activity() {
                   (document.documentElement.dataset && document.documentElement.dataset.tunioNativeVideoMode === '1') ||
                   (document.body && document.body.dataset && document.body.dataset.tunioNativeVideoMode === '1');
                 var forceBlack = ${if (forceBlackBackground) "true" else "false"};
-                var shouldBeTransparent = Boolean(hasVideoLayer && nativeMode && !forceBlack);
+                var suppressVideo = ${if (suppressVideoLayer) "true" else "false"};
+                var shouldBeTransparent = Boolean(hasVideoLayer && nativeMode && !forceBlack && !suppressVideo);
 
                 var styleId = '__tunio_native_video_transparency';
                 var style = document.getElementById(styleId);
@@ -1118,16 +1131,13 @@ class VisualizerActivity : Activity() {
 
         when (json.optString("action")) {
             "setPlaylist" -> handleSetPlaylist(json)
+            "precache" -> handlePrecache(json)
             "clear" -> requestClearNativeVideo(json.optString("ownerId"))
             "setMarquee" -> marqueeOverlayController.setMarquee(json)
             "clearMarquee" -> marqueeOverlayController.clearMarquee(json.optString("ownerId"))
-            "sceneEnding" -> {
-                sceneEndingHold = true
-                sceneEndingHoldSetAtMs = SystemClock.elapsedRealtime()
-                trimQueueToCurrentItem()
-            }
             else -> {
-                // no-op
+                // no-op (older/newer web bundles may send unknown actions,
+                // e.g. the retired "sceneEnding" hint)
             }
         }
 
@@ -1136,9 +1146,10 @@ class VisualizerActivity : Activity() {
         syncPageTransparencyForNativeVideo(webView)
     }
 
-    // A "clear" from an unmounting scene must not kill the playlist a newer
-    // scene already owns, and same-owner clears are deferred so the setPlaylist
-    // arriving within the same switch cancels them (last-frame handover).
+    // Owner-guarded and briefly deferred: a late "clear" from an unmounting
+    // outgoing scene must not kill the playlist a newer scene already owns,
+    // and the clear+setPlaylist pair of a video→video switch coalesces into a
+    // pipeline handover instead of a teardown.
     private fun requestClearNativeVideo(ownerId: String?) {
         if (!ownerId.isNullOrEmpty() && currentOwnerId != null && ownerId != currentOwnerId) {
             Log.d(TAG, "clear ignored, owner mismatch: $ownerId != $currentOwnerId")
@@ -1150,7 +1161,7 @@ class VisualizerActivity : Activity() {
             clearNativeVideo()
         }
         pendingClearRunnable = runnable
-        playbackGuardHandler.postDelayed(runnable, CLEAR_HANDOVER_GRACE_MS)
+        playbackGuardHandler.postDelayed(runnable, CLEAR_COALESCE_MS)
     }
 
     private fun cancelPendingClear() {
@@ -1351,7 +1362,7 @@ class VisualizerActivity : Activity() {
                             throttleBackgroundTransfer(
                                 writtenBytes,
                                 transferStartedAtMs,
-                                MEDIA_PREFETCH_MAX_BYTES_PER_SECOND,
+                                IMAGE_PREFETCH_MAX_BYTES_PER_SECOND,
                             )
                         }
                     }
@@ -1474,8 +1485,12 @@ class VisualizerActivity : Activity() {
         }
 
         cancelPendingClear()
-        val prewarm = json.optBoolean("prewarm", false)
-        val nextPlaylistKey = nextPlaylist.joinToString("\u0001")
+        val nextPlaybackMode = if (json.optString("playbackMode") == "ordered") {
+            PlaybackMode.ORDERED
+        } else {
+            PlaybackMode.RANDOM
+        }
+        val nextPlaylistKey = "${nextPlaybackMode.name}\u0000${nextPlaylist.joinToString("\u0001")}"
         val samePlaylist = ownerId == currentOwnerId &&
             nextPlaylistKey == currentPlaylistKey &&
             playlist.isNotEmpty() &&
@@ -1483,117 +1498,289 @@ class VisualizerActivity : Activity() {
 
         // Keep scene transitions enabled; low-performance mode should reduce
         // heavy visual effects (blur/backdrop) but not remove transitions.
-        transitionMs = json.optInt("transitionMs", 0).coerceIn(0, 1200)
         currentDimAlpha = json.optDouble("dimAlpha", 0.0).toFloat().coerceIn(0f, 1f)
-        applyPlacement(json.optJSONObject("rect"), currentDimAlpha)
+        storePlacement(json.optJSONObject("rect"))
         if (samePlaylist) {
             Log.d(TAG, "setPlaylist skipped restart (same owner/playlist), owner=$ownerId")
-            if (!prewarm) {
-                sceneEndingHold = false
-                if (awaitingPrewarmActivation) {
-                    awaitingPrewarmActivation = false
-                    player?.let {
-                        // The park may not have happened (flaky render/ready
-                        // callbacks) — never let the scene start mid-clip.
-                        if (it.currentPosition > 150L) {
-                            Log.w(TAG, "prewarm was not parked (pos=${it.currentPosition}ms), realigning to 0")
-                            it.seekTo(0)
-                        }
-                        it.playWhenReady = true
-                        it.play()
-                    }
-                    markPlaybackProgressIfAdvanced(forceRefresh = true)
-                    Log.d(TAG, "prewarmed playlist activated, owner=$ownerId")
-                }
-            }
+            applyStoredPlacement()
             if (!waitingForFirstFrame) {
                 // While the first frame is still pending, readiness is reported
-                // by the reveal path — reporting here would let the page switch
-                // onto a clip that is playing but not yet parked at 0.
+                // by the reveal path.
                 notifyNativeVideoReady(ownerId)
             }
             return
         }
 
-        val hadVisibleVideo = videoLayer.visibility == View.VISIBLE &&
+        // A live pipeline (video→video scene switch) is handed over to the new
+        // playlist instead of being torn down — same mechanism as clip changes
+        // inside one scene, so there is no black gap.
+        val canHandover = !waitingForFirstFrame &&
+            videoLayer.visibility == View.VISIBLE &&
             videoPlayerView.alpha == 1f &&
             (player?.mediaItemCount ?: 0) > 0
-
-        knownSources.addAll(nextPlaylist)
-        when {
-            prewarm -> hideUntilFirstFrameQuietly()
-            hadVisibleVideo -> keepLastFrameForHandover()
-            else -> hideUntilFirstFrame()
-        }
-        Log.d(TAG, "setPlaylist owner=$ownerId tracks=${nextPlaylist.size} transitionMs=$transitionMs prewarm=$prewarm")
 
         currentOwnerId = ownerId
         playlist = nextPlaylist
         currentPlaylistKey = nextPlaylistKey
-        awaitingPrewarmActivation = prewarm
-        sceneEndingHold = false
+        currentPlaybackMode = nextPlaybackMode
+
+        // Cache-only playback: never stream to the screen. If nothing from
+        // this playlist is on disk yet, keep the page rendering the scene
+        // opaquely, download the first clip with priority and start playback
+        // the moment it lands.
+        val hasCachedClip = playlist.any { hasCachedDataForSource(it) }
+        Log.d(
+            TAG,
+            "setPlaylist owner=$ownerId tracks=${nextPlaylist.size} mode=$nextPlaybackMode " +
+                "handover=$canHandover cached=$hasCachedClip",
+        )
+        if (!hasCachedClip) {
+            awaitingFirstCachedClip = true
+            enterAwaitingCachedState()
+            // Random playlists start from a random clip — otherwise every
+            // cold start would show the same (newest) clip of the category.
+            startPriorityClipDownload(
+                if (currentPlaybackMode == PlaybackMode.RANDOM) playlist.random() else playlist.first(),
+            )
+            return
+        }
+
+        awaitingFirstCachedClip = false
+        applyStoredPlacement()
         refillQueue(avoidCurrent = false)
+        if (canHandover) {
+            handoverToNewPlaylist()
+        } else {
+            hideUntilFirstFrame()
+            startPlaybackPipeline()
+        }
+        scheduleVideoPrefetch(playlist)
+    }
+
+    // No cached clip to show: hide the native layer entirely and let the page
+    // render the scene with its normal background — no transparent hole, no
+    // black shutter — while the priority download fills the cache.
+    private fun enterAwaitingCachedState() {
+        firstFrameWaitToken += 1
+        waitingForFirstFrame = false
+        pendingRevealAfterTransform = false
+        suppressWaitingBlackout = false
+        transitionOverlayView.animate().cancel()
+        transitionOverlayView.alpha = 0f
+        videoPlayerView.alpha = 0f
+        videoLayer.visibility = View.GONE
+        webView.setBackgroundColor(Color.TRANSPARENT)
+        player?.stop()
+        syncPageTransparencyForNativeVideo(webView)
+    }
+
+    // Downloads one clip at full speed (unlike the throttled background
+    // prefetch — this one gates the scene's video) and starts playback once
+    // it is fully cached. Retries while the playlist stays current.
+    private fun startPriorityClipDownload(source: String) {
+        val playlistKeySnapshot = currentPlaylistKey
+        cancelVideoPrefetch()
+        val token = ++prefetchToken
+        Log.i(TAG, "priority caching first clip: $source")
+        prefetchFuture = prefetchExecutor.submit {
+            var success = false
+            var writer: CacheWriter? = null
+            try {
+                val uri = Uri.parse(source)
+                val dataSpec = DataSpec.Builder()
+                    .setUri(uri)
+                    .setKey(buildVideoCacheKey(uri))
+                    .build()
+                val cacheWriter = CacheWriter(
+                    playbackCacheDataSourceFactory.createDataSource(),
+                    dataSpec,
+                    null,
+                    null,
+                )
+                writer = cacheWriter
+                activeCacheWriter = cacheWriter
+                cacheWriter.cache()
+                success = true
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return@submit
+            } catch (error: Throwable) {
+                Log.d(TAG, "Priority clip caching failed for $source: ${error.message}")
+            } finally {
+                if (activeCacheWriter === writer) {
+                    activeCacheWriter = null
+                }
+            }
+            if (token != prefetchToken) {
+                return@submit
+            }
+            runOnUiThread {
+                if (token != prefetchToken || !awaitingFirstCachedClip || currentPlaylistKey != playlistKeySnapshot) {
+                    return@runOnUiThread
+                }
+                if (success && hasCachedDataForSource(source)) {
+                    startPlaybackFromCache()
+                } else {
+                    playbackGuardHandler.postDelayed(
+                        {
+                            if (awaitingFirstCachedClip && currentPlaylistKey == playlistKeySnapshot) {
+                                startPriorityClipDownload(source)
+                            }
+                        },
+                        PRIORITY_CLIP_RETRY_MS,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun startPlaybackFromCache() {
+        Log.i(TAG, "first clip cached, starting playback")
+        awaitingFirstCachedClip = false
+        applyStoredPlacement()
+        refillQueue(avoidCurrent = false)
+        beginQuietFirstFrameWait()
         startPlaybackPipeline()
         scheduleVideoPrefetch(playlist)
     }
 
-    private fun captureHandoverFrame() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+    // The page announces the clips the UPCOMING scene will need. Make sure a
+    // couple of them are fully cached before the switch, so cache-only
+    // playback has something to show immediately. Deliberately never downloads
+    // the whole list — category playlists can hold hundreds of clips; the rest
+    // trickle in via the regular background prefetch across rotations.
+    private fun handlePrecache(json: JSONObject) {
+        if (awaitingFirstCachedClip) {
+            // The full-speed first-clip download owns the link right now.
             return
         }
-        val surfaceView = videoPlayerView.videoSurfaceView as? SurfaceView ?: return
-        val surface = surfaceView.holder.surface
-        if (surface == null || !surface.isValid) {
+        val listJson = json.optJSONArray("sources") ?: return
+        val sources = buildList {
+            for (i in 0 until minOf(listJson.length(), PRECACHE_MAX_SOURCES)) {
+                val item = listJson.optString(i)
+                if (item.isNotBlank()) {
+                    add(item)
+                }
+            }
+        }.distinct()
+        if (sources.isEmpty()) {
             return
         }
-        val width = surfaceView.width
-        val height = surfaceView.height
-        if (width <= 0 || height <= 0) {
+
+        val ordered = json.optString("playbackMode") == "ordered"
+        val requestKey = "${if (ordered) "O" else "R"} ${sources.joinToString("")}"
+        if (requestKey == lastPrecacheKey && prefetchFuture?.isDone == false) {
+            // Same announcement re-sent while the previous run is still going.
             return
         }
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        try {
-            PixelCopy.request(
-                surfaceView,
-                bitmap,
-                { result ->
-                    if (result == PixelCopy.SUCCESS) {
-                        handoverFrameView.setImageBitmap(bitmap)
-                        handoverFrameView.visibility = View.VISIBLE
-                    } else {
-                        Log.d(TAG, "Handover frame capture failed: $result")
+
+        val cachedCount = sources.count { hasCachedDataForSource(it) }
+        val need = PRECACHE_CLIPS_PER_SCENE - cachedCount
+        if (need <= 0) {
+            return
+        }
+        val candidates = (if (ordered) sources else sources.shuffled())
+            .filter { !hasCachedDataForSource(it) }
+            .take(need)
+        if (candidates.isEmpty()) {
+            return
+        }
+
+        Log.i(TAG, "precache: announced=${sources.size} cached=$cachedCount downloading=${candidates.size}")
+        lastPrecacheKey = requestKey
+        cancelVideoPrefetch()
+        val token = ++prefetchToken
+        val resumePlaylist = playlist
+        prefetchFuture = prefetchExecutor.submit {
+            setBackgroundPrefetchPriority()
+            for (source in candidates) {
+                if (Thread.currentThread().isInterrupted || token != prefetchToken) {
+                    return@submit
+                }
+                try {
+                    mediaPrefetchPermit.acquire()
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return@submit
+                }
+                try {
+                    if (token != prefetchToken) {
+                        return@submit
                     }
-                },
-                playbackGuardHandler,
-            )
-        } catch (error: Throwable) {
-            Log.d(TAG, "Handover frame capture failed: ${error.message}")
+                    var writer: CacheWriter? = null
+                    try {
+                        val uri = Uri.parse(source)
+                        val dataSpec = DataSpec.Builder()
+                            .setUri(uri)
+                            .setKey(buildVideoCacheKey(uri))
+                            .build()
+                        val cacheWriter = CacheWriter(
+                            precacheCacheDataSourceFactory.createDataSource(),
+                            dataSpec,
+                            null,
+                            null,
+                        )
+                        writer = cacheWriter
+                        activeCacheWriter = cacheWriter
+                        cacheWriter.cache()
+                        Log.i(TAG, "precache done: $source")
+                    } catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        return@submit
+                    } catch (error: Throwable) {
+                        Log.d(TAG, "precache failed for $source: ${error.message}")
+                    } finally {
+                        if (activeCacheWriter === writer) {
+                            activeCacheWriter = null
+                        }
+                    }
+                } finally {
+                    mediaPrefetchPermit.release()
+                }
+            }
+            // Precache preempted the current scene's trickle — resume it.
+            if (token == prefetchToken && resumePlaylist.isNotEmpty()) {
+                runOnUiThread {
+                    if (token == prefetchToken && playlist == resumePlaylist) {
+                        scheduleVideoPrefetch(playlist)
+                    }
+                }
+            }
         }
     }
 
-    private fun clearHandoverFrame() {
-        if (handoverFrameView.visibility == View.GONE && handoverFrameView.drawable == null) {
+    // Video→video scene switch without tearing the pipeline down: trim the old
+    // queue after the playing item, queue the new scene's first clip and cut to
+    // it. The codec and surface stay alive, so the old clip's last frame holds
+    // on screen until the new clip's first frame renders — no black gap.
+    private fun handoverToNewPlaylist() {
+        val instance = player
+        val firstIndex = nextIndex()
+        val mediaItem = if (firstIndex in playlist.indices) createMediaItemForIndex(firstIndex) else null
+        if (instance == null || mediaItem == null) {
+            hideUntilFirstFrame()
+            startPlaybackPipeline()
             return
         }
-        handoverFrameView.visibility = View.GONE
-        handoverFrameView.setImageDrawable(null)
-    }
 
-    // The queue keeps a follow-up copy for gapless looping, so a clip that
-    // matches the scene duration rolls into the copy and STATE_ENDED never
-    // fires — the sceneEnding hold could not freeze the last frame. Dropping
-    // everything after the playing item lets playback end naturally.
-    private fun trimQueueToCurrentItem() {
-        val instance = player ?: return
-        val currentItemIndex = instance.currentMediaItemIndex
+        val playingItemIndex = instance.currentMediaItemIndex
         val itemCount = instance.mediaItemCount
-        if (itemCount <= currentItemIndex + 1) {
-            return
+        if (itemCount > playingItemIndex + 1) {
+            for (i in playingItemIndex + 1 until itemCount) {
+                mediaIdToPlaylistIndex.remove(instance.getMediaItemAt(i).mediaId)
+            }
+            instance.removeMediaItems(playingItemIndex + 1, itemCount)
         }
-        for (i in currentItemIndex + 1 until itemCount) {
-            mediaIdToPlaylistIndex.remove(instance.getMediaItemAt(i).mediaId)
-        }
-        instance.removeMediaItems(currentItemIndex + 1, itemCount)
+        // The still-playing item's id maps into the REPLACED playlist — drop it
+        // so onMediaItemTransition can't resolve it against the new one.
+        instance.currentMediaItem?.mediaId?.let(mediaIdToPlaylistIndex::remove)
+
+        currentIndex = firstIndex
+        instance.addMediaItem(mediaItem)
+        instance.seekToNextMediaItem()
+        instance.playWhenReady = true
+        instance.play()
+        markPlaybackProgressIfAdvanced(forceRefresh = true)
     }
 
     private fun clearNativeVideo() {
@@ -1608,15 +1795,15 @@ class VisualizerActivity : Activity() {
         currentIndex = -1
         currentOwnerId = null
         currentPlaylistKey = ""
+        currentPlaybackMode = PlaybackMode.RANDOM
         currentPlacement = null
-        clearHandoverFrame()
-        isTransitionRunning = false
+        firstFrameWaitToken += 1
         waitingForFirstFrame = false
         pendingRevealAfterTransform = false
         suppressWaitingBlackout = false
-        awaitingPrewarmActivation = false
+        awaitingFirstCachedClip = false
+        realignedAtReveal = false
         firstFrameWaitStartedAtMs = 0L
-        sceneEndingHold = false
         transitionOverlayView.animate().cancel()
         transitionOverlayView.alpha = 0f
         videoPlayerView.alpha = 0f
@@ -1635,8 +1822,14 @@ class VisualizerActivity : Activity() {
             .filter { it.isNotBlank() }
             .filter { it != activeSource }
             .distinct()
-            .take(VIDEO_PREFETCH_MAX_ITEMS)
             .toList()
+            // The backend returns categories newest-first. Downloading in that
+            // order made the cache — and therefore the cache-only rotation — a
+            // deterministic "top of the list" sample. Shuffling the download
+            // order makes the cache a RANDOM sample of the category, so the
+            // rotation reproduces the web player's random mechanics.
+            .let { if (currentPlaybackMode == PlaybackMode.RANDOM) it.shuffled() else it }
+            .take(VIDEO_PREFETCH_MAX_ITEMS)
 
         cancelVideoPrefetch()
         if (targets.isEmpty() || videoCacheMaxBytes <= 0L) {
@@ -1714,25 +1907,30 @@ class VisualizerActivity : Activity() {
         }
     }
 
-    private fun tryPlayRandomCachedFallback(): Boolean {
+    private fun tryPlayCachedFallback(): Boolean {
         val instance = player ?: return false
+        if (playlist.isEmpty()) {
+            return false
+        }
         val currentMediaId = instance.currentMediaItem?.mediaId.orEmpty()
         if (currentMediaId.startsWith("fallback-")) {
             return false
         }
 
+        val candidateSources = if (currentPlaybackMode == PlaybackMode.ORDERED && currentIndex >= 0) {
+            (1..playlist.size).map { offset -> playlist[(currentIndex + offset) % playlist.size] }
+        } else {
+            playlist.shuffled()
+        }
         val currentSource = playlist.getOrNull(currentIndex)
-        val candidates = knownSources
+        val fallbackSource = candidateSources
             .asSequence()
             .filter { it.isNotBlank() && it != currentSource }
             .filter { hasCachedDataForSource(it) }
-            .toList()
-        if (candidates.isEmpty()) {
-            return false
-        }
-
-        val fallbackSource = candidates[Random.nextInt(candidates.size)]
-        val mediaItem = createFallbackMediaItem(fallbackSource)
+            .firstOrNull()
+            ?: return false
+        val fallbackIndex = playlist.indexOf(fallbackSource)
+        val mediaItem = createFallbackMediaItem(fallbackSource, fallbackIndex)
         Log.w(TAG, "Using cached fallback clip: $fallbackSource")
         instance.stop()
         instance.clearMediaItems()
@@ -1758,8 +1956,11 @@ class VisualizerActivity : Activity() {
         }
     }
 
-    private fun createFallbackMediaItem(source: String): MediaItem {
+    private fun createFallbackMediaItem(source: String, playlistIndex: Int): MediaItem {
         val mediaId = "fallback-${mediaIdSerial++}"
+        if (playlistIndex >= 0) {
+            mediaIdToPlaylistIndex[mediaId] = playlistIndex
+        }
         return MediaItem.Builder()
             .setUri(Uri.parse(source))
             .setMediaId(mediaId)
@@ -1772,14 +1973,33 @@ class VisualizerActivity : Activity() {
             return
         }
 
-        val indices = playlist.indices.toMutableList()
-        indices.shuffle()
-        if (avoidCurrent && currentIndex >= 0 && indices.size > 1 && indices[0] == currentIndex) {
-            val swapAt = indices.indexOfFirst { it != currentIndex }
-            if (swapAt > 0) {
-                val first = indices[0]
-                indices[0] = indices[swapAt]
-                indices[swapAt] = first
+        // Cache-only playback: the rotation only ever includes fully cached
+        // clips. The background prefetch keeps caching the rest; they join
+        // automatically on the next refill.
+        val indices = playlist.indices.filter { hasCachedDataForSource(playlist[it]) }.toMutableList()
+        if (indices.isEmpty()) {
+            return
+        }
+        if (currentPlaybackMode == PlaybackMode.ORDERED) {
+            if (avoidCurrent && currentIndex >= 0 && indices.size > 1) {
+                // Rotate so the queue starts at the first cached index after
+                // the current one, wrapping around.
+                val startPos = indices.indexOfFirst { it > currentIndex }.let { if (it < 0) 0 else it }
+                val rotated = ArrayList<Int>(indices.size)
+                rotated.addAll(indices.subList(startPos, indices.size))
+                rotated.addAll(indices.subList(0, startPos))
+                indices.clear()
+                indices.addAll(rotated)
+            }
+        } else {
+            indices.shuffle()
+            if (avoidCurrent && currentIndex >= 0 && indices.size > 1 && indices[0] == currentIndex) {
+                val swapAt = indices.indexOfFirst { it != currentIndex }
+                if (swapAt > 0) {
+                    val first = indices[0]
+                    indices[0] = indices[swapAt]
+                    indices[swapAt] = first
+                }
             }
         }
         playQueue.addAll(indices)
@@ -1788,9 +2008,6 @@ class VisualizerActivity : Activity() {
     private fun nextIndex(): Int {
         if (playlist.isEmpty()) {
             return -1
-        }
-        if (playlist.size == 1) {
-            return 0
         }
         if (playQueue.isEmpty()) {
             refillQueue(avoidCurrent = true)
@@ -1834,7 +2051,6 @@ class VisualizerActivity : Activity() {
         mediaIdSerial = 0
         transitionOverlayView.animate().cancel()
         transitionOverlayView.alpha = 0f
-        isTransitionRunning = false
 
         val firstIndex = nextIndex()
         if (firstIndex < 0 || firstIndex >= playlist.size) {
@@ -1847,19 +2063,18 @@ class VisualizerActivity : Activity() {
             addMediaItem(firstMediaItem)
             addNextMediaItem()
             prepare()
-            // Prewarm also starts playing: old decoders emit no frame while
-            // paused. onRenderedFirstFrame pauses + seeks back to 0.
             playWhenReady = true
             play()
         }
     }
 
     private fun hideUntilFirstFrame() {
+        firstFrameWaitToken += 1
         waitingForFirstFrame = true
         pendingRevealAfterTransform = false
         suppressWaitingBlackout = false
+        realignedAtReveal = false
         firstFrameWaitStartedAtMs = SystemClock.elapsedRealtime()
-        clearHandoverFrame()
         transitionOverlayView.animate().cancel()
         transitionOverlayView.alpha = 1f
         videoPlayerView.alpha = 0f
@@ -1867,33 +2082,49 @@ class VisualizerActivity : Activity() {
         syncPageTransparencyForNativeVideo(webView)
     }
 
-    // Prewarm: the current scene's opaque page keeps covering the screen, so
-    // the next clip prepares behind it without the cold-start blackout.
-    private fun hideUntilFirstFrameQuietly() {
+    // Quiet variant of hideUntilFirstFrame: the video joins a scene that is
+    // already on screen (its first clip just finished caching), so the page
+    // keeps rendering the scene opaquely instead of blacking out; the video
+    // reveals on its first frame.
+    private fun beginQuietFirstFrameWait() {
+        firstFrameWaitToken += 1
         waitingForFirstFrame = true
         pendingRevealAfterTransform = false
         suppressWaitingBlackout = true
+        realignedAtReveal = false
         firstFrameWaitStartedAtMs = SystemClock.elapsedRealtime()
         transitionOverlayView.animate().cancel()
         transitionOverlayView.alpha = 0f
         videoPlayerView.alpha = 0f
+        syncPageTransparencyForNativeVideo(webView)
     }
 
-    // Video-to-video switch: hold the last decoded frame on screen until the
-    // next clip renders, so there is no black gap. A snapshot overlay does the
-    // holding (unless the sceneEnding hold already captured one) — the
-    // SurfaceView itself goes black when the pipeline restart releases the
-    // codec, regardless of keepContentOnPlayerReset.
-    private fun keepLastFrameForHandover() {
-        waitingForFirstFrame = false
-        pendingRevealAfterTransform = false
-        suppressWaitingBlackout = false
-        if (handoverFrameView.visibility != View.VISIBLE) {
-            captureHandoverFrame()
-        }
-        transitionOverlayView.animate().cancel()
-        transitionOverlayView.alpha = 0f
-        videoPlayerView.alpha = 1f
+    private fun scheduleFirstFrameReadyFallback() {
+        val token = firstFrameWaitToken
+        val ownerId = currentOwnerId
+        playbackGuardHandler.postDelayed(
+            {
+                if (
+                    !waitingForFirstFrame ||
+                    token != firstFrameWaitToken ||
+                    ownerId != currentOwnerId ||
+                    player?.playbackState != Player.STATE_READY
+                ) {
+                    return@postDelayed
+                }
+
+                // This fallback is only for decoders that never emit
+                // onRenderedFirstFrame; realign hidden playback to zero and
+                // reveal the layer.
+                player?.pause()
+                player?.seekTo(0)
+                player?.playWhenReady = true
+                player?.play()
+                pendingRevealAfterTransform = true
+                maybeRevealVideoAfterFirstFrame()
+            },
+            FIRST_FRAME_READY_FALLBACK_MS,
+        )
     }
 
     private fun maybeRevealVideoAfterFirstFrame() {
@@ -1901,6 +2132,18 @@ class VisualizerActivity : Activity() {
             return
         }
         if (!applyVideoCenterCropTransform()) {
+            return
+        }
+        // The clip has been playing hidden while the reveal was blocked (slow
+        // layout / busy WebView). Realign to zero once so the audience never
+        // sees a clip start from its middle; the reveal then happens on the
+        // frame the seek renders.
+        val instance = player
+        if (instance != null && !realignedAtReveal && instance.currentPosition > REVEAL_REALIGN_THRESHOLD_MS) {
+            Log.d(TAG, "reveal realign: clip drifted to ${instance.currentPosition}ms while hidden, seeking to 0")
+            realignedAtReveal = true
+            pendingRevealAfterTransform = false
+            instance.seekTo(0)
             return
         }
         waitingForFirstFrame = false
@@ -1915,7 +2158,13 @@ class VisualizerActivity : Activity() {
     }
 
     private fun ensureQueueDepth() {
-        val targetQueueDepth = if (playlist.size <= 1) 1 else 2
+        if (playlist.isEmpty()) {
+            return
+        }
+        // Keep a following item queued even for a one-clip playlist. Media3 can
+        // then loop gaplessly instead of reaching ENDED and releasing the codec
+        // on every second pass.
+        val targetQueueDepth = 2
         while ((player?.mediaItemCount ?: 0) < targetQueueDepth) {
             if (!addNextMediaItem()) {
                 break
@@ -1941,14 +2190,19 @@ class VisualizerActivity : Activity() {
         if (playlist.isEmpty()) {
             return
         }
-        val index = nextIndex()
+        val instance = player
+        val queuedNextIndex = instance
+            ?.takeIf { it.currentMediaItemIndex + 1 < it.mediaItemCount }
+            ?.getMediaItemAt(instance.currentMediaItemIndex + 1)
+            ?.mediaId
+            ?.let(mediaIdToPlaylistIndex::get)
+        val index = queuedNextIndex ?: nextIndex()
         if (index < 0 || index >= playlist.size) {
             return
         }
 
         transitionOverlayView.animate().cancel()
         transitionOverlayView.alpha = 0f
-        isTransitionRunning = false
         mediaIdToPlaylistIndex.clear()
         mediaIdSerial = 0
         currentIndex = index
@@ -2015,26 +2269,9 @@ class VisualizerActivity : Activity() {
             if (firstFrameWaitStartedAtMs > 0L && waitedMs >= FIRST_FRAME_STALL_TIMEOUT_MS) {
                 Log.w(TAG, "PlaybackGuard: no first frame after ${waitedMs}ms, recovering")
                 firstFrameWaitStartedAtMs = SystemClock.elapsedRealtime()
-                if (awaitingPrewarmActivation) {
-                    instance.playWhenReady = true
-                    instance.play()
-                } else if (!tryPlayRandomCachedFallback()) {
+                if (!tryPlayCachedFallback()) {
                     hardCutToNext()
                 }
-            }
-            return
-        }
-
-        if (awaitingPrewarmActivation) {
-            // Deliberately paused on the first frame until the scene shows.
-            return
-        }
-
-        if (sceneEndingHold && instance.playbackState == Player.STATE_ENDED) {
-            if (SystemClock.elapsedRealtime() - sceneEndingHoldSetAtMs >= SCENE_ENDING_HOLD_MAX_MS) {
-                Log.w(TAG, "sceneEnding hold expired without a scene switch, resuming rotation")
-                sceneEndingHold = false
-                hardCutToNext()
             }
             return
         }
@@ -2046,7 +2283,10 @@ class VisualizerActivity : Activity() {
         val stallDurationMs = if (lastPlaybackProgressRealtimeMs <= 0L) 0L else now - lastPlaybackProgressRealtimeMs
 
         if (!instance.playWhenReady) {
-            recoverPlayback("playWhenReady=false")
+            Log.w(TAG, "PlaybackGuard recovery: playWhenReady=false")
+            instance.playWhenReady = true
+            instance.play()
+            markPlaybackProgressIfAdvanced(forceRefresh = true)
             return
         }
 
@@ -2081,13 +2321,24 @@ class VisualizerActivity : Activity() {
                 hardCutToNext()
                 return
             }
-            Player.STATE_IDLE -> instance.prepare()
+            Player.STATE_IDLE -> {
+                instance.prepare()
+                instance.playWhenReady = true
+                instance.play()
+                markPlaybackProgressIfAdvanced(forceRefresh = true)
+            }
+            Player.STATE_READY,
+            Player.STATE_BUFFERING,
+            -> {
+                // play() cannot heal a stuck decoder in READY/BUFFERING. Rebuild
+                // the pipeline (or use another fully cached clip from this same
+                // scene) so a frozen frame cannot persist forever.
+                if (!tryPlayCachedFallback()) {
+                    hardCutToNext()
+                }
+            }
             else -> Unit
         }
-
-        instance.playWhenReady = true
-        instance.play()
-        markPlaybackProgressIfAdvanced(forceRefresh = true)
     }
 
     // Tells the SPA the current playlist rendered a frame — the player gates
@@ -2117,39 +2368,16 @@ class VisualizerActivity : Activity() {
         )
     }
 
-    private fun runSmartFade() {
-        if (isTransitionRunning || transitionMs <= 0) {
-            return
-        }
-        isTransitionRunning = true
-        val half = (transitionMs / 2).coerceIn(50, 220)
-
-        transitionOverlayView.animate().cancel()
-        transitionOverlayView.alpha = 0f
-        transitionOverlayView.animate()
-            .alpha(1f)
-            .setDuration(half.toLong())
-            .withEndAction {
-                transitionOverlayView.animate()
-                    .alpha(0f)
-                    .setDuration(half.toLong())
-                    .withEndAction {
-                        isTransitionRunning = false
-                    }
-                    .start()
-            }
-            .start()
-    }
-
-    private fun applyPlacement(rect: JSONObject?, dimAlpha: Float) {
-        val placement = VideoPlacement(
+    // Stores the placement without touching the layer: while nothing is cached
+    // the video layer must stay hidden, so showing it is a separate step
+    // (applyStoredPlacement) taken only when playback actually starts.
+    private fun storePlacement(rect: JSONObject?) {
+        currentPlacement = VideoPlacement(
             x = rect?.optDouble("x", 0.0)?.toFloat() ?: 0f,
             y = rect?.optDouble("y", 0.0)?.toFloat() ?: 0f,
             width = rect?.optDouble("width", 100.0)?.toFloat() ?: 100f,
             height = rect?.optDouble("height", 100.0)?.toFloat() ?: 100f,
         )
-        currentPlacement = placement
-        applyPlacement(placement, dimAlpha)
     }
 
     private fun applyStoredPlacement() {
@@ -2161,32 +2389,50 @@ class VisualizerActivity : Activity() {
         rootLayout.post {
             val rootW = rootLayout.width.coerceAtLeast(1)
             val rootH = rootLayout.height.coerceAtLeast(1)
-            val isFullBleed = isPlacementFullBleed(placement)
+            if (isPlacementFullBleed(placement)) {
+                // Full-bleed video needs no page geometry: lay the layer out
+                // immediately. Waiting for the WebView JS roundtrip here used
+                // to gate the first-frame reveal for seconds during scene
+                // switches (the page's JS thread is saturated right then), so
+                // the clip played hidden and appeared mid-clip.
+                applyResolvedPlacement(placement, dimAlpha, null, rootW, rootH)
+                return@post
+            }
             resolveSceneViewportRect { viewport ->
-                val useViewport = !isFullBleed && viewport != null
-                val containerLeft = if (useViewport) viewport!!.left else 0f
-                val containerTop = if (useViewport) viewport!!.top else 0f
-                val containerW = if (useViewport) viewport!!.width().coerceAtLeast(1f) else rootW.toFloat()
-                val containerH = if (useViewport) viewport!!.height().coerceAtLeast(1f) else rootH.toFloat()
-
-                val left = (containerLeft + (containerW * (placement.x / 100f))).roundToInt().coerceAtLeast(0)
-                val top = (containerTop + (containerH * (placement.y / 100f))).roundToInt().coerceAtLeast(0)
-                val w = (containerW * (placement.width / 100f)).roundToInt().coerceAtLeast(1)
-                val h = (containerH * (placement.height / 100f)).roundToInt().coerceAtLeast(1)
-
-                val params = FrameLayout.LayoutParams(w, h).apply {
-                    leftMargin = left
-                    topMargin = top
-                }
-
-                videoLayer.layoutParams = params
-                videoLayer.visibility = View.VISIBLE
-                if (applyVideoCenterCropTransform()) {
-                    maybeRevealVideoAfterFirstFrame()
-                }
-                dimOverlayView.alpha = dimAlpha.coerceIn(0f, 1f)
+                applyResolvedPlacement(placement, dimAlpha, viewport, rootW, rootH)
             }
         }
+    }
+
+    private fun applyResolvedPlacement(
+        placement: VideoPlacement,
+        dimAlpha: Float,
+        viewport: RectF?,
+        rootW: Int,
+        rootH: Int,
+    ) {
+        val useViewport = viewport != null
+        val containerLeft = if (useViewport) viewport!!.left else 0f
+        val containerTop = if (useViewport) viewport!!.top else 0f
+        val containerW = if (useViewport) viewport!!.width().coerceAtLeast(1f) else rootW.toFloat()
+        val containerH = if (useViewport) viewport!!.height().coerceAtLeast(1f) else rootH.toFloat()
+
+        val left = (containerLeft + (containerW * (placement.x / 100f))).roundToInt().coerceAtLeast(0)
+        val top = (containerTop + (containerH * (placement.y / 100f))).roundToInt().coerceAtLeast(0)
+        val w = (containerW * (placement.width / 100f)).roundToInt().coerceAtLeast(1)
+        val h = (containerH * (placement.height / 100f)).roundToInt().coerceAtLeast(1)
+
+        val params = FrameLayout.LayoutParams(w, h).apply {
+            leftMargin = left
+            topMargin = top
+        }
+
+        videoLayer.layoutParams = params
+        videoLayer.visibility = View.VISIBLE
+        if (applyVideoCenterCropTransform()) {
+            maybeRevealVideoAfterFirstFrame()
+        }
+        dimOverlayView.alpha = dimAlpha.coerceIn(0f, 1f)
     }
 
     private fun isPlacementFullBleed(placement: VideoPlacement): Boolean {
@@ -2290,7 +2536,7 @@ class VisualizerActivity : Activity() {
         // The SPA probes this before offloading features to the native layer;
         // older APKs lack the method, so the web falls back to DOM rendering.
         @JavascriptInterface
-        fun getCapabilities(): String = """{"nativeVideo":true,"nativeMarquee":true,"scenePrewarm":true}"""
+        fun getCapabilities(): String = """{"nativeVideo":true,"nativeMarquee":true}"""
 
         @JavascriptInterface
         fun postMessage(payload: String?) {
