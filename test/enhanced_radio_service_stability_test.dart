@@ -80,7 +80,8 @@ void main() {
       // Transient pause blip immediately followed by a non-playing transition
       // state (as happens between stop() and play() while switching sources).
       context.audioService.emitState(
-        const AudioStatePaused(config: liveConfig, position: Duration(seconds: 3)),
+        const AudioStatePaused(
+            config: liveConfig, position: Duration(seconds: 3)),
       );
       context.audioService.emitState(
         const AudioStateLoading(config: liveConfig),
