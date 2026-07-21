@@ -6,6 +6,7 @@
 #include <windows.h>
 
 #include <iostream>
+#include <vector>
 
 void CreateAndAttachConsole() {
   if (::AllocConsole()) {
@@ -18,6 +19,26 @@ void CreateAndAttachConsole() {
     }
     std::ios::sync_with_stdio();
     FlutterDesktopResyncOutputStreams();
+  }
+}
+
+std::wstring GetExecutableDirectory() {
+  std::vector<wchar_t> buffer(MAX_PATH);
+
+  while (true) {
+    const DWORD length = ::GetModuleFileNameW(
+        nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    if (length == 0) {
+      return std::wstring();
+    }
+    if (static_cast<size_t>(length) < buffer.size()) {
+      const std::wstring executable_path(buffer.data(), length);
+      const size_t separator = executable_path.find_last_of(L"\\/");
+      return separator == std::wstring::npos
+                 ? std::wstring()
+                 : executable_path.substr(0, separator);
+    }
+    buffer.resize(buffer.size() * 2);
   }
 }
 

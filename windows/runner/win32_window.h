@@ -39,6 +39,9 @@ class Win32Window {
   // Show the current window. Returns true if the window was successfully shown.
   bool Show();
 
+  // Controls how the window is shown when the first Flutter frame is ready.
+  void SetShowCommand(int show_command);
+
   // Release OS resources associated with window.
   void Destroy();
 
@@ -91,6 +94,8 @@ class Win32Window {
   static void UpdateTheme(HWND const window);
 
   bool quit_on_close_ = false;
+
+  int show_command_ = SW_SHOWNORMAL;
 
   // window handle for top level window.
   HWND window_handle_ = nullptr;
