@@ -869,7 +869,9 @@ class _HomeScreenState extends State<HomeScreen> {
         _showError('WebView2 Runtime is required for the visualizer');
         return;
       }
-      Logger.info(
+      // warning-level so it lands in the default (non-verbose) log — this is
+      // the last line before the crash-prone native initialize() call.
+      Logger.warning(
           'Windows visualizer: WebView2 $webViewVersion, initializing controller',
           'visualizer');
 

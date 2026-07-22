@@ -73,11 +73,17 @@ void main() {
 /// Opens the persistent log file under the platform app-support directory
 /// (Windows: %APPDATA%\Tunio AI\Tunio Spot\logs\tunio.log). Never throws.
 Future<void> _initializeCrashLogging() async {
+  // Verbose persists the full debug/info stream to disk; default keeps only
+  // warnings/errors so we don't hammer the filesystem. Toggle at runtime with
+  // TUNIO_VERBOSE=1 or at build time with --dart-define=VERBOSE_LOG=true.
+  const verboseCompiled = bool.fromEnvironment('VERBOSE_LOG');
+  final envVerbose = Platform.environment['TUNIO_VERBOSE'] == '1';
+  final verbose = verboseCompiled || envVerbose;
   try {
     final supportDir = await getApplicationSupportDirectory();
     await Logger.initializeFileLogging(
-        '${supportDir.path}${Platform.pathSeparator}logs');
-    Logger.info('Log file: ${Logger.logFilePath}', 'startup');
+        '${supportDir.path}${Platform.pathSeparator}logs', verbose: verbose);
+    Logger.info('Log: ${Logger.logFilePath} verbose=$verbose', 'startup');
   } catch (e) {
     // ignore: avoid_print
     print('Failed to initialize crash logging: $e');

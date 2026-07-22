@@ -17,13 +17,21 @@ class Logger {
   static RandomAccessFile? _logHandle;
   static String? _logFilePath;
 
+  // By default only warnings/errors reach the file — enough for crash
+  // forensics without hammering the filesystem with the debug/info stream.
+  // Verbose mode persists every level (opt-in via TUNIO_VERBOSE / --dart-define).
+  static bool _persistAllLevels = false;
+
   /// Absolute path of the current log file, or null before file logging is
   /// initialized. Surface this so the user knows what to send.
   static String? get logFilePath => _logFilePath;
 
-  /// Opens (and size-rotates) the log file under [directoryPath]. Safe to call
+  /// Opens (and size-rotates) the log file under [directoryPath]. When
+  /// [verbose] is false only warnings/errors are written to disk. Safe to call
   /// once at startup; never throws — logging must not break app launch.
-  static Future<void> initializeFileLogging(String directoryPath) async {
+  static Future<void> initializeFileLogging(String directoryPath,
+      {bool verbose = false}) async {
+    _persistAllLevels = verbose;
     try {
       final dir = Directory(directoryPath);
       if (!dir.existsSync()) {
@@ -96,8 +104,13 @@ class Logger {
     final tagStr = tag != null ? '[$tag] ' : '';
     final formattedMessage = '$timestamp $levelStr $tagStr$message';
 
-    // Persist every level to the on-disk log regardless of the stdout filter.
-    _writeLine(formattedMessage);
+    // Persist warnings/errors always; the noisy debug/info stream only in
+    // verbose mode, so a packaged build does not write to disk continuously.
+    if (_persistAllLevels ||
+        level == LogLevel.warning ||
+        level == LogLevel.error) {
+      _writeLine(formattedMessage);
+    }
 
     // Output to both developer.log and print for Flutter debug console
     switch (level) {
