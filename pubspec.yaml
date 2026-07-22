@@ -22,6 +22,7 @@ dependencies:
   webview_flutter: ^4.7.0
   webview_flutter_android: ^3.16.0
   webview_flutter_wkwebview: ^3.23.0
+  webview_windows: ^0.4.0
   path_provider: ^2.1.4
   package_info_plus: ^8.0.2
   device_info_plus: ^10.1.2

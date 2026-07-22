@@ -9,6 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 import 'package:webview_flutter_wkwebview/webview_flutter_wkwebview.dart';
+import 'package:webview_windows/webview_windows.dart' as ww;
 
 import '../core/dependency_injection.dart';
 import '../core/service_locator.dart';
@@ -77,6 +78,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   bool _isVisualizerVisible = false;
   WebViewController? _visualizerController;
+  ww.WebviewController? _windowsVisualizerController;
+  StreamSubscription<ww.LoadingState>? _windowsLoadingSubscription;
   String? _loadedVisualizerUrl;
   bool _visualizerReady = false;
   bool _hasAutoOpenedVisualizer = false;
@@ -177,6 +180,10 @@ class _HomeScreenState extends State<HomeScreen> {
     _visualizerButtonFocusNode.dispose();
     _visualizerCloseButtonFocusNode.dispose();
     _visualizerController = null;
+    _windowsLoadingSubscription?.cancel();
+    _windowsLoadingSubscription = null;
+    _windowsVisualizerController?.dispose();
+    _windowsVisualizerController = null;
     _visualizerHeartbeatTimer?.cancel();
     _visualizerHeartbeatTimer = null;
     _updateAvailabilityTimer?.cancel();
@@ -187,6 +194,8 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   bool get _isAndroid => defaultTargetPlatform == TargetPlatform.android;
+
+  bool get _isWindows => defaultTargetPlatform == TargetPlatform.windows;
 
   void _setupFocusNodes() {
     _codeFocusNode.addListener(() => setState(() {}));
@@ -331,6 +340,10 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     _isVisualizerVisible = false;
     _visualizerController = null;
+    _windowsLoadingSubscription?.cancel();
+    _windowsLoadingSubscription = null;
+    _windowsVisualizerController?.dispose();
+    _windowsVisualizerController = null;
     _loadedVisualizerUrl = null;
     _currentVisualizerUrl = null;
     _visualizerReady = false;
@@ -548,8 +561,10 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildVisualizerOverlay() {
-    final controller = _visualizerController;
-    if (controller == null) {
+    final hasContent = _isWindows
+        ? _windowsVisualizerController != null
+        : _visualizerController != null;
+    if (!hasContent) {
       return const SizedBox.shrink();
     }
 
@@ -586,7 +601,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: Stack(
                   children: [
                     Positioned.fill(
-                      child: _buildVisualizerWebView(controller),
+                      child: _buildVisualizerWebView(),
                     ),
                     Positioned(
                       bottom: 32,
@@ -603,7 +618,20 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildVisualizerWebView(WebViewController controller) {
+  Widget _buildVisualizerWebView() {
+    if (_isWindows) {
+      final windowsController = _windowsVisualizerController;
+      if (windowsController == null) {
+        return const SizedBox.shrink();
+      }
+      return ww.Webview(windowsController);
+    }
+
+    final controller = _visualizerController;
+    if (controller == null) {
+      return const SizedBox.shrink();
+    }
+
     if (defaultTargetPlatform == TargetPlatform.android) {
       final params = PlatformWebViewWidgetCreationParams(
         controller: controller.platform,
@@ -738,6 +766,11 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
+    if (_isWindows) {
+      await _openWindowsVisualizer(targetUri, url);
+      return;
+    }
+
     final needsNewController = _visualizerController == null ||
         _loadedVisualizerUrl != targetUri.toString();
 
@@ -788,6 +821,64 @@ class _HomeScreenState extends State<HomeScreen> {
       });
     } catch (e) {
       Logger.error('HomeScreen: Failed to open native visualizer: $e');
+      _showError('Failed to open visualizer');
+    }
+  }
+
+  Future<void> _openWindowsVisualizer(Uri targetUri, String originalUrl) async {
+    final needsNewController = _windowsVisualizerController == null ||
+        _loadedVisualizerUrl != targetUri.toString();
+
+    if (!needsNewController) {
+      setState(() {
+        _isVisualizerVisible = true;
+      });
+      _startVisualizerHeartbeat(forceRestart: true);
+      _focusVisualizerCloseButton();
+      _scheduleVisualizerUpdate();
+      return;
+    }
+
+    _stopVisualizerHeartbeat();
+    await _windowsLoadingSubscription?.cancel();
+    _windowsLoadingSubscription = null;
+    await _windowsVisualizerController?.dispose();
+    _windowsVisualizerController = null;
+
+    try {
+      final controller = ww.WebviewController();
+      await controller.initialize();
+      await controller.setBackgroundColor(Colors.transparent);
+      await controller
+          .setPopupWindowPolicy(ww.WebviewPopupWindowPolicy.deny);
+
+      _windowsLoadingSubscription = controller.loadingState.listen((state) {
+        if (state == ww.LoadingState.navigationCompleted) {
+          _visualizerReady = true;
+          _postVisualizerUpdate();
+          _startVisualizerHeartbeat(forceRestart: true);
+        }
+      });
+
+      await controller.loadUrl(targetUri.toString());
+
+      if (!mounted) {
+        await controller.dispose();
+        return;
+      }
+
+      setState(() {
+        _windowsVisualizerController = controller;
+        _loadedVisualizerUrl = targetUri.toString();
+        _currentVisualizerUrl = originalUrl;
+        _isVisualizerVisible = true;
+        _visualizerReady = false;
+      });
+
+      _focusVisualizerCloseButton();
+      _scheduleVisualizerUpdate();
+    } catch (e) {
+      Logger.error('HomeScreen: Failed to open Windows visualizer: $e');
       _showError('Failed to open visualizer');
     }
   }
@@ -886,8 +977,13 @@ class _HomeScreenState extends State<HomeScreen> {
     if (!_isVisualizerVisible || !_visualizerReady) {
       return;
     }
-    if (!_isAndroid && _visualizerController == null) {
-      return;
+    if (!_isAndroid) {
+      final hasController = _isWindows
+          ? _windowsVisualizerController != null
+          : _visualizerController != null;
+      if (!hasController) {
+        return;
+      }
     }
     if (!forceRestart && _visualizerHeartbeatTimer?.isActive == true) {
       return;
@@ -934,8 +1030,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _postVisualizerUpdate() async {
     if (!_visualizerReady) return;
-    final controller = _visualizerController;
-    if (controller == null) return;
 
     final payload = _buildVisualizerPayload();
     if (payload == null) return;
@@ -945,6 +1039,20 @@ class _HomeScreenState extends State<HomeScreen> {
       'payload': payload,
     });
     final script = 'window.postMessage($message, "*");';
+
+    if (_isWindows) {
+      final controller = _windowsVisualizerController;
+      if (controller == null) return;
+      try {
+        await controller.executeScript(script);
+      } catch (e) {
+        Logger.error('HomeScreen: Failed to send visualizer update: $e');
+      }
+      return;
+    }
+
+    final controller = _visualizerController;
+    if (controller == null) return;
 
     try {
       if (_isAndroid) {
