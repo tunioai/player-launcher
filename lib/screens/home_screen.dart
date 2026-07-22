@@ -80,6 +80,7 @@ class _HomeScreenState extends State<HomeScreen> {
   WebViewController? _visualizerController;
   ww.WebviewController? _windowsVisualizerController;
   StreamSubscription<ww.LoadingState>? _windowsLoadingSubscription;
+  bool _windowsVisualizerOpening = false;
   String? _loadedVisualizerUrl;
   bool _visualizerReady = false;
   bool _hasAutoOpenedVisualizer = false;
@@ -340,10 +341,20 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     _isVisualizerVisible = false;
     _visualizerController = null;
-    _windowsLoadingSubscription?.cancel();
-    _windowsLoadingSubscription = null;
-    _windowsVisualizerController?.dispose();
+    // Detach the Windows controller synchronously, but dispose it after the
+    // current frame: destroying the native WebView2 while its Webview widget is
+    // still mounted can crash. Nulling the field first stops the overlay from
+    // rebuilding with it.
+    final oldWindowsController = _windowsVisualizerController;
+    final oldWindowsSub = _windowsLoadingSubscription;
     _windowsVisualizerController = null;
+    _windowsLoadingSubscription = null;
+    if (oldWindowsController != null || oldWindowsSub != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        await oldWindowsSub?.cancel();
+        await oldWindowsController?.dispose();
+      });
+    }
     _loadedVisualizerUrl = null;
     _currentVisualizerUrl = null;
     _visualizerReady = false;
@@ -826,6 +837,10 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _openWindowsVisualizer(Uri targetUri, String originalUrl) async {
+    if (_windowsVisualizerOpening) {
+      return;
+    }
+
     final needsNewController = _windowsVisualizerController == null ||
         _loadedVisualizerUrl != targetUri.toString();
 
@@ -839,13 +854,27 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    _stopVisualizerHeartbeat();
-    await _windowsLoadingSubscription?.cancel();
-    _windowsLoadingSubscription = null;
-    await _windowsVisualizerController?.dispose();
-    _windowsVisualizerController = null;
-
+    _windowsVisualizerOpening = true;
     try {
+      // WebView2 must be present before touching WebviewController: calling
+      // initialize() without the runtime crashes the process natively (not a
+      // catchable Dart exception). getWebViewVersion() safely returns null when
+      // the runtime is missing, so we bail out with a message instead.
+      final webViewVersion = await ww.WebviewController.getWebViewVersion();
+      if (!mounted) return;
+      if (webViewVersion == null) {
+        Logger.error(
+            'HomeScreen: WebView2 Runtime is not installed — visualizer unavailable');
+        _showError('WebView2 Runtime is required for the visualizer');
+        return;
+      }
+
+      _stopVisualizerHeartbeat();
+      await _windowsLoadingSubscription?.cancel();
+      _windowsLoadingSubscription = null;
+      await _windowsVisualizerController?.dispose();
+      _windowsVisualizerController = null;
+
       final controller = ww.WebviewController();
       await controller.initialize();
       await controller.setBackgroundColor(Colors.transparent);
@@ -879,6 +908,8 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (e) {
       Logger.error('HomeScreen: Failed to open Windows visualizer: $e');
       _showError('Failed to open visualizer');
+    } finally {
+      _windowsVisualizerOpening = false;
     }
   }
 
