@@ -82,7 +82,8 @@ Future<void> _initializeCrashLogging() async {
   try {
     final supportDir = await getApplicationSupportDirectory();
     await Logger.initializeFileLogging(
-        '${supportDir.path}${Platform.pathSeparator}logs', verbose: verbose);
+        '${supportDir.path}${Platform.pathSeparator}logs',
+        verbose: verbose);
     Logger.info('Log: ${Logger.logFilePath} verbose=$verbose', 'startup');
   } catch (e) {
     // ignore: avoid_print

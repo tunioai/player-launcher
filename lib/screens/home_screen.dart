@@ -885,8 +885,7 @@ class _HomeScreenState extends State<HomeScreen> {
       await controller.initialize();
       await controller.setBackgroundColor(Colors.transparent);
       await controller.setPopupWindowPolicy(ww.WebviewPopupWindowPolicy.deny);
-      Logger.info(
-          'Windows visualizer: controller ready, loading $targetUri',
+      Logger.info('Windows visualizer: controller ready, loading $targetUri',
           'visualizer');
 
       _windowsLoadingSubscription = controller.loadingState.listen((state) {
