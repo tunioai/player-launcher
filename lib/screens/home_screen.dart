@@ -849,8 +849,7 @@ class _HomeScreenState extends State<HomeScreen> {
       final controller = ww.WebviewController();
       await controller.initialize();
       await controller.setBackgroundColor(Colors.transparent);
-      await controller
-          .setPopupWindowPolicy(ww.WebviewPopupWindowPolicy.deny);
+      await controller.setPopupWindowPolicy(ww.WebviewPopupWindowPolicy.deny);
 
       _windowsLoadingSubscription = controller.loadingState.listen((state) {
         if (state == ww.LoadingState.navigationCompleted) {
