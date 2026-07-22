@@ -860,6 +860,7 @@ class _HomeScreenState extends State<HomeScreen> {
       // initialize() without the runtime crashes the process natively (not a
       // catchable Dart exception). getWebViewVersion() safely returns null when
       // the runtime is missing, so we bail out with a message instead.
+      Logger.info('Windows visualizer: probing WebView2 runtime', 'visualizer');
       final webViewVersion = await ww.WebviewController.getWebViewVersion();
       if (!mounted) return;
       if (webViewVersion == null) {
@@ -868,6 +869,9 @@ class _HomeScreenState extends State<HomeScreen> {
         _showError('WebView2 Runtime is required for the visualizer');
         return;
       }
+      Logger.info(
+          'Windows visualizer: WebView2 $webViewVersion, initializing controller',
+          'visualizer');
 
       _stopVisualizerHeartbeat();
       await _windowsLoadingSubscription?.cancel();
@@ -879,6 +883,9 @@ class _HomeScreenState extends State<HomeScreen> {
       await controller.initialize();
       await controller.setBackgroundColor(Colors.transparent);
       await controller.setPopupWindowPolicy(ww.WebviewPopupWindowPolicy.deny);
+      Logger.info(
+          'Windows visualizer: controller ready, loading $targetUri',
+          'visualizer');
 
       _windowsLoadingSubscription = controller.loadingState.listen((state) {
         if (state == ww.LoadingState.navigationCompleted) {
