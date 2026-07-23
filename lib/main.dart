@@ -7,6 +7,7 @@ import 'package:just_audio_background/just_audio_background.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'core/service_locator.dart';
+import 'services/desktop_lifecycle_service.dart';
 import 'services/storage_service.dart';
 import 'utils/platform_info.dart';
 
@@ -14,7 +15,7 @@ import 'screens/home_screen.dart';
 import 'utils/logger.dart';
 import 'utils/insecure_http_overrides.dart';
 
-void main() {
+void main(List<String> arguments) {
   // Run everything inside a guarded zone so uncaught async errors land in the
   // on-disk log instead of vanishing. Native crashes (e.g. WebView2) still kill
   // the process, but the log keeps the last lines written right before them.
@@ -34,6 +35,12 @@ void main() {
       Logger.error('Uncaught async error', 'crash', error, stack);
       return true;
     };
+
+    if (DesktopLifecycleService.isSupported) {
+      await DesktopLifecycleService.instance.initialize(
+        startHidden: arguments.contains('--minimized'),
+      );
+    }
 
     // Foreground media service (Android only): keeps the app process alive
     // while a playback session is active, so background failover keeps running

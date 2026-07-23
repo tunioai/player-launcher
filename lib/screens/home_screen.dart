@@ -22,6 +22,7 @@ import '../services/failover_service.dart';
 import '../services/autostart_service.dart';
 import '../services/app_update_service.dart';
 import '../widgets/code_input_widget.dart';
+import '../widgets/settings_dialog.dart';
 import '../widgets/status_indicator.dart';
 import '../utils/logger.dart';
 import '../utils/platform_info.dart';
@@ -61,6 +62,7 @@ class _HomeScreenState extends State<HomeScreen> {
   final FocusNode _connectButtonFocusNode = FocusNode();
   final FocusNode _playButtonFocusNode = FocusNode();
   final FocusNode _themeButtonFocusNode = FocusNode();
+  final FocusNode _settingsButtonFocusNode = FocusNode();
   final FocusNode _updateButtonFocusNode = FocusNode();
   final FocusNode _visualizerButtonFocusNode = FocusNode();
   final FocusNode _visualizerCloseButtonFocusNode = FocusNode();
@@ -177,6 +179,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _connectButtonFocusNode.dispose();
     _playButtonFocusNode.dispose();
     _themeButtonFocusNode.dispose();
+    _settingsButtonFocusNode.dispose();
     _updateButtonFocusNode.dispose();
     _visualizerButtonFocusNode.dispose();
     _visualizerCloseButtonFocusNode.dispose();
@@ -195,6 +198,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   bool get _isAndroid => defaultTargetPlatform == TargetPlatform.android;
+  bool get _isDesktop =>
+      defaultTargetPlatform == TargetPlatform.windows ||
+      defaultTargetPlatform == TargetPlatform.macOS;
 
   bool get _isWindows => defaultTargetPlatform == TargetPlatform.windows;
 
@@ -203,6 +209,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _connectButtonFocusNode.addListener(() => setState(() {}));
     _playButtonFocusNode.addListener(() => setState(() {}));
     _themeButtonFocusNode.addListener(() => setState(() {}));
+    _settingsButtonFocusNode.addListener(() => setState(() {}));
     _updateButtonFocusNode.addListener(() => setState(() {}));
     _visualizerButtonFocusNode.addListener(() => setState(() {}));
     _visualizerCloseButtonFocusNode.addListener(() => setState(() {}));
@@ -615,8 +622,8 @@ class _HomeScreenState extends State<HomeScreen> {
                       child: _buildVisualizerWebView(),
                     ),
                     Positioned(
-                      bottom: 32,
-                      right: 32,
+                      bottom: 12,
+                      right: 12,
                       child: _buildVisualizerCloseButton(),
                     ),
                   ],
@@ -674,16 +681,16 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         child: RawMaterialButton(
           onPressed: _closeVisualizer,
-          constraints: const BoxConstraints.tightFor(width: 44, height: 44),
+          constraints: const BoxConstraints.tightFor(width: 32, height: 32),
           shape: const CircleBorder(),
-          fillColor: Colors.black.withValues(alpha: 0.10),
+          fillColor: Colors.black.withValues(alpha: hasFocus ? 0.08 : 0.04),
           elevation: 0,
           child: Icon(
             Icons.close,
-            size: 18,
+            size: 14,
             color: hasFocus
-                ? Colors.white.withValues(alpha: 0.5)
-                : Colors.white.withValues(alpha: 0.3),
+                ? Colors.white.withValues(alpha: 0.38)
+                : Colors.white.withValues(alpha: 0.22),
           ),
         ),
       ),
@@ -1201,6 +1208,13 @@ class _HomeScreenState extends State<HomeScreen> {
         : 'Switch to dark theme';
   }
 
+  Future<void> _openSettings() {
+    return showDialog<void>(
+      context: context,
+      builder: (_) => const SettingsDialog(),
+    );
+  }
+
   IconData _getPlayPauseIcon() {
     final audioState = _getAudioState();
     if (audioState?.isPlaying ?? false) {
@@ -1378,6 +1392,26 @@ class _HomeScreenState extends State<HomeScreen> {
                                 ],
                               ),
                         tooltip: _updateStatusText ?? 'Check updates',
+                      ),
+                    ),
+                  ),
+                if (_isDesktop)
+                  Focus(
+                    focusNode: _settingsButtonFocusNode,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        border: Border.all(
+                          color: _settingsButtonFocusNode.hasFocus
+                              ? TunioColors.primary
+                              : Colors.transparent,
+                          width: 2,
+                        ),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: IconButton(
+                        onPressed: _openSettings,
+                        icon: const Icon(Icons.settings),
+                        tooltip: 'Settings',
                       ),
                     ),
                   ),
