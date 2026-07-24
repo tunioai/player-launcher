@@ -175,6 +175,19 @@ class _TunioAppState extends State<TunioApp> with WidgetsBindingObserver {
       themeMode: _themeMode,
       theme: _buildLightTheme(),
       darkTheme: _buildDarkTheme(),
+      // On Android TV switch to D-pad (directional) navigation for the whole
+      // app. Without it MediaQuery.navigationMode stays "traditional", so the
+      // PIN field never autofocuses and the on-screen keyboard is never forced
+      // open — leaving remote-only users unable to enter their code.
+      builder: (context, child) {
+        if (child == null) return const SizedBox.shrink();
+        if (!PlatformInfo.isTv) return child;
+        final media = MediaQuery.of(context);
+        return MediaQuery(
+          data: media.copyWith(navigationMode: NavigationMode.directional),
+          child: child,
+        );
+      },
       home: HomeScreen(
         onThemeToggle: _toggleTheme,
         themeMode: _themeMode,
