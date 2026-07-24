@@ -10,6 +10,7 @@ import 'logger.dart';
 
 class PlatformInfo {
   static PackageInfo? _packageInfo;
+  static bool _isTv = false;
   static String? _deviceId;
   static String? _deviceModel;
   static String? _deviceUuid;
@@ -47,10 +48,18 @@ class PlatformInfo {
           final androidInfo = await deviceInfo.androidInfo;
           _deviceId = androidInfo.id;
           _deviceModel = '${androidInfo.manufacturer}_${androidInfo.model}';
+          // Android TV boxes/sticks report these device features; phones don't.
+          // Used to switch the UI into D-pad (directional) navigation so the PIN
+          // field can be focused and the on-screen keyboard opened with a remote.
+          _isTv = androidInfo.systemFeatures
+                  .contains('android.software.leanback') ||
+              androidInfo.systemFeatures
+                  .contains('android.hardware.type.television');
           final shortId = _deviceId != null && _deviceId!.length >= 8
               ? _deviceId!.substring(0, 8)
               : _deviceId;
-          Logger.info('Device initialized: $_deviceModel (ID: $shortId...)');
+          Logger.info(
+              'Device initialized: $_deviceModel (ID: $shortId..., tv: $_isTv)');
           break;
 
         case 'ios':
@@ -157,6 +166,10 @@ class PlatformInfo {
 
   // Get device model
   static String get deviceModel => _deviceModel ?? 'unknown';
+
+  /// True on Android TV (leanback/television device features). Set during
+  /// initialize(); false until then and on non-TV platforms.
+  static bool get isTv => _isTv;
 
   static Map<String, String> get apiHeaders => getApiHeaders();
 
