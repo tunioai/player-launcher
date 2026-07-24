@@ -1,4 +1,6 @@
 import 'package:flutter/services.dart';
+
+import 'storage_service.dart';
 import '../utils/logger.dart';
 
 class AutoStartService {
@@ -40,6 +42,36 @@ class AutoStartService {
       Logger.error(
           'AutoStartService: Failed to request battery optimization: $e');
       return false;
+    }
+  }
+
+  static Future<bool> isLaunchAtStartupEnabled() async {
+    try {
+      final result =
+          await _channel.invokeMethod<bool>('isLaunchAtStartupEnabled');
+      return result ?? false;
+    } catch (e) {
+      Logger.error(
+          'AutoStartService: Failed to read launch-at-startup status: $e');
+      rethrow;
+    }
+  }
+
+  static Future<bool> setLaunchAtStartupEnabled(bool enabled) async {
+    try {
+      final result = await _channel.invokeMethod<bool>(
+        'setLaunchAtStartupEnabled',
+        {'enabled': enabled},
+      );
+      final actualValue = result ?? false;
+      final storageService = await StorageService.getInstance();
+      await storageService.setAutoStartEnabled(actualValue);
+      Logger.info('AutoStartService: Launch at startup set to $actualValue');
+      return actualValue;
+    } catch (e) {
+      Logger.error(
+          'AutoStartService: Failed to update launch-at-startup status: $e');
+      rethrow;
     }
   }
 }

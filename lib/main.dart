@@ -1,10 +1,13 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:just_audio_background/just_audio_background.dart';
+import 'package:path_provider/path_provider.dart';
 
 import 'core/service_locator.dart';
+import 'services/desktop_lifecycle_service.dart';
 import 'services/storage_service.dart';
 import 'utils/platform_info.dart';
 
@@ -12,41 +15,87 @@ import 'screens/home_screen.dart';
 import 'utils/logger.dart';
 import 'utils/insecure_http_overrides.dart';
 
-void main() async {
-  HttpOverrides.global = InsecureHttpOverrides();
-  WidgetsFlutterBinding.ensureInitialized();
+void main(List<String> arguments) {
+  // Run everything inside a guarded zone so uncaught async errors land in the
+  // on-disk log instead of vanishing. Native crashes (e.g. WebView2) still kill
+  // the process, but the log keeps the last lines written right before them.
+  runZonedGuarded(() async {
+    WidgetsFlutterBinding.ensureInitialized();
+    HttpOverrides.global = InsecureHttpOverrides();
 
-  // Foreground media service (Android only): keeps the app process alive while
-  // a playback session is active, so background failover keeps running with the
-  // screen off. Must run before any AudioPlayer is created. Windows/macOS keep
-  // plain just_audio. androidNotificationOngoing requires the default
-  // androidStopForegroundOnPause:true (asserted by audio_service). Wrapped in
-  // try/catch so an init failure degrades to "no FGS", never a black screen.
-  if (Platform.isAndroid) {
-    try {
-      await JustAudioBackground.init(
-        androidNotificationChannelId: 'ai.tunio.radioplayer.channel.audio',
-        androidNotificationChannelName: 'Tunio Radio',
-        androidNotificationOngoing: true,
+    await _initializeCrashLogging();
+
+    // Framework (build/layout/paint) errors.
+    FlutterError.onError = (details) {
+      Logger.error('Flutter error', 'crash', details.exception, details.stack);
+      FlutterError.presentError(details);
+    };
+    // Uncaught errors bubbling up to the engine (async gaps, platform channels).
+    WidgetsBinding.instance.platformDispatcher.onError = (error, stack) {
+      Logger.error('Uncaught async error', 'crash', error, stack);
+      return true;
+    };
+
+    if (DesktopLifecycleService.isSupported) {
+      await DesktopLifecycleService.instance.initialize(
+        startHidden: arguments.contains('--minimized'),
       );
-    } catch (e, stackTrace) {
-      Logger.error('Failed to initialize background audio service: $e');
-      Logger.error('Stack trace: $stackTrace');
     }
-  }
 
-  await PlatformInfo.initialize();
+    // Foreground media service (Android only): keeps the app process alive
+    // while a playback session is active, so background failover keeps running
+    // with the screen off. Must run before any AudioPlayer is created.
+    // Windows/macOS keep plain just_audio. androidNotificationOngoing requires
+    // the default androidStopForegroundOnPause:true (asserted by audio_service).
+    // Wrapped in try/catch so an init failure degrades to "no FGS", never a
+    // black screen.
+    if (Platform.isAndroid) {
+      try {
+        await JustAudioBackground.init(
+          androidNotificationChannelId: 'ai.tunio.radioplayer.channel.audio',
+          androidNotificationChannelName: 'Tunio Radio',
+          androidNotificationOngoing: true,
+        );
+      } catch (e, stackTrace) {
+        Logger.error('Background audio init failed', 'startup', e, stackTrace);
+      }
+    }
 
+    await PlatformInfo.initialize();
+
+    try {
+      await ServiceLocator.initialize();
+      Logger.info('Application services initialized successfully');
+    } catch (e, stackTrace) {
+      Logger.error('Failed to initialize services', 'startup', e, stackTrace);
+      rethrow;
+    }
+
+    runApp(const TunioApp());
+  }, (error, stack) {
+    Logger.error('Uncaught zone error', 'crash', error, stack);
+  });
+}
+
+/// Opens the persistent log file under the platform app-support directory
+/// (Windows: %APPDATA%\Tunio AI\Tunio Spot\logs\tunio.log). Never throws.
+Future<void> _initializeCrashLogging() async {
+  // Verbose persists the full debug/info stream to disk; default keeps only
+  // warnings/errors so we don't hammer the filesystem. Toggle at runtime with
+  // TUNIO_VERBOSE=1 or at build time with --dart-define=VERBOSE_LOG=true.
+  const verboseCompiled = bool.fromEnvironment('VERBOSE_LOG');
+  final envVerbose = Platform.environment['TUNIO_VERBOSE'] == '1';
+  final verbose = verboseCompiled || envVerbose;
   try {
-    await ServiceLocator.initialize();
-    Logger.info('Application services initialized successfully');
-  } catch (e, stackTrace) {
-    Logger.error('Failed to initialize services: $e');
-    Logger.error('Stack trace: $stackTrace');
-    rethrow;
+    final supportDir = await getApplicationSupportDirectory();
+    await Logger.initializeFileLogging(
+        '${supportDir.path}${Platform.pathSeparator}logs',
+        verbose: verbose);
+    Logger.info('Log: ${Logger.logFilePath} verbose=$verbose', 'startup');
+  } catch (e) {
+    // ignore: avoid_print
+    print('Failed to initialize crash logging: $e');
   }
-
-  runApp(const TunioApp());
 }
 
 class TunioApp extends StatefulWidget {

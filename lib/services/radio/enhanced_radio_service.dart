@@ -1057,9 +1057,13 @@ final class EnhancedRadioService implements IRadioService {
     // Keep this above the per-stage timeouts (API + playStream) so it doesn't
     // prematurely abort a slow but valid connection attempt (notably HLS on
     // macOS in --release).
-    final connectingTimeout = Timer(const Duration(seconds: 70), () {
+    final connectionAttemptTimeout = Platform.isWindows
+        ? const Duration(seconds: 120)
+        : const Duration(seconds: 70);
+    final connectingTimeout = Timer(connectionAttemptTimeout, () {
       if (_currentState is RadioStateConnecting && _isConnectionInProgress) {
-        Logger.error('Connection attempt timed out after 70 seconds');
+        Logger.error(
+            'Connection attempt timed out after ${connectionAttemptTimeout.inSeconds} seconds');
         _isConnectionInProgress = false;
         unawaited(_scheduleRetry('Connection timeout - retrying'));
       }
@@ -1330,26 +1334,35 @@ final class EnhancedRadioService implements IRadioService {
       Logger.info('🐛 DEBUG: About to call _audioService.playStream()');
       final audioStartTime = DateTime.now();
 
-      final playResult = await _audioService.playStream(config).timeout(
-        const Duration(
-            seconds:
-                35), // Increased from 30s to 35s to let internal timeout with player check complete first
-        onTimeout: () {
-          final elapsed = DateTime.now().difference(audioStartTime);
+      final playFuture = _audioService.playStream(config);
+      // On Windows the audio service owns the source/play timeouts and may
+      // perform one clean WinRT player reset after `Loading interrupted`.
+      // Wrapping that future in another shorter timeout would not cancel it;
+      // it would instead start a retry while the original load was still
+      // active, recreating the exact interruption loop we are preventing.
+      final playResult = Platform.isWindows
+          ? await playFuture
+          : await playFuture.timeout(
+              const Duration(
+                  seconds:
+                      35), // Let the internal timeout/player check finish first.
+              onTimeout: () {
+                final elapsed = DateTime.now().difference(audioStartTime);
 
-          // Check if actually playing despite timeout
-          if (_audioService.currentState.isPlaying) {
-            Logger.warning(
-                '🔄 CONNECTION: External playStream timeout after ${elapsed.inSeconds}s BUT audio is actually playing - ignoring timeout');
-            return Success(null);
-          }
+                // Check if actually playing despite timeout
+                if (_audioService.currentState.isPlaying) {
+                  Logger.warning(
+                      '🔄 CONNECTION: External playStream timeout after ${elapsed.inSeconds}s BUT audio is actually playing - ignoring timeout');
+                  return const Success(null);
+                }
 
-          Logger.error(
-              '🔄 CONNECTION: Audio playback timed out after ${elapsed.inSeconds}s and NOT playing');
-          Logger.error('🐛 DEBUG: Audio playback timeout exception thrown');
-          throw TimeoutException('Audio playback timed out');
-        },
-      );
+                Logger.error(
+                    '🔄 CONNECTION: Audio playback timed out after ${elapsed.inSeconds}s and NOT playing');
+                Logger.error(
+                    '🐛 DEBUG: Audio playback timeout exception thrown');
+                throw TimeoutException('Audio playback timed out');
+              },
+            );
 
       Logger.info(
           '🐛 DEBUG: _audioService.playStream() completed successfully');

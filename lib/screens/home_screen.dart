@@ -9,6 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 import 'package:webview_flutter_wkwebview/webview_flutter_wkwebview.dart';
+import 'package:webview_windows/webview_windows.dart' as ww;
 
 import '../core/dependency_injection.dart';
 import '../core/service_locator.dart';
@@ -21,6 +22,7 @@ import '../services/failover_service.dart';
 import '../services/autostart_service.dart';
 import '../services/app_update_service.dart';
 import '../widgets/code_input_widget.dart';
+import '../widgets/settings_dialog.dart';
 import '../widgets/status_indicator.dart';
 import '../utils/logger.dart';
 import '../utils/platform_info.dart';
@@ -60,6 +62,7 @@ class _HomeScreenState extends State<HomeScreen> {
   final FocusNode _connectButtonFocusNode = FocusNode();
   final FocusNode _playButtonFocusNode = FocusNode();
   final FocusNode _themeButtonFocusNode = FocusNode();
+  final FocusNode _settingsButtonFocusNode = FocusNode();
   final FocusNode _updateButtonFocusNode = FocusNode();
   final FocusNode _visualizerButtonFocusNode = FocusNode();
   final FocusNode _visualizerCloseButtonFocusNode = FocusNode();
@@ -77,6 +80,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   bool _isVisualizerVisible = false;
   WebViewController? _visualizerController;
+  ww.WebviewController? _windowsVisualizerController;
+  StreamSubscription<ww.LoadingState>? _windowsLoadingSubscription;
+  bool _windowsVisualizerOpening = false;
   String? _loadedVisualizerUrl;
   bool _visualizerReady = false;
   bool _hasAutoOpenedVisualizer = false;
@@ -173,10 +179,15 @@ class _HomeScreenState extends State<HomeScreen> {
     _connectButtonFocusNode.dispose();
     _playButtonFocusNode.dispose();
     _themeButtonFocusNode.dispose();
+    _settingsButtonFocusNode.dispose();
     _updateButtonFocusNode.dispose();
     _visualizerButtonFocusNode.dispose();
     _visualizerCloseButtonFocusNode.dispose();
     _visualizerController = null;
+    _windowsLoadingSubscription?.cancel();
+    _windowsLoadingSubscription = null;
+    _windowsVisualizerController?.dispose();
+    _windowsVisualizerController = null;
     _visualizerHeartbeatTimer?.cancel();
     _visualizerHeartbeatTimer = null;
     _updateAvailabilityTimer?.cancel();
@@ -187,12 +198,18 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   bool get _isAndroid => defaultTargetPlatform == TargetPlatform.android;
+  bool get _isDesktop =>
+      defaultTargetPlatform == TargetPlatform.windows ||
+      defaultTargetPlatform == TargetPlatform.macOS;
+
+  bool get _isWindows => defaultTargetPlatform == TargetPlatform.windows;
 
   void _setupFocusNodes() {
     _codeFocusNode.addListener(() => setState(() {}));
     _connectButtonFocusNode.addListener(() => setState(() {}));
     _playButtonFocusNode.addListener(() => setState(() {}));
     _themeButtonFocusNode.addListener(() => setState(() {}));
+    _settingsButtonFocusNode.addListener(() => setState(() {}));
     _updateButtonFocusNode.addListener(() => setState(() {}));
     _visualizerButtonFocusNode.addListener(() => setState(() {}));
     _visualizerCloseButtonFocusNode.addListener(() => setState(() {}));
@@ -331,6 +348,20 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     _isVisualizerVisible = false;
     _visualizerController = null;
+    // Detach the Windows controller synchronously, but dispose it after the
+    // current frame: destroying the native WebView2 while its Webview widget is
+    // still mounted can crash. Nulling the field first stops the overlay from
+    // rebuilding with it.
+    final oldWindowsController = _windowsVisualizerController;
+    final oldWindowsSub = _windowsLoadingSubscription;
+    _windowsVisualizerController = null;
+    _windowsLoadingSubscription = null;
+    if (oldWindowsController != null || oldWindowsSub != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        await oldWindowsSub?.cancel();
+        await oldWindowsController?.dispose();
+      });
+    }
     _loadedVisualizerUrl = null;
     _currentVisualizerUrl = null;
     _visualizerReady = false;
@@ -548,8 +579,10 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildVisualizerOverlay() {
-    final controller = _visualizerController;
-    if (controller == null) {
+    final hasContent = _isWindows
+        ? _windowsVisualizerController != null
+        : _visualizerController != null;
+    if (!hasContent) {
       return const SizedBox.shrink();
     }
 
@@ -586,11 +619,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: Stack(
                   children: [
                     Positioned.fill(
-                      child: _buildVisualizerWebView(controller),
+                      child: _buildVisualizerWebView(),
                     ),
                     Positioned(
-                      bottom: 32,
-                      right: 32,
+                      bottom: 12,
+                      right: 12,
                       child: _buildVisualizerCloseButton(),
                     ),
                   ],
@@ -603,7 +636,20 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildVisualizerWebView(WebViewController controller) {
+  Widget _buildVisualizerWebView() {
+    if (_isWindows) {
+      final windowsController = _windowsVisualizerController;
+      if (windowsController == null) {
+        return const SizedBox.shrink();
+      }
+      return ww.Webview(windowsController);
+    }
+
+    final controller = _visualizerController;
+    if (controller == null) {
+      return const SizedBox.shrink();
+    }
+
     if (defaultTargetPlatform == TargetPlatform.android) {
       final params = PlatformWebViewWidgetCreationParams(
         controller: controller.platform,
@@ -635,16 +681,16 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         child: RawMaterialButton(
           onPressed: _closeVisualizer,
-          constraints: const BoxConstraints.tightFor(width: 44, height: 44),
+          constraints: const BoxConstraints.tightFor(width: 32, height: 32),
           shape: const CircleBorder(),
-          fillColor: Colors.black.withValues(alpha: 0.10),
+          fillColor: Colors.black.withValues(alpha: hasFocus ? 0.08 : 0.04),
           elevation: 0,
           child: Icon(
             Icons.close,
-            size: 18,
+            size: 14,
             color: hasFocus
-                ? Colors.white.withValues(alpha: 0.5)
-                : Colors.white.withValues(alpha: 0.3),
+                ? Colors.white.withValues(alpha: 0.38)
+                : Colors.white.withValues(alpha: 0.22),
           ),
         ),
       ),
@@ -738,6 +784,11 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
+    if (_isWindows) {
+      await _openWindowsVisualizer(targetUri, url);
+      return;
+    }
+
     final needsNewController = _visualizerController == null ||
         _loadedVisualizerUrl != targetUri.toString();
 
@@ -789,6 +840,91 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (e) {
       Logger.error('HomeScreen: Failed to open native visualizer: $e');
       _showError('Failed to open visualizer');
+    }
+  }
+
+  Future<void> _openWindowsVisualizer(Uri targetUri, String originalUrl) async {
+    if (_windowsVisualizerOpening) {
+      return;
+    }
+
+    final needsNewController = _windowsVisualizerController == null ||
+        _loadedVisualizerUrl != targetUri.toString();
+
+    if (!needsNewController) {
+      setState(() {
+        _isVisualizerVisible = true;
+      });
+      _startVisualizerHeartbeat(forceRestart: true);
+      _focusVisualizerCloseButton();
+      _scheduleVisualizerUpdate();
+      return;
+    }
+
+    _windowsVisualizerOpening = true;
+    try {
+      // WebView2 must be present before touching WebviewController: calling
+      // initialize() without the runtime crashes the process natively (not a
+      // catchable Dart exception). getWebViewVersion() safely returns null when
+      // the runtime is missing, so we bail out with a message instead.
+      Logger.info('Windows visualizer: probing WebView2 runtime', 'visualizer');
+      final webViewVersion = await ww.WebviewController.getWebViewVersion();
+      if (!mounted) return;
+      if (webViewVersion == null) {
+        Logger.error(
+            'HomeScreen: WebView2 Runtime is not installed — visualizer unavailable');
+        _showError('WebView2 Runtime is required for the visualizer');
+        return;
+      }
+      // warning-level so it lands in the default (non-verbose) log — this is
+      // the last line before the crash-prone native initialize() call.
+      Logger.warning(
+          'Windows visualizer: WebView2 $webViewVersion, initializing controller',
+          'visualizer');
+
+      _stopVisualizerHeartbeat();
+      await _windowsLoadingSubscription?.cancel();
+      _windowsLoadingSubscription = null;
+      await _windowsVisualizerController?.dispose();
+      _windowsVisualizerController = null;
+
+      final controller = ww.WebviewController();
+      await controller.initialize();
+      await controller.setBackgroundColor(Colors.transparent);
+      await controller.setPopupWindowPolicy(ww.WebviewPopupWindowPolicy.deny);
+      Logger.info('Windows visualizer: controller ready, loading $targetUri',
+          'visualizer');
+
+      _windowsLoadingSubscription = controller.loadingState.listen((state) {
+        if (state == ww.LoadingState.navigationCompleted) {
+          _visualizerReady = true;
+          _postVisualizerUpdate();
+          _startVisualizerHeartbeat(forceRestart: true);
+        }
+      });
+
+      await controller.loadUrl(targetUri.toString());
+
+      if (!mounted) {
+        await controller.dispose();
+        return;
+      }
+
+      setState(() {
+        _windowsVisualizerController = controller;
+        _loadedVisualizerUrl = targetUri.toString();
+        _currentVisualizerUrl = originalUrl;
+        _isVisualizerVisible = true;
+        _visualizerReady = false;
+      });
+
+      _focusVisualizerCloseButton();
+      _scheduleVisualizerUpdate();
+    } catch (e) {
+      Logger.error('HomeScreen: Failed to open Windows visualizer: $e');
+      _showError('Failed to open visualizer');
+    } finally {
+      _windowsVisualizerOpening = false;
     }
   }
 
@@ -886,8 +1022,13 @@ class _HomeScreenState extends State<HomeScreen> {
     if (!_isVisualizerVisible || !_visualizerReady) {
       return;
     }
-    if (!_isAndroid && _visualizerController == null) {
-      return;
+    if (!_isAndroid) {
+      final hasController = _isWindows
+          ? _windowsVisualizerController != null
+          : _visualizerController != null;
+      if (!hasController) {
+        return;
+      }
     }
     if (!forceRestart && _visualizerHeartbeatTimer?.isActive == true) {
       return;
@@ -934,8 +1075,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _postVisualizerUpdate() async {
     if (!_visualizerReady) return;
-    final controller = _visualizerController;
-    if (controller == null) return;
 
     final payload = _buildVisualizerPayload();
     if (payload == null) return;
@@ -945,6 +1084,20 @@ class _HomeScreenState extends State<HomeScreen> {
       'payload': payload,
     });
     final script = 'window.postMessage($message, "*");';
+
+    if (_isWindows) {
+      final controller = _windowsVisualizerController;
+      if (controller == null) return;
+      try {
+        await controller.executeScript(script);
+      } catch (e) {
+        Logger.error('HomeScreen: Failed to send visualizer update: $e');
+      }
+      return;
+    }
+
+    final controller = _visualizerController;
+    if (controller == null) return;
 
     try {
       if (_isAndroid) {
@@ -1053,6 +1206,13 @@ class _HomeScreenState extends State<HomeScreen> {
     return widget.themeMode == ThemeMode.dark
         ? 'Switch to light theme'
         : 'Switch to dark theme';
+  }
+
+  Future<void> _openSettings() {
+    return showDialog<void>(
+      context: context,
+      builder: (_) => const SettingsDialog(),
+    );
   }
 
   IconData _getPlayPauseIcon() {
@@ -1232,6 +1392,26 @@ class _HomeScreenState extends State<HomeScreen> {
                                 ],
                               ),
                         tooltip: _updateStatusText ?? 'Check updates',
+                      ),
+                    ),
+                  ),
+                if (_isDesktop)
+                  Focus(
+                    focusNode: _settingsButtonFocusNode,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        border: Border.all(
+                          color: _settingsButtonFocusNode.hasFocus
+                              ? TunioColors.primary
+                              : Colors.transparent,
+                          width: 2,
+                        ),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: IconButton(
+                        onPressed: _openSettings,
+                        icon: const Icon(Icons.settings),
+                        tooltip: 'Settings',
                       ),
                     ),
                   ),

@@ -395,6 +395,13 @@ flutter pub run flutter_launcher_icons
 ### Windows
 - 64-bit (x64) desktop build
 - Playback via `just_audio_windows`
+- Pass `--minimized` to start with the window minimized:
+  `tunio_radio_player.exe --minimized`
+- The runner allows one instance per interactive Windows session; launching it
+  again restores the existing window instead of creating a second audio player.
+- For Task Scheduler, use **At log on**, **Run only when the user is logged on**,
+  and a 20–30 second trigger delay. Start the executable directly rather than
+  through `start` or a batch file.
 
 ## ⚙️ Configuration & Performance
 

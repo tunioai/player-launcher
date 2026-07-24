@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, develop, fix/windows-scheduled-startup ]
   pull_request:
     branches: [ main, develop ]
 
@@ -41,6 +41,7 @@ jobs:
       
   build-test:
     name: Build Test
+    if: github.ref != 'refs/heads/fix/windows-scheduled-startup'
     runs-on: ubuntu-latest
     needs: test
     
@@ -106,10 +107,28 @@ jobs:
       run: flutter config --enable-windows-desktop
       
     - name: Build Windows app (debug)
+      if: github.ref != 'refs/heads/fix/windows-scheduled-startup'
       run: flutter build windows --debug
+
+    - name: Build Windows app (release branch artifact)
+      if: github.ref == 'refs/heads/fix/windows-scheduled-startup'
+      run: flutter build windows --release
+
+    - name: Create Windows x64 archive
+      if: github.ref == 'refs/heads/fix/windows-scheduled-startup'
+      run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath build/windows/x64/runner/tunio-spot-windows-x64.zip
+      shell: powershell
+
+    - name: Upload Windows x64 artifact
+      if: github.ref == 'refs/heads/fix/windows-scheduled-startup'
+      uses: actions/upload-artifact@v4
+      with:
+        name: windows-x64-fix-build
+        path: build/windows/x64/runner/tunio-spot-windows-x64.zip
 
   build-test-macos:
     name: Build Test macOS
+    if: github.ref != 'refs/heads/fix/windows-scheduled-startup'
     runs-on: macos-latest
     needs: test
 

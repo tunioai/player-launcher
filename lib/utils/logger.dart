@@ -1,4 +1,5 @@
 import 'dart:developer' as developer;
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 enum LogLevel {
@@ -9,6 +10,61 @@ enum LogLevel {
 }
 
 class Logger {
+  // Persistent on-disk sink so a packaged build (no visible stdout) still
+  // leaves a log the user can hand over after a crash. Kept open for the whole
+  // session; writes are synchronous so the last lines survive even a hard
+  // native crash (they reach the OS file cache, which outlives the process).
+  static RandomAccessFile? _logHandle;
+  static String? _logFilePath;
+
+  // By default only warnings/errors reach the file — enough for crash
+  // forensics without hammering the filesystem with the debug/info stream.
+  // Verbose mode persists every level (opt-in via TUNIO_VERBOSE / --dart-define).
+  static bool _persistAllLevels = false;
+
+  /// Absolute path of the current log file, or null before file logging is
+  /// initialized. Surface this so the user knows what to send.
+  static String? get logFilePath => _logFilePath;
+
+  /// Opens (and size-rotates) the log file under [directoryPath]. When
+  /// [verbose] is false only warnings/errors are written to disk. Safe to call
+  /// once at startup; never throws — logging must not break app launch.
+  static Future<void> initializeFileLogging(String directoryPath,
+      {bool verbose = false}) async {
+    _persistAllLevels = verbose;
+    try {
+      final dir = Directory(directoryPath);
+      if (!dir.existsSync()) {
+        dir.createSync(recursive: true);
+      }
+      final path = '${dir.path}${Platform.pathSeparator}tunio.log';
+      final file = File(path);
+      // Rotate at ~2 MB, keeping a single previous copy (tunio.log.1).
+      if (file.existsSync() && file.lengthSync() > 2 * 1024 * 1024) {
+        final previous = File('$path.1');
+        if (previous.existsSync()) {
+          previous.deleteSync();
+        }
+        file.renameSync(previous.path);
+      }
+      _logHandle = File(path).openSync(mode: FileMode.append);
+      _logFilePath = path;
+      _writeLine(
+          '===== session start ${DateTime.now().toIso8601String()} =====');
+    } catch (e) {
+      // ignore: avoid_print
+      print('Logger: failed to initialize file logging: $e');
+    }
+  }
+
+  static void _writeLine(String line) {
+    try {
+      _logHandle?.writeStringSync('$line\n');
+    } catch (_) {
+      // Never let a logging failure propagate.
+    }
+  }
+
   // Stdout is the only reliably visible channel in `flutter run --release`.
   // Keep it low-noise: always print warnings/errors; print debug/info only in
   // debug builds.
@@ -35,7 +91,9 @@ class Logger {
     if (error != null) {
       _log(LogLevel.error, 'Error details: $error', tag);
     }
-    if (stackTrace != null && kDebugMode) {
+    // Always persist the stack trace (file + stdout); it is the whole point of
+    // having a crash log to hand over.
+    if (stackTrace != null) {
       _log(LogLevel.error, 'Stack trace: $stackTrace', tag);
     }
   }
@@ -45,6 +103,14 @@ class Logger {
     final levelStr = level.name.toUpperCase().padRight(7);
     final tagStr = tag != null ? '[$tag] ' : '';
     final formattedMessage = '$timestamp $levelStr $tagStr$message';
+
+    // Persist warnings/errors always; the noisy debug/info stream only in
+    // verbose mode, so a packaged build does not write to disk continuously.
+    if (_persistAllLevels ||
+        level == LogLevel.warning ||
+        level == LogLevel.error) {
+      _writeLine(formattedMessage);
+    }
 
     // Output to both developer.log and print for Flutter debug console
     switch (level) {

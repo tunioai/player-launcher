@@ -12,6 +12,7 @@ import '../core/audio_state.dart';
 import '../models/stream_config.dart';
 import '../utils/logger.dart';
 import '../utils/audio_config.dart';
+import 'audio/windows_playback_operation_queue.dart';
 
 abstract interface class IAudioService implements Disposable {
   Stream<AudioState> get stateStream;
@@ -86,6 +87,8 @@ final class EnhancedAudioService implements IAudioService {
   // the live source has actually been installed in ExoPlayer.
   bool _isLiveSourcePrepared = false;
   int _playbackOperationGeneration = 0;
+  final WindowsPlaybackOperationQueue _windowsPlaybackOperationQueue =
+      WindowsPlaybackOperationQueue();
   String? _currentStreamUrl;
   bool _userPaused = false;
   bool _awaitingInterruptionResume = false;
@@ -976,6 +979,109 @@ final class EnhancedAudioService implements IAudioService {
     }
   }
 
+  Future<Result<void>> _serializeWindowsSourceMutation(
+    Future<Result<void>> Function() operation,
+  ) {
+    if (!Platform.isWindows) {
+      return operation();
+    }
+
+    return _windowsPlaybackOperationQueue.run(() {
+      if (_isDisposed) {
+        return Future<Result<void>>.value(
+          const Failure<void>('Audio service disposed'),
+        );
+      }
+      return operation();
+    });
+  }
+
+  bool _isWindowsLoadingInterrupted(Object error) {
+    if (!Platform.isWindows) return false;
+    return error is PlayerInterruptedException ||
+        error.toString().toLowerCase().contains('loading interrupted');
+  }
+
+  AudioSource _buildLiveAudioSource({
+    required StreamConfig config,
+    required bool isHls,
+    required MediaItem tag,
+    required Map<String, String> headers,
+  }) {
+    final streamUri = Uri.parse(config.streamUrl);
+    return isHls
+        ? HlsAudioSource(streamUri, headers: headers, tag: tag)
+        : AudioSource.uri(streamUri, headers: headers, tag: tag);
+  }
+
+  Future<void> _setLiveAudioSource({
+    required StreamConfig config,
+    required bool isHls,
+    required MediaItem tag,
+    required Map<String, String> headers,
+    required Duration timeout,
+    required int playbackGeneration,
+  }) async {
+    final maxAttempts = Platform.isWindows ? 2 : 1;
+
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      final audioSource = _buildLiveAudioSource(
+        config: config,
+        isHls: isHls,
+        tag: tag,
+        headers: headers,
+      );
+      final setSourceStartTime = DateTime.now();
+
+      try {
+        await _audioPlayer
+            .setAudioSource(
+              audioSource,
+              // HLS: null lets the native player choose its live position.
+              initialPosition:
+                  isHls ? AudioConfig.hlsInitialPosition : Duration.zero,
+              preload: true,
+            )
+            .timeout(timeout);
+        _ensurePlaybackOperationCurrent(playbackGeneration);
+        _isLiveSourcePrepared = true;
+
+        final setSourceDuration = DateTime.now().difference(setSourceStartTime);
+        Logger.info(
+            '🎵 AUDIO_DEBUG: setAudioSource completed successfully in ${setSourceDuration.inMilliseconds}ms');
+        return;
+      } on TimeoutException catch (_) {
+        _ensurePlaybackOperationCurrent(playbackGeneration);
+        final elapsed = DateTime.now().difference(setSourceStartTime);
+        await _handlePlayerOperationTimeout(
+          operation: 'setAudioSource',
+          timeout: timeout,
+          elapsed: elapsed,
+        );
+        _ensurePlaybackOperationCurrent(playbackGeneration);
+        throw TimeoutException('setAudioSource operation timed out');
+      } catch (error, stackTrace) {
+        _ensurePlaybackOperationCurrent(playbackGeneration);
+        if (_isWindowsLoadingInterrupted(error) && attempt < maxAttempts) {
+          Logger.warning(
+              '🎵 WINDOWS_AUDIO: WinRT load was interrupted; resetting the player and retrying once');
+          await _resetAudioPlayer('Windows source load interrupted');
+          _ensurePlaybackOperationCurrent(playbackGeneration);
+          _isPlayingStream = true;
+          _isLiveSourcePrepared = false;
+          _currentStreamUrl = config.streamUrl;
+          await Future<void>.delayed(const Duration(milliseconds: 300));
+          _ensurePlaybackOperationCurrent(playbackGeneration);
+          continue;
+        }
+
+        Logger.error('🎵 AUDIO_DEBUG: setAudioSource FAILED: $error');
+        Logger.error('🎵 AUDIO_DEBUG: Stack trace: $stackTrace');
+        rethrow;
+      }
+    }
+  }
+
   @override
   Future<Result<void>> playStream(StreamConfig config,
       {bool quickStart = false}) async {
@@ -984,6 +1090,15 @@ final class EnhancedAudioService implements IAudioService {
       if (initResult.isFailure) return initResult;
     }
 
+    return _serializeWindowsSourceMutation(
+      () => _playStreamAfterInitialization(config, quickStart: quickStart),
+    );
+  }
+
+  Future<Result<void>> _playStreamAfterInitialization(
+    StreamConfig config, {
+    required bool quickStart,
+  }) {
     return tryResultAsync(() async {
       final playbackGeneration = ++_playbackOperationGeneration;
       Logger.info('🎵 AUDIO_DEBUG: ===== STARTING PLAYBACK =====');
@@ -1055,65 +1170,33 @@ final class EnhancedAudioService implements IAudioService {
         );
         final streamHeaders = AudioConfig.getStreamingHeaders();
 
-        final streamUri = Uri.parse(config.streamUrl);
-        final AudioSource audioSource = isHls
-            ? HlsAudioSource(
-                streamUri,
-                headers: streamHeaders,
-                tag: streamTag,
-              )
-            : AudioSource.uri(
-                streamUri,
-                headers: streamHeaders,
-                tag: streamTag,
-              );
         if (isHls) {
           Logger.info(
               '🎵 AUDIO_DEBUG: Using native HLS starting at ExoPlayer\'s default live position (~3×target behind edge)');
         }
 
         Logger.info('🎵 AUDIO_DEBUG: About to call setAudioSource...');
-        final setSourceTimeout = isHls
-            ? (Platform.isMacOS
-                ? const Duration(seconds: 30)
-                : const Duration(seconds: 20))
-            : (quickStart
-                ? const Duration(seconds: 5)
-                : const Duration(seconds: 15));
-        final setSourceStartTime = DateTime.now();
-        try {
-          await _audioPlayer
-              .setAudioSource(
-                audioSource,
-                // HLS: null → ExoPlayer's default live position (mid-window).
-                // Non-HLS: start from the beginning.
-                initialPosition:
-                    isHls ? AudioConfig.hlsInitialPosition : Duration.zero,
-                preload: true,
-              )
-              .timeout(setSourceTimeout);
-          _ensurePlaybackOperationCurrent(playbackGeneration);
-          _isLiveSourcePrepared = true;
-
-          final setSourceDuration =
-              DateTime.now().difference(setSourceStartTime);
-          Logger.info(
-              '🎵 AUDIO_DEBUG: setAudioSource completed successfully in ${setSourceDuration.inMilliseconds}ms');
-        } on TimeoutException catch (_) {
-          _ensurePlaybackOperationCurrent(playbackGeneration);
-          final elapsed = DateTime.now().difference(setSourceStartTime);
-          await _handlePlayerOperationTimeout(
-            operation: 'setAudioSource',
-            timeout: setSourceTimeout,
-            elapsed: elapsed,
-          );
-          throw TimeoutException('setAudioSource operation timed out');
-        } catch (e, stackTrace) {
-          _ensurePlaybackOperationCurrent(playbackGeneration);
-          Logger.error('🎵 AUDIO_DEBUG: setAudioSource FAILED: $e');
-          Logger.error('🎵 AUDIO_DEBUG: Stack trace: $stackTrace');
-          rethrow;
-        }
+        final setSourceTimeout = Platform.isWindows
+            ? (isHls
+                ? const Duration(seconds: 25)
+                : (quickStart
+                    ? const Duration(seconds: 10)
+                    : const Duration(seconds: 20)))
+            : (isHls
+                ? (Platform.isMacOS
+                    ? const Duration(seconds: 30)
+                    : const Duration(seconds: 20))
+                : (quickStart
+                    ? const Duration(seconds: 5)
+                    : const Duration(seconds: 15)));
+        await _setLiveAudioSource(
+          config: config,
+          isHls: isHls,
+          tag: streamTag,
+          headers: streamHeaders,
+          timeout: setSourceTimeout,
+          playbackGeneration: playbackGeneration,
+        );
 
         final liveStreamVolume = config.volume.clamp(0.0, 1.0);
         Logger.info(
@@ -1176,6 +1259,18 @@ final class EnhancedAudioService implements IAudioService {
       if (initResult.isFailure) return initResult;
     }
 
+    return _serializeWindowsSourceMutation(
+      () => _playLocalFileAfterInitialization(
+        filePath,
+        originalConfig: originalConfig,
+      ),
+    );
+  }
+
+  Future<Result<void>> _playLocalFileAfterInitialization(
+    String filePath, {
+    StreamConfig? originalConfig,
+  }) {
     return tryResultAsync(() async {
       final playbackGeneration = ++_playbackOperationGeneration;
       Logger.info('🎵 FAILOVER: ===== STARTING LOCAL FILE PLAYBACK =====');
@@ -1317,6 +1412,10 @@ final class EnhancedAudioService implements IAudioService {
 
   @override
   Future<Result<void>> stop() async {
+    return _serializeWindowsSourceMutation(_stopAfterInitialization);
+  }
+
+  Future<Result<void>> _stopAfterInitialization() {
     return tryResultAsync(() async {
       _playbackOperationGeneration++;
       Logger.info('🎵 AUDIO_DEBUG: Stopping playback...');
