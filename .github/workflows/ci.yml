@@ -6,6 +6,14 @@ on:
   pull_request:
     branches: [ main, develop ]
 
+# Branches that get a downloadable Windows release build rather than just a
+# debug compile check. Kept in one place so the build, archive and upload steps
+# cannot drift apart; trim it back as these branches merge.
+env:
+  ARTIFACT_BRANCHES: >-
+    ["refs/heads/fix/windows-scheduled-startup",
+     "refs/heads/fix/credential-store-prefs-corruption"]
+
 jobs:
   test:
     name: Test and Analyze
@@ -107,23 +115,25 @@ jobs:
       run: flutter config --enable-windows-desktop
       
     - name: Build Windows app (debug)
-      if: github.ref != 'refs/heads/fix/windows-scheduled-startup'
+      if: ${{ !contains(fromJSON(env.ARTIFACT_BRANCHES), github.ref) }}
       run: flutter build windows --debug
 
     - name: Build Windows app (release branch artifact)
-      if: github.ref == 'refs/heads/fix/windows-scheduled-startup'
+      if: ${{ contains(fromJSON(env.ARTIFACT_BRANCHES), github.ref) }}
       run: flutter build windows --release
 
     - name: Create Windows x64 archive
-      if: github.ref == 'refs/heads/fix/windows-scheduled-startup'
+      if: ${{ contains(fromJSON(env.ARTIFACT_BRANCHES), github.ref) }}
       run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath build/windows/x64/runner/tunio-spot-windows-x64.zip
       shell: powershell
 
     - name: Upload Windows x64 artifact
-      if: github.ref == 'refs/heads/fix/windows-scheduled-startup'
+      if: ${{ contains(fromJSON(env.ARTIFACT_BRANCHES), github.ref) }}
       uses: actions/upload-artifact@v4
       with:
-        name: windows-x64-fix-build
+        # Static: a branch name would be more descriptive but upload-artifact
+        # rejects the "/" in ours, and expressions have no string replace.
+        name: windows-x64-build
         path: build/windows/x64/runner/tunio-spot-windows-x64.zip
 
   build-test-macos:
