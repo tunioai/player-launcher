@@ -106,10 +106,11 @@ class PlatformInfo {
   static Future<void> _initializeDeviceUuid() async {
     try {
       final store = await CredentialStore.getInstance();
-      var uuid =
-          store.get(CredentialStore.deviceUuidKey) ?? await _legacyDeviceUuid();
+      var uuid = store.get(CredentialStore.deviceUuidKey) ??
+          await _deviceUuidFromPrefs();
       uuid ??= _generateUuidV4();
       await store.set(CredentialStore.deviceUuidKey, uuid);
+      await _mirrorDeviceUuidToPrefs(uuid);
       _deviceUuid = uuid;
     } catch (e) {
       Logger.error('Failed to initialize device UUID: $e');
@@ -117,14 +118,29 @@ class PlatformInfo {
     }
   }
 
-  static Future<String?> _legacyDeviceUuid() async {
+  static Future<String?> _deviceUuidFromPrefs() async {
     try {
       final stored = (await PrefsGuard.getInstance()).getString(_deviceUuidKey);
       if (stored == null || stored.isEmpty) return null;
       return stored;
     } catch (e) {
-      Logger.error('Failed to read legacy device UUID: $e');
+      Logger.error('Failed to read device UUID from prefs: $e');
       return null;
+    }
+  }
+
+  // Kept in both stores for the same reason as the token in StorageService:
+  // this UUID is the device identity the backend sees (X-Device-UUID), so
+  // regenerating it makes an existing point look like a brand new device. The
+  // prefs copy covers a downgrade to a pre-CredentialStore build and a lost
+  // credentials.json; CredentialStore covers prefs corruption.
+  static Future<void> _mirrorDeviceUuidToPrefs(String uuid) async {
+    try {
+      final prefs = await PrefsGuard.getInstance();
+      if (prefs.getString(_deviceUuidKey) == uuid) return;
+      await prefs.setString(_deviceUuidKey, uuid);
+    } catch (e) {
+      Logger.error('Failed to mirror device UUID to prefs: $e');
     }
   }
 
@@ -144,11 +160,14 @@ class PlatformInfo {
         '${b[10]}${b[11]}${b[12]}${b[13]}${b[14]}${b[15]}';
   }
 
-  static String get userAgent {
+  /// Version and build as one string, e.g. "1.8.0+31".
+  static String get appVersion {
     final version = _packageInfo?.version ?? '1.0.0';
     final buildNumber = _packageInfo?.buildNumber ?? '1';
-    return 'TunioSpot $version+$buildNumber';
+    return '$version+$buildNumber';
   }
+
+  static String get userAgent => 'TunioSpot $appVersion';
 
   static String get platform {
     if (kIsWeb) {

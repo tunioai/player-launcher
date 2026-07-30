@@ -73,4 +73,67 @@ void main() {
     expect(store.get(CredentialStore.tokenKey), isNull);
     expect(mainFile().existsSync(), isFalse);
   });
+
+  // Durability invariant: a power cut can only ever interrupt a write to a
+  // .tmp file, so whatever is left at credentials.json / .bak always parses.
+  test('leaves both copies parseable after every write', () async {
+    final store = await CredentialStore.openInDirectory(tempDir);
+    for (var i = 0; i < 5; i++) {
+      await store.set(CredentialStore.tokenKey, '00000$i');
+      await store.set(CredentialStore.adminKeyKey, 'key-$i');
+
+      expect(jsonDecode(mainFile().readAsStringSync()),
+          containsPair(CredentialStore.tokenKey, '00000$i'));
+      expect(jsonDecode(backupFile().readAsStringSync()),
+          containsPair(CredentialStore.tokenKey, '00000$i'));
+    }
+
+    final leftovers = tempDir
+        .listSync()
+        .map((e) => e.path.split(Platform.pathSeparator).last)
+        .where((name) => name.endsWith('.tmp'));
+    expect(leftovers, isEmpty);
+  });
+
+  test('rebuilds an unreadable backup on load, before it is needed', () async {
+    final store = await CredentialStore.openInDirectory(tempDir);
+    await store.set(CredentialStore.tokenKey, '123456');
+
+    // What a build that wrote the backup in place could leave behind after a
+    // power cut: main still good, backup half-written.
+    backupFile().writeAsStringSync('{"tok');
+
+    // Next launch heals it...
+    await CredentialStore.openInDirectory(tempDir);
+    expect(jsonDecode(backupFile().readAsStringSync()),
+        containsPair(CredentialStore.tokenKey, '123456'));
+
+    // ...so the PIN is still recoverable when the main copy later goes bad.
+    mainFile().writeAsStringSync('\x00\x00');
+    final reloaded = await CredentialStore.openInDirectory(tempDir);
+    expect(reloaded.get(CredentialStore.tokenKey), '123456');
+  });
+
+  test('recreates a missing backup on load', () async {
+    final store = await CredentialStore.openInDirectory(tempDir);
+    await store.set(CredentialStore.tokenKey, '123456');
+    backupFile().deleteSync();
+
+    await CredentialStore.openInDirectory(tempDir);
+    expect(jsonDecode(backupFile().readAsStringSync()),
+        containsPair(CredentialStore.tokenKey, '123456'));
+  });
+
+  test('serializes concurrent writes, last one wins on disk', () async {
+    final store = await CredentialStore.openInDirectory(tempDir);
+    await Future.wait([
+      store.set(CredentialStore.tokenKey, '111111'),
+      store.set(CredentialStore.adminKeyKey, 'admin'),
+      store.set(CredentialStore.tokenKey, '222222'),
+    ]);
+
+    final reloaded = await CredentialStore.openInDirectory(tempDir);
+    expect(reloaded.get(CredentialStore.tokenKey), '222222');
+    expect(reloaded.get(CredentialStore.adminKeyKey), 'admin');
+  });
 }

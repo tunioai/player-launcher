@@ -20,8 +20,9 @@ class CredentialStore {
   static const String deviceUuidKey = 'device_uuid';
 
   static const String _fileName = 'credentials.json';
+  static const String _backupFileName = '$_fileName.bak';
 
-  static CredentialStore? _instance;
+  static Future<CredentialStore>? _instance;
 
   final Map<String, String> _values = <String, String>{};
   Directory? _directory;
@@ -29,8 +30,12 @@ class CredentialStore {
 
   CredentialStore._();
 
-  static Future<CredentialStore> getInstance() async {
-    if (_instance != null) return _instance!;
+  // Memoize the future, not the resolved instance: two callers racing here
+  // would otherwise each build a store over the same files, and the loser's
+  // in-memory map would silently diverge from what is on disk.
+  static Future<CredentialStore> getInstance() => _instance ??= _open();
+
+  static Future<CredentialStore> _open() async {
     final store = CredentialStore._();
     try {
       store._directory = await getApplicationSupportDirectory();
@@ -39,7 +44,6 @@ class CredentialStore {
       Logger.error('CredentialStore: unavailable, using memory only', 'storage',
           e, stackTrace);
     }
-    _instance = store;
     return store;
   }
 
@@ -71,6 +75,12 @@ class CredentialStore {
     final fromMain = await _readMap(_mainFile);
     if (fromMain != null) {
       _values.addAll(fromMain);
+      // A backup missing, or left truncated by a build that wrote it in
+      // place, would only be discovered once we already needed it. Rebuild it
+      // now, while the main copy is still known good.
+      if (await _readMap(_backupFile) == null) {
+        await _persist();
+      }
       return;
     }
 
@@ -105,10 +115,8 @@ class CredentialStore {
     _pendingWrite = _pendingWrite.then((_) async {
       try {
         final contents = jsonEncode(_values);
-        final tmp = _fileIn('$_fileName.tmp');
-        await tmp.writeAsString(contents, flush: true);
-        await tmp.rename(_mainFile.path);
-        await _backupFile.writeAsString(contents, flush: true);
+        await _writeAtomically(_fileName, contents);
+        await _writeAtomically(_backupFileName, contents);
       } catch (e, stackTrace) {
         Logger.error(
             'CredentialStore: failed to persist', 'storage', e, stackTrace);
@@ -117,9 +125,19 @@ class CredentialStore {
     return _pendingWrite;
   }
 
+  // Both copies go through temp file + rename. Writing the backup in place
+  // would leave it half-written if the power drops mid-write, and nothing
+  // would notice until the main file also went bad — exactly the case the
+  // second copy exists for.
+  Future<void> _writeAtomically(String name, String contents) async {
+    final tmp = _fileIn('$name.tmp');
+    await tmp.writeAsString(contents, flush: true);
+    await tmp.rename(_fileIn(name).path);
+  }
+
   File get _mainFile => _fileIn(_fileName);
 
-  File get _backupFile => _fileIn('$_fileName.bak');
+  File get _backupFile => _fileIn(_backupFileName);
 
   File _fileIn(String name) =>
       File('${_directory!.path}${Platform.pathSeparator}$name');
