@@ -37,7 +37,7 @@ class PrefsGuard {
         // the same failing read and pretending we handled it.
         Logger.error(
             'shared_preferences is unreadable and cannot be repaired on '
-            '${Platform.operatingSystem}',
+                '${Platform.operatingSystem}',
             'storage',
             e,
             stackTrace);

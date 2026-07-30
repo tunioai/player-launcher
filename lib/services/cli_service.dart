@@ -89,7 +89,8 @@ class CliService {
 
     _stateSubscription = _radioService.stateStream.listen(
       (_) => _writeStatus(),
-      onError: (Object e) => Logger.error('CliService: state stream: $e', 'cli'),
+      onError: (Object e) =>
+          Logger.error('CliService: state stream: $e', 'cli'),
     );
     _heartbeatTimer = Timer.periodic(_heartbeat, (_) => _writeStatus());
     await _writeStatus();
@@ -231,8 +232,8 @@ class CliService {
         final tmp =
             File('${directory.path}${Platform.pathSeparator}status.txt.tmp');
         await tmp.writeAsString(contents.toString(), flush: true);
-        await tmp.rename(
-            '${directory.path}${Platform.pathSeparator}status.txt');
+        await tmp
+            .rename('${directory.path}${Platform.pathSeparator}status.txt');
       } catch (e) {
         // Status reporting must never take the player down with it.
         Logger.error('CliService: failed to write status file: $e', 'cli');
