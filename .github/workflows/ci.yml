@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ main, develop, fix/windows-scheduled-startup ]
+    branches: [ main, develop, fix/windows-scheduled-startup, fix/credential-store-prefs-corruption ]
   pull_request:
     branches: [ main, develop ]
 
