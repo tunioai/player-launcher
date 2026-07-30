@@ -8,13 +8,15 @@ import '../services/radio_service.dart';
 import '../services/failover_service.dart';
 import '../services/failover_reporting_service.dart';
 import '../services/local_web_server.dart';
+import '../services/cli_service.dart';
+import '../utils/cli_args.dart';
 
 /// Service locator for dependency injection setup
 class ServiceLocator {
   static bool _isInitialized = false;
 
   /// Initialize all services and dependencies
-  static Future<void> initialize() async {
+  static Future<void> initialize({CliArgs? cliArgs}) async {
     if (_isInitialized) return;
 
     // Initialize storage service first (async)
@@ -53,14 +55,31 @@ class ServiceLocator {
           failoverService: di.get<IFailoverService>(),
         ));
 
+    // Console interface (Windows): reports state to `--status` and receives
+    // commands from a short-lived console process.
+    di.registerSingleton<CliService>(() => CliService(
+          radioService: di.get<IRadioService>(),
+          storageService: di.get<StorageService>(),
+        ));
+
     // Initialize failover service
     final failoverService = di.get<IFailoverService>();
     await failoverService.initialize();
+
+    // A --pin or --unbind on the command line has to land before the radio
+    // service reads the stored token, otherwise the first connect would use
+    // the binding we are about to replace.
+    final cliService = di.get<CliService>();
+    if (cliArgs != null && cliArgs.hasBindingChange) {
+      await cliService.applyStartupArgs(cliArgs);
+    }
 
     // Initialize radio service to enable auto-reconnect
     // Don't await to prevent blocking app startup if network unavailable
     final radioService = di.get<IRadioService>();
     unawaited(radioService.initialize());
+
+    await cliService.initialize();
 
     // Start local web server (non-blocking)
     final localWebServer = di.get<LocalWebServer>();

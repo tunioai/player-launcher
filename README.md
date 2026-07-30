@@ -119,6 +119,51 @@ The application is fully optimized for Android TV and supports complete navigati
 
 For detailed instructions, see [TV Remote Guide](TV_REMOTE_GUIDE.md).
 
+### Console Interface (Windows)
+
+For integrating the player into a till, a digital-signage PC or a store
+management system, the Windows build ships a console front end next to the
+executable. Call `tunio_spot` from CMD or PowerShell — `tunio_spot.com` wins
+name resolution over `tunio_spot.exe`, so the console waits for the command and
+`errorlevel` and output redirection both work. Double-clicking the `.exe` still
+opens the GUI as before.
+
+```
+Information
+  /h, /?, --help            Show help
+  /v, --version             Show the application version
+  --status [--json]         Report player state
+  --log-path                Print the path of the log file
+
+Startup
+  /s, --silent              Start minimised to the system tray
+
+Configuration (works whether or not the player is running)
+  --autostart on|off|status Start the player at Windows logon
+  --pin <code>              Bind this machine to a point; starts the player
+                            if it is not already running
+  --unbind                  Remove the point binding
+
+Control of a running player
+  --show / --hide           Restore the window / hide to the tray
+  --volume <0-100>          Set playback volume for this session
+  --quit                    Shut the player down
+```
+
+Exit codes: `0` success, `1` failed, `2` unknown command or bad argument,
+`3` the player is not running, `4` the machine is not bound to a point. Mass
+provisioning is therefore a single line per machine:
+
+```bat
+tunio_spot --pin 123456 && tunio_spot --autostart on
+```
+
+`--status` answers from `status.txt` in `%APPDATA%\Tunio AI\Tunio Spot`, which
+the running player refreshes on every state change and every 30 seconds. A
+wedged player is visible as a stale `updated_at` rather than as no answer at
+all. Volume set from the console applies to the current session; the backend's
+failover volume can still override it.
+
 ## 🔄 Intelligent Failover System
 
 ### How It Works
