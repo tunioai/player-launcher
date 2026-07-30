@@ -5,8 +5,9 @@ import 'dart:math';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:network_info_plus/network_info_plus.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import '../services/credential_store.dart';
 import 'logger.dart';
+import 'prefs_guard.dart';
 
 class PlatformInfo {
   static PackageInfo? _packageInfo;
@@ -104,18 +105,26 @@ class PlatformInfo {
 
   static Future<void> _initializeDeviceUuid() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final stored = prefs.getString(_deviceUuidKey);
-      if (stored != null && stored.isNotEmpty) {
-        _deviceUuid = stored;
-        return;
-      }
-
-      _deviceUuid = _generateUuidV4();
-      await prefs.setString(_deviceUuidKey, _deviceUuid!);
+      final store = await CredentialStore.getInstance();
+      var uuid =
+          store.get(CredentialStore.deviceUuidKey) ?? await _legacyDeviceUuid();
+      uuid ??= _generateUuidV4();
+      await store.set(CredentialStore.deviceUuidKey, uuid);
+      _deviceUuid = uuid;
     } catch (e) {
       Logger.error('Failed to initialize device UUID: $e');
       _deviceUuid = null;
+    }
+  }
+
+  static Future<String?> _legacyDeviceUuid() async {
+    try {
+      final stored = (await PrefsGuard.getInstance()).getString(_deviceUuidKey);
+      if (stored == null || stored.isEmpty) return null;
+      return stored;
+    } catch (e) {
+      Logger.error('Failed to read legacy device UUID: $e');
+      return null;
     }
   }
 
