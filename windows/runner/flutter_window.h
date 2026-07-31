@@ -34,6 +34,11 @@ class FlutterWindow : public Win32Window {
   // Handles launch-at-startup settings for the current Windows user.
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
       autostart_channel_;
+
+  // Carries console commands (see cli.h) from a second, short-lived process
+  // into the Dart side of the running player.
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
+      cli_channel_;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_

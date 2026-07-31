@@ -4,6 +4,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/failover_event.dart';
 import '../utils/logger.dart';
+import '../utils/prefs_guard.dart';
+import 'credential_store.dart';
 
 class StorageService {
   static const String _tokenKey = 'token';
@@ -26,24 +28,50 @@ class StorageService {
 
   static StorageService? _instance;
   SharedPreferences? _prefs;
+  CredentialStore? _credentials;
 
   StorageService._();
 
   static Future<StorageService> getInstance() async {
     _instance ??= StorageService._();
-    _instance!._prefs ??= await SharedPreferences.getInstance();
+    _instance!._prefs ??= await PrefsGuard.getInstance();
+    if (_instance!._credentials == null) {
+      _instance!._credentials = await CredentialStore.getInstance();
+      await _instance!._migrateLegacyCredentials();
+    }
     return _instance!;
   }
 
-  // Token methods / Pincode
+  // Credentials written before CredentialStore existed live only in prefs;
+  // copy them over once so they survive the next prefs corruption.
+  Future<void> _migrateLegacyCredentials() async {
+    const legacyKeys = <String, String>{
+      CredentialStore.tokenKey: _tokenKey,
+      CredentialStore.adminKeyKey: _adminKeyKey,
+      CredentialStore.adminKeyHashKey: _adminKeyHashKey,
+    };
+    for (final entry in legacyKeys.entries) {
+      if (_credentials!.get(entry.key) != null) continue;
+      final legacy = _prefs!.getString(entry.value);
+      if (legacy != null && legacy.isNotEmpty) {
+        await _credentials!.set(entry.key, legacy);
+      }
+    }
+  }
+
+  // Token methods / Pincode. CredentialStore is the source of truth; the
+  // prefs copy is kept so a downgrade to a pre-CredentialStore build still
+  // finds the binding.
   Future<void> saveToken(String token) async {
+    await _credentials!.set(CredentialStore.tokenKey, token);
     await _prefs!.setString(_tokenKey, token);
     Logger.debug('🔑 StorageService: Token saved: ${token.substring(0, 2)}****',
         'StorageService');
   }
 
   String? getToken() {
-    final token = _prefs!.getString(_tokenKey);
+    final token = _credentials!.get(CredentialStore.tokenKey) ??
+        _prefs!.getString(_tokenKey);
     Logger.debug(
         '🔑 StorageService: Token loaded: ${token != null ? '${token.substring(0, 2)}****' : 'NULL'}',
         'StorageService');
@@ -51,18 +79,21 @@ class StorageService {
   }
 
   Future<void> clearToken() async {
+    await _credentials!.set(CredentialStore.tokenKey, null);
     await _prefs!.remove(_tokenKey);
     Logger.debug('🔑 StorageService: Token cleared', 'StorageService');
   }
 
   // Admin key methods
   Future<void> saveAdminKey(String key) async {
+    await _credentials!.set(CredentialStore.adminKeyKey, key);
     await _prefs!.setString(_adminKeyKey, key);
     Logger.debug('🔐 StorageService: Admin key saved', 'StorageService');
   }
 
   String? getAdminKey() {
-    final key = _prefs!.getString(_adminKeyKey);
+    final key = _credentials!.get(CredentialStore.adminKeyKey) ??
+        _prefs!.getString(_adminKeyKey);
     Logger.debug(
         '🔐 StorageService: Admin key loaded: ${key != null && key.isNotEmpty ? 'set' : 'NULL'}',
         'StorageService');
@@ -70,17 +101,20 @@ class StorageService {
   }
 
   Future<void> clearAdminKey() async {
+    await _credentials!.set(CredentialStore.adminKeyKey, null);
     await _prefs!.remove(_adminKeyKey);
     Logger.debug('🔐 StorageService: Admin key cleared', 'StorageService');
   }
 
   Future<void> saveAdminKeyHash(String hash) async {
+    await _credentials!.set(CredentialStore.adminKeyHashKey, hash);
     await _prefs!.setString(_adminKeyHashKey, hash);
     Logger.debug('🔐 StorageService: Admin key hash saved', 'StorageService');
   }
 
   String? getAdminKeyHash() {
-    final hash = _prefs!.getString(_adminKeyHashKey);
+    final hash = _credentials!.get(CredentialStore.adminKeyHashKey) ??
+        _prefs!.getString(_adminKeyHashKey);
     Logger.debug(
         '🔐 StorageService: Admin key hash loaded: ${hash != null && hash.isNotEmpty ? 'set' : 'NULL'}',
         'StorageService');
@@ -88,6 +122,7 @@ class StorageService {
   }
 
   Future<void> clearAdminKeyHash() async {
+    await _credentials!.set(CredentialStore.adminKeyHashKey, null);
     await _prefs!.remove(_adminKeyHashKey);
     Logger.debug('🔐 StorageService: Admin key hash cleared', 'StorageService');
   }
@@ -128,6 +163,9 @@ class StorageService {
 
   Future<void> clear() async {
     await _prefs!.clear();
+    await _credentials!.set(CredentialStore.tokenKey, null);
+    await _credentials!.set(CredentialStore.adminKeyKey, null);
+    await _credentials!.set(CredentialStore.adminKeyHashKey, null);
   }
 
   Future<void> saveServiceSuspensionWarningUrl(String warningUrl) async {

@@ -7,6 +7,9 @@ project(runner LANGUAGES CXX)
 #
 # Any new source files that you add to the application should be added here.
 add_executable(${BINARY_NAME} WIN32
+  "app_paths.cpp"
+  "autostart.cpp"
+  "cli.cpp"
   "flutter_window.cpp"
   "main.cpp"
   "utils.cpp"
@@ -35,6 +38,28 @@ target_compile_definitions(${BINARY_NAME} PRIVATE "NOMINMAX")
 target_link_libraries(${BINARY_NAME} PRIVATE flutter flutter_wrapper_app)
 target_link_libraries(${BINARY_NAME} PRIVATE "dwmapi.lib")
 target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
+
+# Console front end. The player itself is a GUI-subsystem binary, which CMD
+# does not wait for, so `tunio_spot --status` from a console would return to
+# the prompt before printing anything and `errorlevel` would be meaningless.
+# This is a console-subsystem binary that CMD does wait for; naming it .com
+# makes it win over the .exe in PATHEXT resolution, so console callers get it
+# while double-clicking the .exe still opens the GUI.
+add_executable(${BINARY_NAME}_cli
+  "cli_shim.cpp"
+)
+apply_standard_settings(${BINARY_NAME}_cli)
+set_target_properties(${BINARY_NAME}_cli PROPERTIES
+  OUTPUT_NAME "${BINARY_NAME}"
+  SUFFIX ".com"
+  # Stated rather than inferred: the entry point is wmain, and the subsystem
+  # must stay CONSOLE so CMD waits for it. That waiting is the whole point of
+  # this target.
+  LINK_FLAGS "/SUBSYSTEM:CONSOLE /ENTRY:wmainCRTStartup"
+)
+target_compile_definitions(${BINARY_NAME}_cli PRIVATE "NOMINMAX")
+target_include_directories(${BINARY_NAME}_cli PRIVATE "${CMAKE_SOURCE_DIR}")
+add_dependencies(${BINARY_NAME}_cli ${BINARY_NAME})
 
 # Run the Flutter tool portions of the build. This must not be removed.
 add_dependencies(${BINARY_NAME} flutter_assemble)

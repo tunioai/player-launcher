@@ -12,6 +12,7 @@ import 'services/storage_service.dart';
 import 'utils/platform_info.dart';
 
 import 'screens/home_screen.dart';
+import 'utils/cli_args.dart';
 import 'utils/logger.dart';
 import 'utils/insecure_http_overrides.dart';
 
@@ -36,9 +37,11 @@ void main(List<String> arguments) {
       return true;
     };
 
+    final cliArgs = CliArgs.parse(arguments);
+
     if (DesktopLifecycleService.isSupported) {
       await DesktopLifecycleService.instance.initialize(
-        startHidden: arguments.contains('--minimized'),
+        startHidden: cliArgs.startMinimized,
       );
     }
 
@@ -64,7 +67,7 @@ void main(List<String> arguments) {
     await PlatformInfo.initialize();
 
     try {
-      await ServiceLocator.initialize();
+      await ServiceLocator.initialize(cliArgs: cliArgs);
       Logger.info('Application services initialized successfully');
     } catch (e, stackTrace) {
       Logger.error('Failed to initialize services', 'startup', e, stackTrace);

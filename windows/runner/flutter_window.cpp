@@ -7,89 +7,16 @@
 #include <string>
 #include <vector>
 
+#include "autostart.h"
+#include "cli.h"
 #include "flutter/generated_plugin_registrant.h"
 #include "utils.h"
 
 namespace {
 
-constexpr wchar_t kRunRegistryKey[] =
-    L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-constexpr wchar_t kRunRegistryValue[] = L"TunioSpot";
 constexpr char kAutoStartChannel[] =
     "com.example.tunio_radio_player/autostart";
-
-std::wstring GetExecutablePath() {
-  std::vector<wchar_t> buffer(MAX_PATH);
-
-  while (true) {
-    const DWORD length = ::GetModuleFileNameW(
-        nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
-    if (length == 0) {
-      return std::wstring();
-    }
-    if (static_cast<size_t>(length) < buffer.size()) {
-      return std::wstring(buffer.data(), length);
-    }
-    buffer.resize(buffer.size() * 2);
-  }
-}
-
-std::wstring GetAutoStartCommand() {
-  const std::wstring executable_path = GetExecutablePath();
-  if (executable_path.empty()) {
-    return std::wstring();
-  }
-  return L"\"" + executable_path + L"\" --minimized";
-}
-
-bool IsLaunchAtStartupEnabled() {
-  DWORD value_size = 0;
-  LONG status = ::RegGetValueW(
-      HKEY_CURRENT_USER, kRunRegistryKey, kRunRegistryValue, RRF_RT_REG_SZ,
-      nullptr, nullptr, &value_size);
-  if (status != ERROR_SUCCESS || value_size < sizeof(wchar_t)) {
-    return false;
-  }
-
-  std::vector<wchar_t> value(value_size / sizeof(wchar_t));
-  status = ::RegGetValueW(HKEY_CURRENT_USER, kRunRegistryKey,
-                          kRunRegistryValue, RRF_RT_REG_SZ, nullptr,
-                          value.data(), &value_size);
-  if (status != ERROR_SUCCESS) {
-    return false;
-  }
-
-  return std::wstring(value.data()) == GetAutoStartCommand();
-}
-
-LONG SetLaunchAtStartupEnabled(bool enabled) {
-  if (!enabled) {
-    const LONG status = ::RegDeleteKeyValueW(
-        HKEY_CURRENT_USER, kRunRegistryKey, kRunRegistryValue);
-    return status == ERROR_FILE_NOT_FOUND ? ERROR_SUCCESS : status;
-  }
-
-  const std::wstring command = GetAutoStartCommand();
-  if (command.empty()) {
-    return ERROR_FILE_NOT_FOUND;
-  }
-
-  HKEY key = nullptr;
-  LONG status = ::RegCreateKeyExW(
-      HKEY_CURRENT_USER, kRunRegistryKey, 0, nullptr, 0, KEY_SET_VALUE,
-      nullptr, &key, nullptr);
-  if (status != ERROR_SUCCESS) {
-    return status;
-  }
-
-  const DWORD command_size =
-      static_cast<DWORD>((command.size() + 1) * sizeof(wchar_t));
-  status = ::RegSetValueExW(
-      key, kRunRegistryValue, 0, REG_SZ,
-      reinterpret_cast<const BYTE*>(command.c_str()), command_size);
-  ::RegCloseKey(key);
-  return status;
-}
+constexpr char kCliChannel[] = "com.example.tunio_radio_player/cli";
 
 bool WasStartedMinimized() {
   const std::vector<std::string> arguments = GetCommandLineArguments();
@@ -129,7 +56,7 @@ bool FlutterWindow::OnCreate() {
       [](const auto& call, auto result) {
         if (call.method_name() == "isLaunchAtStartupEnabled") {
           result->Success(
-              flutter::EncodableValue(IsLaunchAtStartupEnabled()));
+              flutter::EncodableValue(autostart::IsEnabled()));
           return;
         }
 
@@ -158,7 +85,7 @@ bool FlutterWindow::OnCreate() {
             return;
           }
 
-          const LONG status = SetLaunchAtStartupEnabled(*enabled);
+          const LONG status = autostart::SetEnabled(*enabled);
           if (status != ERROR_SUCCESS) {
             result->Error(
                 "autostart_error",
@@ -168,7 +95,7 @@ bool FlutterWindow::OnCreate() {
           }
 
           result->Success(
-              flutter::EncodableValue(IsLaunchAtStartupEnabled()));
+              flutter::EncodableValue(autostart::IsEnabled()));
           return;
         }
 
@@ -179,6 +106,11 @@ bool FlutterWindow::OnCreate() {
 
         result->NotImplemented();
       });
+
+  cli_channel_ =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+          flutter_controller_->engine()->messenger(), kCliChannel,
+          &flutter::StandardMethodCodec::GetInstance());
 
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
@@ -199,6 +131,7 @@ void FlutterWindow::OnDestroy() {
     autostart_channel_->SetMethodCallHandler(nullptr);
     autostart_channel_.reset();
   }
+  cli_channel_.reset();
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }
@@ -210,6 +143,23 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  // Handled before Flutter sees the message: this is our own private channel
+  // from the console front end, and returning TRUE tells the sender it landed.
+  if (message == WM_COPYDATA) {
+    const auto* payload = reinterpret_cast<const COPYDATASTRUCT*>(lparam);
+    if (payload != nullptr && payload->dwData == cli::kCommandMessageId &&
+        payload->lpData != nullptr && payload->cbData > 0 && cli_channel_) {
+      // The sender's buffer is only valid for the duration of this call, and
+      // it NUL-terminates, so copy before handing it to Dart.
+      const std::string command(static_cast<const char*>(payload->lpData),
+                                payload->cbData - 1);
+      cli_channel_->InvokeMethod(
+          "command", std::make_unique<flutter::EncodableValue>(command));
+      return TRUE;
+    }
+    return FALSE;
+  }
+
   // Give Flutter, including plugins, an opportunity to handle window messages.
   if (flutter_controller_) {
     std::optional<LRESULT> result =
