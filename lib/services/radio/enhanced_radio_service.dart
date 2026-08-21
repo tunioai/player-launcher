@@ -11,6 +11,7 @@ import '../../models/failover_event.dart';
 import '../../models/stream_config.dart';
 import '../../utils/logger.dart';
 import '../api_service.dart';
+import '../audio_output_service.dart';
 import '../audio_service.dart';
 import '../failover_reporting_service.dart';
 import '../failover_service.dart';
@@ -27,6 +28,7 @@ final class EnhancedRadioService implements IRadioService {
   final StorageService _storageService;
   final IFailoverService _failoverService;
   final FailoverReportingService _failoverReportingService;
+  final AudioOutputService _audioOutputService;
 
   // State management
   final StreamController<RadioState> _stateController =
@@ -42,6 +44,7 @@ final class EnhancedRadioService implements IRadioService {
   // Subscriptions
   StreamSubscription<AudioState>? _audioStateSubscription;
   StreamSubscription<NetworkState>? _networkStateSubscription;
+  StreamSubscription<bool>? _audioOutputSubscription;
 
   NetworkState _latestNetworkState =
       const NetworkState(isConnected: false, type: ConnectionType.unknown);
@@ -156,11 +159,13 @@ final class EnhancedRadioService implements IRadioService {
     required StorageService storageService,
     required IFailoverService failoverService,
     required FailoverReportingService failoverReportingService,
+    AudioOutputService? audioOutputService,
   })  : _audioService = audioService,
         _apiService = apiService,
         _storageService = storageService,
         _failoverService = failoverService,
-        _failoverReportingService = failoverReportingService;
+        _failoverReportingService = failoverReportingService,
+        _audioOutputService = audioOutputService ?? AudioOutputService();
 
   @override
   Stream<RadioState> get stateStream => _stateController.stream;
@@ -233,6 +238,15 @@ final class EnhancedRadioService implements IRadioService {
       _handleNetworkStateChange,
       onError: (error) => Logger.error('Network state stream error: $error'),
     );
+
+    // Windows: watch for audio output devices coming and going so a plugged-in
+    // (e.g. Bluetooth) speaker resumes playback right away instead of waiting
+    // out the retry backoff.
+    if (_audioOutputService.isSupported) {
+      _audioOutputService.startMonitoring();
+      _audioOutputSubscription = _audioOutputService.onAvailabilityChanged
+          .listen(_handleAudioOutputAvailabilityChange);
+    }
 
     // Start state monitoring for hung connections
     _startStateMonitoring();
@@ -773,6 +787,30 @@ final class EnhancedRadioService implements IRadioService {
     }
   }
 
+  void _handleAudioOutputAvailabilityChange(bool available) {
+    if (!available) {
+      // Playback will fail on its own and surface kNoAudioOutputMessage
+      // through the regular error path; nothing to do here.
+      return;
+    }
+
+    // A device just appeared: retry immediately instead of waiting out the
+    // backoff (up to 2 minutes) that the no-device failures accumulated.
+    _retryManager.reset();
+
+    if (_isDisposed || _isConnectionInProgress) return;
+    if (!_autoReconnectEnabled || !_autoLogicEnabled) return;
+    if (_currentState is! RadioStateError) return;
+
+    final token = _getStoredToken();
+    if (token == null) return;
+
+    Logger.info(
+        '🔊 AUDIO_OUTPUT: Output device connected - reconnecting immediately');
+    _retryTimer?.cancel();
+    unawaited(_attemptConnect(token, isRetry: true));
+  }
+
   void _handleNetworkStateChange(NetworkState networkState) {
     Logger.info('Network state changed: connected=${networkState.isConnected}');
     _latestNetworkState = networkState;
@@ -1099,10 +1137,12 @@ final class EnhancedRadioService implements IRadioService {
           ));
         } else if (_autoReconnectEnabled) {
           _isConnectionInProgress = false;
-          unawaited(_scheduleRetry('Connection failed: $errorMessage'));
+          unawaited(_scheduleRetry(_connectionFailureReason(errorMessage)));
         } else {
           _updateState(RadioStateError(
-            message: 'Connection failed',
+            message: errorMessage.contains(kNoAudioOutputMessage)
+                ? kNoAudioOutputMessage
+                : 'Connection failed',
             canRetry: true,
             attemptCount: attempt,
           ));
@@ -1116,10 +1156,12 @@ final class EnhancedRadioService implements IRadioService {
       // Schedule retry on failure
       if (_autoReconnectEnabled) {
         _isConnectionInProgress = false;
-        unawaited(_scheduleRetry('Connection failed: $e'));
+        unawaited(_scheduleRetry(_connectionFailureReason('$e')));
       } else {
         _updateState(RadioStateError(
-          message: 'Connection failed',
+          message: '$e'.contains(kNoAudioOutputMessage)
+              ? kNoAudioOutputMessage
+              : 'Connection failed',
           canRetry: true,
           attemptCount: attempt,
         ));
@@ -1524,6 +1566,14 @@ final class EnhancedRadioService implements IRadioService {
 
     return _attemptConnect(token, isRetry: true);
   }
+
+  /// UI-facing reason for a failed connection attempt. The no-output-device
+  /// failure keeps its own actionable message instead of the generic wrapper,
+  /// so the user sees a device problem rather than a network one.
+  String _connectionFailureReason(String errorMessage) =>
+      errorMessage.contains(kNoAudioOutputMessage)
+          ? kNoAudioOutputMessage
+          : 'Connection failed: $errorMessage';
 
   Future<void> _scheduleRetry(String reason) async {
     if (!_autoReconnectEnabled) return;
@@ -2900,7 +2950,17 @@ final class EnhancedRadioService implements IRadioService {
     _isConnectionInProgress = false; // Reset connection flag
     _isStreamSwitchInProgress = false; // Reset stream switch flag
 
-    // Check if we should activate failover instead of forcing reconnection
+    // Check if we should activate failover instead of forcing reconnection.
+    // With no audio output device the failover tracks cannot play either, so
+    // stay in the retry loop with the actionable message instead.
+    final hasOutputDevice = _audioOutputService.hasActiveOutputDevice();
+    if (hasOutputDevice == false) {
+      Logger.warning(
+          '🔊 AUDIO_OUTPUT: No output device during force recovery - skipping failover, retrying');
+      unawaited(_scheduleRetry(kNoAudioOutputMessage));
+      return;
+    }
+
     if (_failoverService.cachedTracksCount > 0) {
       Logger.info(
           '🚨 FORCE RECOVERY FAILOVER: Force recovery with ${_failoverService.cachedTracksCount} cached tracks - activating failover instead');
@@ -3223,6 +3283,8 @@ final class EnhancedRadioService implements IRadioService {
 
     await _audioStateSubscription?.cancel();
     await _networkStateSubscription?.cancel();
+    await _audioOutputSubscription?.cancel();
+    _audioOutputService.dispose();
 
     await _audioService.dispose();
     await _stateController.close();

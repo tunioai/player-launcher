@@ -13,6 +13,7 @@ import '../models/stream_config.dart';
 import '../utils/logger.dart';
 import '../utils/audio_config.dart';
 import 'audio/windows_playback_operation_queue.dart';
+import 'audio_output_service.dart';
 
 abstract interface class IAudioService implements Disposable {
   Stream<AudioState> get stateStream;
@@ -36,6 +37,11 @@ abstract interface class IAudioService implements Disposable {
 }
 
 final class EnhancedAudioService implements IAudioService {
+  EnhancedAudioService({AudioOutputService? audioOutputService})
+      : _audioOutputService = audioOutputService ?? AudioOutputService();
+
+  final AudioOutputService _audioOutputService;
+
   late AudioPlayer _audioPlayer;
 
   final StreamController<AudioState> _stateController =
@@ -1090,6 +1096,14 @@ final class EnhancedAudioService implements IAudioService {
       if (initResult.isFailure) return initResult;
     }
 
+    // Without a render endpoint the WinRT player fails every load with an
+    // opaque sourceNotSupported; fail fast with an actionable message instead.
+    if (_audioOutputService.hasActiveOutputDevice() == false) {
+      Logger.error(
+          '🎵 AUDIO_DEBUG: No active audio output device - not starting stream');
+      return const Failure(kNoAudioOutputMessage);
+    }
+
     return _serializeWindowsSourceMutation(
       () => _playStreamAfterInitialization(config, quickStart: quickStart),
     );
@@ -1257,6 +1271,13 @@ final class EnhancedAudioService implements IAudioService {
     if (!_isInitialized) {
       final initResult = await initialize();
       if (initResult.isFailure) return initResult;
+    }
+
+    // Local failover tracks need a render endpoint just like live streams.
+    if (_audioOutputService.hasActiveOutputDevice() == false) {
+      Logger.error(
+          '🎵 FAILOVER: No active audio output device - not starting local file');
+      return const Failure(kNoAudioOutputMessage);
     }
 
     return _serializeWindowsSourceMutation(
