@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ main, develop, fix/windows-scheduled-startup, fix/credential-store-prefs-corruption ]
+    branches: [ main, develop, fix/windows-scheduled-startup, fix/credential-store-prefs-corruption, feat/windows-audio-output-detection ]
   pull_request:
     branches: [ main, develop ]
 
@@ -12,7 +12,8 @@ on:
 env:
   ARTIFACT_BRANCHES: >-
     ["refs/heads/fix/windows-scheduled-startup",
-     "refs/heads/fix/credential-store-prefs-corruption"]
+     "refs/heads/fix/credential-store-prefs-corruption",
+     "refs/heads/feat/windows-audio-output-detection"]
 
 jobs:
   test:
