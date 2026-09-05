@@ -1,0 +1,19 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+        Evotor.Market build. Same reasoning as the rustore flavor:
+        START_FOREGROUND_SERVICES_FROM_BACKGROUND is not a real grantable AOSP
+        permission and store reviews tend to flag unknown/suspicious permission
+        declarations, so it is removed from the merged manifest. Boot auto-start
+        still works via RECEIVE_BOOT_COMPLETED + BootReceiver.
+
+        TODO before Evotor.Market review: Evotor assigns the app a UUID in the
+        developer cabinet (dev.evotor.ru); if their checklist requires it in the
+        manifest, add the meta-data here.
+    -->
+    <uses-permission
+        android:name="android.permission.START_FOREGROUND_SERVICES_FROM_BACKGROUND"
+        tools:node="remove" />
+
+</manifest>

@@ -94,6 +94,22 @@ android {
                 signingConfig signingConfigs.release
             }
         }
+        // Evotor.Market distribution: Evotor smart terminals run Evotor OS 4
+        // (Android 7.1) on 32-bit MediaTek MT8321A, so this flavor ships only
+        // armeabi-v7a. No self-update (APP_FLAVOR=evotor disables it), installs
+        // go through Evotor.Market. Falls back to debug signing when
+        // key.properties is absent so local verification builds work.
+        evotor {
+            dimension = "distribution"
+            ndk {
+                abiFilters "armeabi-v7a"
+            }
+            if (keystorePropertiesFile.exists()) {
+                signingConfig signingConfigs.release
+            } else {
+                signingConfig signingConfigs.debug
+            }
+        }
     }
 
     buildTypes {
