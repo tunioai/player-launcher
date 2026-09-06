@@ -30,6 +30,8 @@ dependencies:
   just_audio_background: ^0.0.1-beta.17
   tray_manager: ^0.5.3
   window_manager: ^0.5.2
+  win32: ^5.15.0
+  ffi: ^2.2.0
 
 dev_dependencies:
   flutter_test:

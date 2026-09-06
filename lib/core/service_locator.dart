@@ -3,6 +3,7 @@ import 'dart:async';
 import '../core/dependency_injection.dart';
 import '../services/api_service.dart';
 import '../services/storage_service.dart';
+import '../services/audio_output_service.dart';
 import '../services/audio_service.dart';
 import '../services/radio_service.dart';
 import '../services/failover_service.dart';
@@ -36,8 +37,13 @@ class ServiceLocator {
               apiService: di.get<ApiService>(),
             ));
 
+    // Audio output device detection (Windows), shared by audio/radio services
+    di.registerSingleton<AudioOutputService>(() => AudioOutputService());
+
     // Audio service with interface
-    di.registerSingleton<IAudioService>(() => EnhancedAudioService());
+    di.registerSingleton<IAudioService>(() => EnhancedAudioService(
+          audioOutputService: di.get<AudioOutputService>(),
+        ));
 
     // Radio service with dependencies
     di.registerSingleton<IRadioService>(() => EnhancedRadioService(
@@ -46,6 +52,7 @@ class ServiceLocator {
           storageService: di.get<StorageService>(),
           failoverService: di.get<IFailoverService>(),
           failoverReportingService: di.get<FailoverReportingService>(),
+          audioOutputService: di.get<AudioOutputService>(),
         ));
 
     // Local web server for LAN control
