@@ -8,16 +8,96 @@ import '../models/stream_config.dart';
 import '../models/api_error.dart';
 import '../utils/logger.dart';
 import '../utils/platform_info.dart';
+import 'api_endpoint.dart';
 import 'storage_service.dart';
 
 class ApiService {
-  ApiService({required StorageService storageService})
-      : _storageService = storageService;
+  ApiService({required StorageService storageService, ApiEndpoint? endpoint})
+      : _storageService = storageService,
+        endpoint = endpoint ?? ApiEndpoint();
 
-  // static const String baseUrl = 'http://192.168.0.84:9191/api/public';
-  static const String baseUrl = 'https://api.tunio.ai';
   static const Duration timeout = Duration(seconds: 15);
   final StorageService _storageService;
+  final ApiEndpoint endpoint;
+
+  String get baseUrl => endpoint.baseUrl;
+
+  Future<StreamConfig> parseSpotPayload(Map<String, dynamic> data) async {
+    // Check success field
+    final success = data['success'] ?? false;
+    Logger.debug('🔄 API_DEBUG: Success field value: $success', 'ApiService');
+    if (!success) {
+      final errorMessage = data['message'] ?? 'Unknown error';
+      Logger.warning('🔄 API_DEBUG: API returned success=false: $errorMessage',
+          'ApiService');
+      throw ApiError(
+        message: errorMessage,
+        statusCode: 200,
+        isFromBackend: true,
+      );
+    }
+
+    // Sync optional runtime configuration flags
+    final configData = data['config'];
+    if (configData is Map<String, dynamic>) {
+      final offlineFlag = configData['offline_mode'];
+      if (offlineFlag is bool) {
+        Logger.debug('🔄 API_DEBUG: Backend offline_mode flag: $offlineFlag',
+            'ApiService');
+        SystemState.instance.syncOfflineMode(offlineFlag);
+      }
+
+      final adminKey = configData['admin_key'];
+      if (adminKey is String && adminKey.trim().isNotEmpty) {
+        await _storageService.saveAdminKeyHash(adminKey.trim());
+      } else {
+        final legacyKey = configData['admin_key_plain'];
+        if (legacyKey is String && legacyKey.trim().isNotEmpty) {
+          await _storageService.saveAdminKey(legacyKey.trim());
+        }
+      }
+
+      final warningMessageRaw = configData['warning_message'];
+      final warningMessage =
+          warningMessageRaw is String ? warningMessageRaw.trim() : '';
+      if (warningMessage.isNotEmpty) {
+        await _storageService.saveServiceSuspensionWarningUrl(warningMessage);
+        SystemState.instance.syncServiceSuspended(
+            suspended: true, warningMessageUrl: warningMessage);
+      } else {
+        await _storageService.clearServiceSuspension();
+        SystemState.instance.syncServiceSuspended(suspended: false);
+      }
+    }
+
+    // Extract stream data
+    Logger.debug('🔄 API_DEBUG: About to extract stream data...', 'ApiService');
+    final streamData = data['stream'];
+    if (streamData == null) {
+      Logger.error(
+          '🔄 API_DEBUG: No stream data found in API response', 'ApiService');
+      throw Exception('No stream data available');
+    }
+
+    Logger.debug('🔄 API_DEBUG: Raw API response: $data', 'ApiService');
+    Logger.debug('🔄 API_DEBUG: Stream data: $streamData', 'ApiService');
+
+    Logger.debug('🔄 API_DEBUG: About to create StreamConfig from JSON...',
+        'ApiService');
+    final streamConfig = StreamConfig.fromJson(streamData);
+    Logger.debug(
+        '🔄 API_DEBUG: Created StreamConfig with URL: ${streamConfig.streamUrl}',
+        'ApiService');
+    Logger.debug('🔄 API_DEBUG: StreamConfig title: ${streamConfig.title}',
+        'ApiService');
+    Logger.debug('🔄 API_DEBUG: StreamConfig volume: ${streamConfig.volume}',
+        'ApiService');
+    Logger.debug(
+        '🔄 API_DEBUG: StreamConfig music_volume: ${streamConfig.musicVolume}',
+        'ApiService');
+    Logger.debug('🔄 API_DEBUG: API call completed successfully', 'ApiService');
+    return streamConfig;
+  }
 
   Future<StreamConfig?> getStreamConfig(String pin, {int? currentPing}) async {
     if (pin.isEmpty) return null;
@@ -71,87 +151,14 @@ class ApiService {
         Logger.info('🔄 API_DEBUG: Successfully decoded JSON response: $data',
             'ApiService');
 
-        // Check success field
-        final success = data['success'] ?? false;
-        Logger.debug(
-            '🔄 API_DEBUG: Success field value: $success', 'ApiService');
-        if (!success) {
-          final errorMessage = data['message'] ?? 'Unknown error';
-          Logger.warning(
-              '🔄 API_DEBUG: API returned success=false: $errorMessage',
-              'ApiService');
+        if (data is! Map<String, dynamic>) {
           throw ApiError(
-            message: errorMessage,
+            message: 'Malformed response',
             statusCode: response.statusCode,
             isFromBackend: true,
           );
         }
-
-        // Sync optional runtime configuration flags
-        final configData = data['config'];
-        if (configData is Map<String, dynamic>) {
-          final offlineFlag = configData['offline_mode'];
-          if (offlineFlag is bool) {
-            Logger.debug(
-                '🔄 API_DEBUG: Backend offline_mode flag: $offlineFlag',
-                'ApiService');
-            SystemState.instance.syncOfflineMode(offlineFlag);
-          }
-
-          final adminKey = configData['admin_key'];
-          if (adminKey is String && adminKey.trim().isNotEmpty) {
-            await _storageService.saveAdminKeyHash(adminKey.trim());
-          } else {
-            final legacyKey = configData['admin_key_plain'];
-            if (legacyKey is String && legacyKey.trim().isNotEmpty) {
-              await _storageService.saveAdminKey(legacyKey.trim());
-            }
-          }
-
-          final warningMessageRaw = configData['warning_message'];
-          final warningMessage =
-              warningMessageRaw is String ? warningMessageRaw.trim() : '';
-          if (warningMessage.isNotEmpty) {
-            await _storageService
-                .saveServiceSuspensionWarningUrl(warningMessage);
-            SystemState.instance.syncServiceSuspended(
-                suspended: true, warningMessageUrl: warningMessage);
-          } else {
-            await _storageService.clearServiceSuspension();
-            SystemState.instance.syncServiceSuspended(suspended: false);
-          }
-        }
-
-        // Extract stream data
-        Logger.debug(
-            '🔄 API_DEBUG: About to extract stream data...', 'ApiService');
-        final streamData = data['stream'];
-        if (streamData == null) {
-          Logger.error('🔄 API_DEBUG: No stream data found in API response',
-              'ApiService');
-          throw Exception('No stream data available');
-        }
-
-        Logger.debug('🔄 API_DEBUG: Raw API response: $data', 'ApiService');
-        Logger.debug('🔄 API_DEBUG: Stream data: $streamData', 'ApiService');
-
-        Logger.debug('🔄 API_DEBUG: About to create StreamConfig from JSON...',
-            'ApiService');
-        final streamConfig = StreamConfig.fromJson(streamData);
-        Logger.debug(
-            '🔄 API_DEBUG: Created StreamConfig with URL: ${streamConfig.streamUrl}',
-            'ApiService');
-        Logger.debug('🔄 API_DEBUG: StreamConfig title: ${streamConfig.title}',
-            'ApiService');
-        Logger.debug(
-            '🔄 API_DEBUG: StreamConfig volume: ${streamConfig.volume}',
-            'ApiService');
-        Logger.debug(
-            '🔄 API_DEBUG: StreamConfig music_volume: ${streamConfig.musicVolume}',
-            'ApiService');
-        Logger.debug(
-            '🔄 API_DEBUG: API call completed successfully', 'ApiService');
-        return streamConfig;
+        return parseSpotPayload(data);
       } else {
         // Try to parse error message from response body for non-200 status codes
         String errorMessage;

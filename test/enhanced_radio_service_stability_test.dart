@@ -10,8 +10,11 @@ import 'package:tunio_radio_player/core/system_state.dart';
 import 'package:tunio_radio_player/models/current_track.dart';
 import 'package:tunio_radio_player/models/failover_event.dart';
 import 'package:tunio_radio_player/models/stream_config.dart';
+import 'package:tunio_radio_player/services/api_endpoint.dart';
 import 'package:tunio_radio_player/services/api_service.dart';
 import 'package:tunio_radio_player/services/audio_service.dart';
+import 'package:tunio_radio_player/services/device_channel/device_channel_client.dart';
+import 'package:tunio_radio_player/services/device_channel/device_channel_protocol.dart';
 import 'package:tunio_radio_player/services/failover_reporting_service.dart';
 import 'package:tunio_radio_player/services/failover_service.dart';
 import 'package:tunio_radio_player/services/radio/enhanced_radio_service.dart';
@@ -743,6 +746,61 @@ void main() {
       expect(context.audioService.playStreamCalls, 0);
       expect(context.audioService.playLocalFileCalls, 0);
     });
+
+    test('reopens the channel on the host the endpoint measured fastest',
+        () async {
+      const latencies = {
+        'api.tunio.ai': 300,
+        'api-eu.tunio.ai': 40,
+      };
+      final endpoint = ApiEndpoint(
+        hosts: const ['https://api.tunio.ai', 'https://api-eu.tunio.ai'],
+        connect: (host) async => Duration(milliseconds: latencies[host.host]!),
+        routeCheck: (_) async => true,
+        sampleGap: Duration.zero,
+        hostGap: Duration.zero,
+      );
+      final channelUrls = <Uri>[];
+      final context = await _createContext(
+        liveConfig: const StreamConfig(
+          streamUrl: '',
+          visualizerUrl: 'https://example.com/screen-player/abc',
+          volume: 1.0,
+        ),
+        cachedTracksCount: 0,
+        endpoint: endpoint,
+        deviceChannelFactory: (url, pin, onSpot) {
+          channelUrls.add(url);
+          return DeviceChannelClient(
+            url: url,
+            pin: pin,
+            deviceId: 'test-device',
+            appVersion: '0.0.0+1',
+            onSpot: onSpot,
+            connector: (_, __) async => throw const SocketException('test'),
+            backoff: ReconnectBackoff(
+              base: const Duration(seconds: 30),
+              cap: const Duration(seconds: 30),
+              jitterMs: 0,
+            ),
+          );
+        },
+      );
+      addTearDown(context.dispose);
+
+      final connectResult = await context.radioService.connect('556677');
+      expect(connectResult.isSuccess, isTrue);
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateConnected);
+      await _waitUntil(() => channelUrls.isNotEmpty);
+      expect(channelUrls.single.toString(), 'wss://api.tunio.ai/v1/device');
+
+      expect(await endpoint.probe(), isTrue);
+      await _waitUntil(() => channelUrls.length == 2);
+
+      expect(channelUrls.last.toString(), 'wss://api-eu.tunio.ai/v1/device');
+      expect(context.radioService.currentState, isA<RadioStateConnected>());
+    });
   });
 }
 
@@ -765,14 +823,20 @@ Future<_TestContext> _createContext({
   required StreamConfig liveConfig,
   required int cachedTracksCount,
   Duration audioInitDelay = Duration.zero,
+  ApiEndpoint? endpoint,
+  DeviceChannelClient? Function(Uri url, String pin, SpotHandler onSpot)?
+      deviceChannelFactory,
 }) async {
   final storageService = await StorageService.getInstance();
   await storageService.clear();
   await storageService.saveLastVolume(0.9);
 
   final audioService = _FakeAudioService(initDelay: audioInitDelay);
-  final apiService =
-      _FakeApiService(storageService: storageService, config: liveConfig);
+  final apiService = _FakeApiService(
+    storageService: storageService,
+    endpoint: endpoint ?? ApiEndpoint(hosts: const ['https://api.tunio.ai']),
+    config: liveConfig,
+  );
   final failoverService = _FakeFailoverService(
     cachedTracksCount: cachedTracksCount,
     randomTrack: File('/tmp/fallback_track.m4a'),
@@ -788,6 +852,7 @@ Future<_TestContext> _createContext({
     storageService: storageService,
     failoverService: failoverService,
     failoverReportingService: reportingService,
+    deviceChannelFactory: deviceChannelFactory ?? (_, __, ___) => null,
   );
 
   return _TestContext(
@@ -1007,6 +1072,7 @@ class _FakeApiService extends ApiService {
 
   _FakeApiService({
     required super.storageService,
+    super.endpoint,
     required this.config,
   });
 
