@@ -788,6 +788,7 @@ Future<_TestContext> _createContext({
     storageService: storageService,
     failoverService: failoverService,
     failoverReportingService: reportingService,
+    deviceChannelFactory: (_, __) => null,
   );
 
   return _TestContext(

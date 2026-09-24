@@ -10,7 +10,10 @@ import '../../models/current_track.dart';
 import '../../models/failover_event.dart';
 import '../../models/stream_config.dart';
 import '../../utils/logger.dart';
+import '../../utils/platform_info.dart';
 import '../api_service.dart';
+import '../device_channel/device_channel_client.dart';
+import '../device_channel/device_channel_protocol.dart';
 import '../audio_service.dart';
 import '../failover_reporting_service.dart';
 import '../failover_service.dart';
@@ -49,6 +52,11 @@ final class EnhancedRadioService implements IRadioService {
   // Configuration polling
   Timer? _configPollingTimer;
   static const Duration _configPollingInterval = Duration(minutes: 1);
+  DeviceChannelClient? _channel;
+  StreamSubscription<bool>? _channelSubscription;
+  String? _channelPin;
+  final DeviceChannelClient? Function(String pin, SpotHandler onSpot)
+      _channelFactory;
   Timer? _warningLoopTimer;
   static const Duration _warningLoopPause = Duration(seconds: 20);
   StreamConfig? _latestFailoverProbeConfig;
@@ -156,11 +164,29 @@ final class EnhancedRadioService implements IRadioService {
     required StorageService storageService,
     required IFailoverService failoverService,
     required FailoverReportingService failoverReportingService,
+    DeviceChannelClient? Function(String pin, SpotHandler onSpot)?
+        deviceChannelFactory,
   })  : _audioService = audioService,
         _apiService = apiService,
         _storageService = storageService,
         _failoverService = failoverService,
-        _failoverReportingService = failoverReportingService;
+        _failoverReportingService = failoverReportingService,
+        _channelFactory = deviceChannelFactory ?? _defaultChannelFactory;
+
+  static DeviceChannelClient _defaultChannelFactory(
+      String pin, SpotHandler onSpot) {
+    return DeviceChannelClient(
+      url: deviceChannelUrl(ApiService.baseUrl),
+      pin: pin,
+      deviceId: PlatformInfo.deviceUuid,
+      appVersion: PlatformInfo.appVersion,
+      extraHeaders: {
+        'User-Agent': PlatformInfo.userAgent,
+        'X-Platform': PlatformInfo.platform,
+      },
+      onSpot: onSpot,
+    );
+  }
 
   @override
   Stream<RadioState> get stateStream => _stateController.stream;
@@ -672,7 +698,7 @@ final class EnhancedRadioService implements IRadioService {
               audioState: audioState,
             ));
             _retryManager.reset();
-            _startConfigPolling();
+            _startConfigSync();
             _startPinging(config.streamUrl);
           }
         }
@@ -1155,7 +1181,7 @@ final class EnhancedRadioService implements IRadioService {
     Logger.info(
         'Preparing fresh $contextLabel attempt - stopping existing playback and timers');
 
-    _configPollingTimer?.cancel();
+    _stopConfigSync();
     _stopPinging();
     _stopFailoverBackgroundMonitoring();
 
@@ -1324,7 +1350,7 @@ final class EnhancedRadioService implements IRadioService {
           config: config,
           audioState: const AudioStateIdle(),
         ));
-        _startConfigPolling();
+        _startConfigSync();
         return;
       }
 
@@ -1453,7 +1479,7 @@ final class EnhancedRadioService implements IRadioService {
       _warningLoopTimer?.cancel();
       _warningLoopTimer = null;
       _retryTimer?.cancel();
-      _configPollingTimer?.cancel();
+      _stopConfigSync();
       _stopPinging();
 
       await _audioService.stop();
@@ -1647,11 +1673,75 @@ final class EnhancedRadioService implements IRadioService {
     Logger.info('Live stream playback confirmed for current app session');
   }
 
-  void _startConfigPolling() {
+  void _startConfigSync() {
+    _ensureChannel();
+    final channel = _channel;
+    if (channel == null || !channel.isConnected) {
+      _startPollTimer();
+    }
+  }
+
+  void _stopConfigSync() {
+    _stopPollTimer();
+    _channelSubscription?.cancel();
+    _channelSubscription = null;
+    final channel = _channel;
+    _channel = null;
+    _channelPin = null;
+    if (channel != null) {
+      unawaited(channel.dispose());
+    }
+  }
+
+  void _startPollTimer() {
     _configPollingTimer?.cancel();
     _configPollingTimer = Timer.periodic(_configPollingInterval, (_) async {
       await _refreshConfig();
     });
+  }
+
+  void _stopPollTimer() {
+    _configPollingTimer?.cancel();
+    _configPollingTimer = null;
+  }
+
+  void _ensureChannel() {
+    if (_currentState is! RadioStateConnected) return;
+    final pin = (_currentState as RadioStateConnected).token;
+    if (_channel != null && _channelPin == pin) return;
+
+    _channelSubscription?.cancel();
+    _channelSubscription = null;
+    final previous = _channel;
+    _channel = null;
+    if (previous != null) {
+      unawaited(previous.dispose());
+    }
+
+    final channel = _channelFactory(pin, _handleChannelSpot);
+    if (channel == null) return;
+
+    _channel = channel;
+    _channelPin = pin;
+    _channelSubscription = channel.connectionStream.listen((connected) {
+      if (connected) {
+        Logger.info('Config sync: channel up - pausing the fallback poll');
+        _stopPollTimer();
+        return;
+      }
+      Logger.warning('Config sync: channel down - falling back to polling');
+      _startPollTimer();
+      unawaited(_refreshConfig());
+    });
+    channel.start();
+  }
+
+  Future<void> _handleChannelSpot(Map<String, dynamic> body) async {
+    if (_currentState case RadioStateConnected connected) {
+      if (!_autoLogicEnabled) return;
+      final config = await _apiService.parseSpotPayload(body);
+      await _applyConfig(connected, config);
+    }
   }
 
   Future<void> _refreshConfig() async {
@@ -1671,127 +1761,8 @@ final class EnhancedRadioService implements IRadioService {
               currentPing: _currentPing);
         });
 
-        if (SystemState.instance.serviceSuspended) {
-          Logger.warning(
-              'Config refresh received service suspension - entering warning mode');
-          await _activateServiceSuspendedMode(
-            token: connected.token,
-            fallbackConfig: newConfig ?? connected.config,
-          );
-          return;
-        }
-
-        // Backend turned offline mode ON: switch live playback to local cache
-        // right away instead of waiting for the next stream interruption. With
-        // nothing cached yet we fall through to keep building the cache and try
-        // again on the next refresh.
-        if (SystemState.instance.offlineMode &&
-            connected.config.hasStream &&
-            _failoverService.cachedTracksCount > 0) {
-          Logger.warning(
-              '🛰️ OFFLINE MODE: Backend enabled offline mode - switching from live stream to local cache');
-          _activateFailover(connected, 'Offline mode enabled by backend');
-          return;
-        }
-
-        if (newConfig != null && newConfig != connected.config) {
-          Logger.info('Configuration updated - stream URL or settings changed');
-
-          final stationChanged = newConfig.streamUuid != null &&
-              connected.config.streamUuid != null &&
-              newConfig.streamUuid != connected.config.streamUuid;
-
-          // Download current track for failover if available
-          if (newConfig.current != null) {
-            _downloadTrackInBackground(newConfig.current!);
-          }
-
-          // Only restart stream if critical parameters changed (URL, not just metadata)
-          final needsRestart =
-              newConfig.streamUrl != connected.config.streamUrl;
-
-          // Handle volume change separately without restarting stream
-          final failoverVolumeChanged =
-              newConfig.failoverVolume != connected.config.failoverVolume;
-          final masterVolumeChanged =
-              newConfig.volume != connected.config.volume;
-
-          if (failoverVolumeChanged) {
-            Logger.info(
-                'Failover volume changed from ${connected.config.failoverVolume} to ${newConfig.failoverVolume}');
-            await _storageService.saveLastVolume(newConfig.failoverVolume);
-          }
-
-          if (masterVolumeChanged && _autoLogicEnabled) {
-            final targetVolume = newConfig.volume.clamp(0.0, 1.0);
-            Logger.info(
-                'Master volume changed from ${connected.config.volume} to $targetVolume - applying to audio player');
-            final result = await _audioService.setVolume(targetVolume);
-            if (result.isFailure) {
-              Logger.error(
-                  'Failed to apply updated master volume: ${result.error}');
-            }
-          }
-
-          if (needsRestart) {
-            // Set flag to prevent failover during planned stream switch
-            _isStreamSwitchInProgress = true;
-
-            try {
-              // Update state with new configuration immediately
-              final updatedState = connected.copyWith(config: newConfig);
-              _updateState(updatedState);
-
-              // Stop whatever is currently playing before switching sources.
-              await _audioService.stop();
-
-              if (!newConfig.hasStream) {
-                // Stream URL was removed → drop to screen-only mode: keep the
-                // webview, stop music, no playback, no retry loop.
-                Logger.info(
-                    '🖥️ SCREEN-ONLY: Stream URL removed from config - stopping music, keeping webview');
-                unawaited(_failoverService.clearCache());
-              } else {
-                Logger.info('Stream restart required due to URL change');
-                final playResult = await _audioService.playStream(newConfig);
-
-                if (playResult.isFailure) {
-                  Logger.error(
-                      'Failed to restart with new config: ${playResult.error}');
-                  unawaited(_scheduleRetry('Failed to apply config update'));
-                } else {
-                  Logger.info(
-                      '✅ STREAM SWITCH: Successfully switched to new stream URL');
-                  Logger.info(
-                      '🧹 CLEANUP: Stream URL switched successfully, clearing failover cache');
-                  unawaited(_failoverService.clearCache());
-                }
-              }
-            } finally {
-              // Always clear the flag, even if there was an error
-              _isStreamSwitchInProgress = false;
-              _hasLoggedPlannedSwitchStateSuppression = false;
-            }
-          } else {
-            Logger.info(
-                'Configuration updated - ${failoverVolumeChanged ? 'failover volume and metadata' : 'metadata only'}, no restart needed');
-            // Just update the state without restarting stream
-            final updatedState = connected.copyWith(config: newConfig);
-            _updateState(updatedState);
-
-            if (stationChanged) {
-              Logger.info(
-                  '🧹 CLEANUP: Station changed (stream_uuid), clearing failover cache');
-              unawaited(_failoverService.clearCache());
-            }
-          }
-        } else {
-          Logger.debug('Config refresh: no changes detected');
-          // Still try to download current track if we haven't done so
-          if (newConfig?.current != null) {
-            _downloadTrackInBackground(newConfig!.current!);
-          }
-        }
+        await _applyConfig(connected, newConfig);
+        _channel?.nudge();
       } catch (e) {
         Logger.error('Config refresh failed: $e');
         // Don't trigger retry for config refresh failures unless audio is actually broken
@@ -1800,6 +1771,129 @@ final class EnhancedRadioService implements IRadioService {
               'Config refresh failed and audio not playing - may need retry');
           unawaited(_scheduleRetry('Config refresh failed with broken audio'));
         }
+      }
+    }
+  }
+
+  Future<void> _applyConfig(
+      RadioStateConnected connected, StreamConfig? newConfig) async {
+    if (SystemState.instance.serviceSuspended) {
+      Logger.warning(
+          'Config refresh received service suspension - entering warning mode');
+      await _activateServiceSuspendedMode(
+        token: connected.token,
+        fallbackConfig: newConfig ?? connected.config,
+      );
+      return;
+    }
+
+    // Backend turned offline mode ON: switch live playback to local cache
+    // right away instead of waiting for the next stream interruption. With
+    // nothing cached yet we fall through to keep building the cache and try
+    // again on the next refresh.
+    if (SystemState.instance.offlineMode &&
+        connected.config.hasStream &&
+        _failoverService.cachedTracksCount > 0) {
+      Logger.warning(
+          '🛰️ OFFLINE MODE: Backend enabled offline mode - switching from live stream to local cache');
+      _activateFailover(connected, 'Offline mode enabled by backend');
+      return;
+    }
+
+    if (newConfig != null && newConfig != connected.config) {
+      Logger.info('Configuration updated - stream URL or settings changed');
+
+      final stationChanged = newConfig.streamUuid != null &&
+          connected.config.streamUuid != null &&
+          newConfig.streamUuid != connected.config.streamUuid;
+
+      // Download current track for failover if available
+      if (newConfig.current != null) {
+        _downloadTrackInBackground(newConfig.current!);
+      }
+
+      // Only restart stream if critical parameters changed (URL, not just metadata)
+      final needsRestart = newConfig.streamUrl != connected.config.streamUrl;
+
+      // Handle volume change separately without restarting stream
+      final failoverVolumeChanged =
+          newConfig.failoverVolume != connected.config.failoverVolume;
+      final masterVolumeChanged = newConfig.volume != connected.config.volume;
+
+      if (failoverVolumeChanged) {
+        Logger.info(
+            'Failover volume changed from ${connected.config.failoverVolume} to ${newConfig.failoverVolume}');
+        await _storageService.saveLastVolume(newConfig.failoverVolume);
+      }
+
+      if (masterVolumeChanged && _autoLogicEnabled) {
+        final targetVolume = newConfig.volume.clamp(0.0, 1.0);
+        Logger.info(
+            'Master volume changed from ${connected.config.volume} to $targetVolume - applying to audio player');
+        final result = await _audioService.setVolume(targetVolume);
+        if (result.isFailure) {
+          Logger.error(
+              'Failed to apply updated master volume: ${result.error}');
+        }
+      }
+
+      if (needsRestart) {
+        // Set flag to prevent failover during planned stream switch
+        _isStreamSwitchInProgress = true;
+
+        try {
+          // Update state with new configuration immediately
+          final updatedState = connected.copyWith(config: newConfig);
+          _updateState(updatedState);
+
+          // Stop whatever is currently playing before switching sources.
+          await _audioService.stop();
+
+          if (!newConfig.hasStream) {
+            // Stream URL was removed → drop to screen-only mode: keep the
+            // webview, stop music, no playback, no retry loop.
+            Logger.info(
+                '🖥️ SCREEN-ONLY: Stream URL removed from config - stopping music, keeping webview');
+            unawaited(_failoverService.clearCache());
+          } else {
+            Logger.info('Stream restart required due to URL change');
+            final playResult = await _audioService.playStream(newConfig);
+
+            if (playResult.isFailure) {
+              Logger.error(
+                  'Failed to restart with new config: ${playResult.error}');
+              unawaited(_scheduleRetry('Failed to apply config update'));
+            } else {
+              Logger.info(
+                  '✅ STREAM SWITCH: Successfully switched to new stream URL');
+              Logger.info(
+                  '🧹 CLEANUP: Stream URL switched successfully, clearing failover cache');
+              unawaited(_failoverService.clearCache());
+            }
+          }
+        } finally {
+          // Always clear the flag, even if there was an error
+          _isStreamSwitchInProgress = false;
+          _hasLoggedPlannedSwitchStateSuppression = false;
+        }
+      } else {
+        Logger.info(
+            'Configuration updated - ${failoverVolumeChanged ? 'failover volume and metadata' : 'metadata only'}, no restart needed');
+        // Just update the state without restarting stream
+        final updatedState = connected.copyWith(config: newConfig);
+        _updateState(updatedState);
+
+        if (stationChanged) {
+          Logger.info(
+              '🧹 CLEANUP: Station changed (stream_uuid), clearing failover cache');
+          unawaited(_failoverService.clearCache());
+        }
+      }
+    } else {
+      Logger.debug('Config refresh: no changes detected');
+      // Still try to download current track if we haven't done so
+      if (newConfig?.current != null) {
+        _downloadTrackInBackground(newConfig!.current!);
       }
     }
   }
@@ -2113,7 +2207,7 @@ final class EnhancedRadioService implements IRadioService {
     _resetHealthFailures();
 
     // Stop current stream polling
-    _configPollingTimer?.cancel();
+    _stopConfigSync();
     _stopPinging();
 
     _startFailoverOperation('activate', (operationGeneration) async {
@@ -2419,7 +2513,7 @@ final class EnhancedRadioService implements IRadioService {
               '✅ RESTORE: State changed to RadioStateConnected, UI should update now');
 
           // Resume normal operations
-          _startConfigPolling();
+          _startConfigSync();
           _startPinging(config.streamUrl);
           _startStateMonitoring(); // Restart state monitoring after restore
           _lastFailoverRestoreTime =
@@ -2493,7 +2587,7 @@ final class EnhancedRadioService implements IRadioService {
     _warningLoopTimer?.cancel();
     _warningLoopTimer = null;
 
-    _configPollingTimer?.cancel();
+    _stopConfigSync();
     _stopPinging();
     _stopFailoverBackgroundMonitoring();
 
@@ -3092,7 +3186,7 @@ final class EnhancedRadioService implements IRadioService {
               config: config,
               audioState: AudioStateLoading(config: config),
             ));
-            _startConfigPolling();
+            _startConfigSync();
             _startPinging(config.streamUrl);
           } else {
             Logger.warning(
@@ -3213,7 +3307,7 @@ final class EnhancedRadioService implements IRadioService {
     _stopStateMonitoring();
     _stopFailoverBackgroundMonitoring();
     _retryTimer?.cancel();
-    _configPollingTimer?.cancel();
+    _stopConfigSync();
     _stopPinging();
     _networkLossTimer?.cancel();
     _networkLossTimer = null;
