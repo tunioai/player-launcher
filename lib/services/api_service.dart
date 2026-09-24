@@ -8,16 +8,19 @@ import '../models/stream_config.dart';
 import '../models/api_error.dart';
 import '../utils/logger.dart';
 import '../utils/platform_info.dart';
+import 'api_endpoint.dart';
 import 'storage_service.dart';
 
 class ApiService {
-  ApiService({required StorageService storageService})
-      : _storageService = storageService;
+  ApiService({required StorageService storageService, ApiEndpoint? endpoint})
+      : _storageService = storageService,
+        endpoint = endpoint ?? ApiEndpoint();
 
-  // static const String baseUrl = 'http://192.168.0.84:9191/api/public';
-  static const String baseUrl = 'https://api.tunio.ai';
   static const Duration timeout = Duration(seconds: 15);
   final StorageService _storageService;
+  final ApiEndpoint endpoint;
+
+  String get baseUrl => endpoint.baseUrl;
 
   Future<StreamConfig> parseSpotPayload(Map<String, dynamic> data) async {
     // Check success field

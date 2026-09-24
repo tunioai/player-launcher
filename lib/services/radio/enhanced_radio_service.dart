@@ -11,9 +11,9 @@ import '../../models/failover_event.dart';
 import '../../models/stream_config.dart';
 import '../../utils/logger.dart';
 import '../../utils/platform_info.dart';
+import '../api_endpoint.dart';
 import '../api_service.dart';
 import '../device_channel/device_channel_client.dart';
-import '../device_channel/device_channel_protocol.dart';
 import '../audio_service.dart';
 import '../failover_reporting_service.dart';
 import '../failover_service.dart';
@@ -55,8 +55,13 @@ final class EnhancedRadioService implements IRadioService {
   DeviceChannelClient? _channel;
   StreamSubscription<bool>? _channelSubscription;
   String? _channelPin;
-  final DeviceChannelClient? Function(String pin, SpotHandler onSpot)
+  Uri? _channelUrl;
+  final DeviceChannelClient? Function(Uri url, String pin, SpotHandler onSpot)
       _channelFactory;
+  static const Duration _endpointProbeDelay = Duration(seconds: 45);
+  Timer? _endpointProbeTimer;
+  bool _endpointProbed = false;
+  StreamSubscription<String>? _endpointSubscription;
   Timer? _warningLoopTimer;
   static const Duration _warningLoopPause = Duration(seconds: 20);
   StreamConfig? _latestFailoverProbeConfig;
@@ -164,7 +169,7 @@ final class EnhancedRadioService implements IRadioService {
     required StorageService storageService,
     required IFailoverService failoverService,
     required FailoverReportingService failoverReportingService,
-    DeviceChannelClient? Function(String pin, SpotHandler onSpot)?
+    DeviceChannelClient? Function(Uri url, String pin, SpotHandler onSpot)?
         deviceChannelFactory,
   })  : _audioService = audioService,
         _apiService = apiService,
@@ -174,9 +179,9 @@ final class EnhancedRadioService implements IRadioService {
         _channelFactory = deviceChannelFactory ?? _defaultChannelFactory;
 
   static DeviceChannelClient _defaultChannelFactory(
-      String pin, SpotHandler onSpot) {
+      Uri url, String pin, SpotHandler onSpot) {
     return DeviceChannelClient(
-      url: deviceChannelUrl(ApiService.baseUrl),
+      url: url,
       pin: pin,
       deviceId: PlatformInfo.deviceUuid,
       appVersion: PlatformInfo.appVersion,
@@ -1673,8 +1678,12 @@ final class EnhancedRadioService implements IRadioService {
     Logger.info('Live stream playback confirmed for current app session');
   }
 
+  ApiEndpoint get _endpoint => _apiService.endpoint;
+
   void _startConfigSync() {
     _ensureChannel();
+    _followEndpoint();
+    _scheduleEndpointProbe();
     final channel = _channel;
     if (channel == null || !channel.isConnected) {
       _startPollTimer();
@@ -1683,14 +1692,41 @@ final class EnhancedRadioService implements IRadioService {
 
   void _stopConfigSync() {
     _stopPollTimer();
+    _endpointProbeTimer?.cancel();
+    _endpointProbeTimer = null;
+    _endpointSubscription?.cancel();
+    _endpointSubscription = null;
     _channelSubscription?.cancel();
     _channelSubscription = null;
     final channel = _channel;
     _channel = null;
     _channelPin = null;
+    _channelUrl = null;
     if (channel != null) {
       unawaited(channel.dispose());
     }
+  }
+
+  void _followEndpoint() {
+    if (_endpointSubscription != null) return;
+    _endpointSubscription = _endpoint.changes.listen((host) {
+      if (_channel == null) return;
+      Logger.info('Config sync: reopening the channel on $host');
+      _startConfigSync();
+    });
+  }
+
+  void _scheduleEndpointProbe() {
+    if (_endpointProbed ||
+        _endpointProbeTimer != null ||
+        _endpoint.hosts.length < 2) {
+      return;
+    }
+    _endpointProbeTimer = Timer(_endpointProbeDelay, () {
+      _endpointProbeTimer = null;
+      _endpointProbed = true;
+      unawaited(_endpoint.probe());
+    });
   }
 
   void _startPollTimer() {
@@ -1708,7 +1744,8 @@ final class EnhancedRadioService implements IRadioService {
   void _ensureChannel() {
     if (_currentState is! RadioStateConnected) return;
     final pin = (_currentState as RadioStateConnected).token;
-    if (_channel != null && _channelPin == pin) return;
+    final url = _endpoint.channelUrl;
+    if (_channel != null && _channelPin == pin && _channelUrl == url) return;
 
     _channelSubscription?.cancel();
     _channelSubscription = null;
@@ -1718,11 +1755,12 @@ final class EnhancedRadioService implements IRadioService {
       unawaited(previous.dispose());
     }
 
-    final channel = _channelFactory(pin, _handleChannelSpot);
+    final channel = _channelFactory(url, pin, _handleChannelSpot);
     if (channel == null) return;
 
     _channel = channel;
     _channelPin = pin;
+    _channelUrl = url;
     _channelSubscription = channel.connectionStream.listen((connected) {
       if (connected) {
         Logger.info('Config sync: channel up - pausing the fallback poll');
@@ -1761,10 +1799,14 @@ final class EnhancedRadioService implements IRadioService {
               currentPing: _currentPing);
         });
 
+        _endpoint.reportSuccess();
         await _applyConfig(connected, newConfig);
         _channel?.nudge();
       } catch (e) {
         Logger.error('Config refresh failed: $e');
+        if (e is ApiError && !e.isFromBackend) {
+          _endpoint.reportFailure();
+        }
         // Don't trigger retry for config refresh failures unless audio is actually broken
         if (!_audioService.currentState.isPlaying) {
           Logger.warning(
