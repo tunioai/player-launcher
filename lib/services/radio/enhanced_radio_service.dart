@@ -1767,8 +1767,15 @@ final class EnhancedRadioService implements IRadioService {
   }
 
   void _ensureChannel() {
-    if (_currentState is! RadioStateConnected) return;
-    final pin = (_currentState as RadioStateConnected).token;
+    // Failover counts: a point playing from its cache is the one that most
+    // needs the channel, and dropping the socket there left it re-asking over
+    // HTTP instead.
+    final pin = switch (_currentState) {
+      RadioStateConnected(:final token) => token,
+      RadioStateFailover(:final token) => token,
+      _ => null,
+    };
+    if (pin == null) return;
     final url = _endpoint.channelUrl;
     if (_channel != null && _channelPin == pin && _channelUrl == url) return;
 
@@ -1800,10 +1807,24 @@ final class EnhancedRadioService implements IRadioService {
   }
 
   Future<void> _handleChannelSpot(Map<String, dynamic> body) async {
-    if (_currentState case RadioStateConnected connected) {
-      if (!_autoLogicEnabled) return;
-      final config = await _apiService.parseSpotPayload(body);
-      await _applyConfig(connected, config);
+    if (!_autoLogicEnabled) return;
+
+    switch (_currentState) {
+      case RadioStateConnected connected:
+        final config = await _apiService.parseSpotPayload(body);
+        await _applyConfig(connected, config);
+
+      // Playing from the cache. A push is the only news that reaches a point
+      // mid-outage, so take the config and go and see whether the live stream
+      // is back rather than waiting out the next tick.
+      case RadioStateFailover _:
+        final config = await _apiService.parseSpotPayload(body);
+        _latestFailoverProbeConfig = config;
+        _latestFailoverProbeAt = DateTime.now();
+        unawaited(_performFailoverBackgroundCheck());
+
+      default:
+        return;
     }
   }
 
@@ -2340,8 +2361,10 @@ final class EnhancedRadioService implements IRadioService {
     );
     _resetHealthFailures();
 
-    // Stop current stream polling
-    _stopConfigSync();
+    // Keep the config channel open across failover. An idle socket costs
+    // nothing, and failover is exactly when a point most needs to hear that its
+    // stream changed or came back. Only the HTTP poll stops.
+    _stopPollTimer();
     _stopPinging();
 
     _startFailoverOperation('activate', (operationGeneration) async {
@@ -3271,14 +3294,26 @@ final class EnhancedRadioService implements IRadioService {
       Logger.info(
           '🔄 FAILOVER BACKGROUND: Checking for config updates during failover');
 
-      // Try to get fresh config from server
-      final config = await _apiService
-          .getStreamConfig(failover.token, currentPing: _currentPing)
-          .timeout(
-            const Duration(seconds: 10),
-            onTimeout: () =>
-                throw TimeoutException('Background config check timeout'),
-          );
+      // With the channel up there is nothing to ask for. The backend pushes a
+      // config the moment it changes, so the one in hand is current and the
+      // socket staying open is the proof of it — which is what
+      // _failoverProbeFreshness needs, and it used to be bought with four
+      // requests a minute per device. Every device enters failover at once when
+      // a stream goes down, so that was four times the normal API load exactly
+      // during an incident.
+      //
+      // A socket that dies is noticed within a ping interval and flips
+      // isConnected, and the request below takes over again.
+      final knownConfig = _latestFailoverProbeConfig ?? failover.originalConfig;
+      final config = (_channel?.isConnected ?? false) && knownConfig != null
+          ? knownConfig
+          : await _apiService
+              .getStreamConfig(failover.token, currentPing: _currentPing)
+              .timeout(
+                const Duration(seconds: 10),
+                onTimeout: () =>
+                    throw TimeoutException('Background config check timeout'),
+              );
 
       if (config != null &&
           !_isDisposed &&

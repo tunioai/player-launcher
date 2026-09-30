@@ -842,6 +842,68 @@ void main() {
       expect(context.radioService.currentState, isA<RadioStateConnected>());
     });
 
+    test('failover keeps the channel up and stops asking the API for config',
+        () async {
+      // Entering failover used to tear the socket down and replace it with a
+      // 15s HTTP config poll -- four requests a minute per device, and devices
+      // enter failover together when a stream goes down, so the API took four
+      // times its normal load exactly during an incident. The socket now stays,
+      // and while it is up the config in hand is current by definition.
+      final server = _LoopbackDeviceServer();
+      await server.start();
+      addTearDown(server.stop);
+
+      DeviceChannelClient? channel;
+      final context = await _createContext(
+        liveConfig: liveConfig,
+        cachedTracksCount: 3,
+        deviceChannelFactory: (url, pin, onSpot) {
+          return channel = DeviceChannelClient(
+            url: server.url,
+            pin: pin,
+            deviceId: 'test-device',
+            appVersion: '0.0.0+1',
+            onSpot: onSpot,
+          );
+        },
+      );
+      addTearDown(context.dispose);
+
+      context.audioService.enqueuePlayStreamResult(const Success(null));
+      context.audioService
+          .enqueuePlayStreamResult(const Failure<void>('restart failed'));
+
+      expect((await context.radioService.connect('654321')).isSuccess, isTrue);
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateConnected);
+      await _waitUntil(() => channel?.isConnected ?? false,
+          timeout: const Duration(seconds: 8));
+
+      final configCallsBeforeFailover = context.apiService.getStreamConfigCalls;
+
+      context.audioService.emitState(
+        AudioStateError(
+          message: 'Network error',
+          config: liveConfig,
+          isRetryable: true,
+        ),
+      );
+      await _waitUntil(
+        () => context.radioService.currentState is RadioStateFailover,
+        timeout: const Duration(seconds: 8),
+      );
+
+      // Entering failover primes a background check straight away; give it, and
+      // a tick or two of the loop, room to run.
+      await Future<void>.delayed(const Duration(milliseconds: 800));
+
+      expect(channel!.isConnected, isTrue,
+          reason: 'the channel must survive failover');
+      expect(context.apiService.getStreamConfigCalls, configCallsBeforeFailover,
+          reason: 'with the channel up the config must not be re-fetched');
+      expect(context.radioService.currentState, isA<RadioStateFailover>());
+    });
+
     test('reopens the channel on the host the endpoint measured fastest',
         () async {
       const latencies = {
@@ -912,6 +974,32 @@ Future<void> _waitUntil(
     await Future<void>.delayed(step);
   }
   fail('Timed out waiting for condition');
+}
+
+/// A real loopback WebSocket the channel can actually connect to, so tests can
+/// tell "channel up" from "channel down" the way the service does.
+final class _LoopbackDeviceServer {
+  late final HttpServer _server;
+  final List<WebSocket> sockets = [];
+
+  Uri get url => Uri(
+      scheme: 'ws', host: '127.0.0.1', port: _server.port, path: '/v1/device');
+
+  Future<void> start() async {
+    _server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    _server.listen((request) async {
+      final socket = await WebSocketTransformer.upgrade(request);
+      sockets.add(socket);
+      socket.listen((_) {}, onError: (_) {}, cancelOnError: false);
+    });
+  }
+
+  Future<void> stop() async {
+    for (final socket in sockets) {
+      await socket.close();
+    }
+    await _server.close(force: true);
+  }
 }
 
 extension _PausedConfig on StreamConfig {
