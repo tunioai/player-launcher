@@ -71,6 +71,106 @@ jobs:
         path: |
           build/app/outputs/bundle/playRelease/app-play-release.aab
           build/app/outputs/flutter-apk/app-standalone-release.apk
+
+    # The standalone flavour updates itself from the CDN, and until now the
+    # manifest it reads was written by hand. It had been left at 1.8.0+31 while
+    # 1.9.0 and 1.10.0 shipped, so every self-updating point in the field was
+    # being offered a version from July. Publishing it here means the manifest
+    # cannot drift from what a tag actually built.
+    - name: Publish the standalone APK to the CDN
+      env:
+        CDN_BASE: https://cdn.tunio.ai/releases/spot
+        S3_ENDPOINT: https://storage.yandexcloud.net
+        S3_BUCKET: radio-storage
+        S3_PREFIX: releases/spot
+        AWS_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+        AWS_DEFAULT_REGION: ru-central1
+        AWS_EC2_METADATA_DISABLED: "true"
+      run: |
+        set -euo pipefail
+
+        if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+          echo "::error::S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY are not set in the repository secrets."
+          exit 1
+        fi
+
+        # pubspec is the source of truth; the tag has to agree with it, or the
+        # manifest would advertise a version nobody can match to a commit.
+        PUBSPEC="$(grep -m1 '^version:' pubspec.yaml | sed 's/^version:[[:space:]]*//')"
+        VERSION="${PUBSPEC%%+*}"
+        BUILD="${PUBSPEC##*+}"
+        TAG="${GITHUB_REF_NAME#v}"
+        if [ "$TAG" != "$VERSION" ]; then
+          echo "::error::Tag $GITHUB_REF_NAME does not match pubspec version $PUBSPEC."
+          exit 1
+        fi
+        echo "Publishing $VERSION+$BUILD"
+
+        # Devices compare version first and build second, so a build that is not
+        # ahead of the one already offered would be invisible to them at best,
+        # and a downgrade at worst.
+        if aws --endpoint-url "$S3_ENDPOINT" s3 cp "s3://$S3_BUCKET/$S3_PREFIX/manifest.json" current-manifest.json 2>/dev/null; then
+          CURRENT="$(jq -r '.build // 0' current-manifest.json)"
+        else
+          echo "No manifest in the bucket yet; this release creates it."
+          CURRENT=0
+        fi
+        if [ "$BUILD" -le "$CURRENT" ]; then
+          echo "::error::The manifest already offers build $CURRENT; $BUILD is not newer."
+          exit 1
+        fi
+
+        APK_NAME="app-standalone-${VERSION}+${BUILD}.apk"
+
+        # The APK goes up first and the manifest last: a manifest pointing at an
+        # object that is not there yet fails the update on every point that
+        # reads it in between.
+        aws --endpoint-url "$S3_ENDPOINT" s3 cp \
+          build/app/outputs/flutter-apk/app-standalone-release.apk \
+          "s3://$S3_BUCKET/$S3_PREFIX/$APK_NAME" \
+          --content-type application/vnd.android.package-archive \
+          --cache-control "public, max-age=31536000, immutable"
+
+        # The bucket is read anonymously through the CDN. An object it does not
+        # serve publicly would fail on every device, so check from outside
+        # before the manifest points at it.
+        curl -fsSI "$S3_ENDPOINT/$S3_BUCKET/$S3_PREFIX/$APK_NAME" > /dev/null
+        echo "APK is publicly readable: $CDN_BASE/$APK_NAME"
+
+        jq -n \
+          --arg version "$VERSION" \
+          --argjson build "$BUILD" \
+          --arg apk_url "$CDN_BASE/$APK_NAME" \
+          --arg published_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          '{version: $version, build: $build, apk_url: $apk_url, published_at: $published_at}' \
+          > manifest.json
+        jq . manifest.json
+
+        aws --endpoint-url "$S3_ENDPOINT" s3 cp manifest.json \
+          "s3://$S3_BUCKET/$S3_PREFIX/manifest.json" \
+          --content-type application/json \
+          --cache-control "public, max-age=300"
+
+    # Without this the edge node a point talks to keeps serving the previous
+    # manifest for the CDN's TTL, so some points are offered the new build and
+    # others are not. Optional: set the secret and the variable to enable it.
+    - name: Purge the manifest from the CDN cache
+      if: env.YC_SA_KEY_JSON != '' && env.YC_CDN_RESOURCE_ID != ''
+      env:
+        S3_PREFIX: releases/spot
+        YC_SA_KEY_JSON: ${{ secrets.YC_SA_KEY_JSON }}
+        YC_CDN_RESOURCE_ID: ${{ vars.YC_CDN_RESOURCE_ID }}
+      run: |
+        set -euo pipefail
+        curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "$HOME/yc" -n > /dev/null
+        key="$(mktemp)"
+        printf '%s' "$YC_SA_KEY_JSON" > "$key"
+        "$HOME/yc/bin/yc" config profile create release > /dev/null
+        "$HOME/yc/bin/yc" config set service-account-key "$key"
+        "$HOME/yc/bin/yc" cdn cache purge --resource-id "$YC_CDN_RESOURCE_ID" --path "/$S3_PREFIX/manifest.json"
+        rm -f "$key"
+        echo "CDN cache purged for /$S3_PREFIX/manifest.json"
           
   build-macos:
     name: Build macOS
