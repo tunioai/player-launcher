@@ -953,6 +953,70 @@ void main() {
           reason: 'the drop must not produce an immediate request');
     });
 
+    test(
+        'a suspension arriving during failover switches to the warning message',
+        () async {
+      // The plan can run out while a point is playing from its cache. Applying
+      // a config only ever ran from the Connected state, so the point went on
+      // playing music through the suspension until the live stream happened to
+      // come back.
+      SpotHandler? pushSpot;
+      final context = await _createContext(
+        liveConfig: liveConfig,
+        cachedTracksCount: 3,
+        deviceChannelFactory: (url, pin, onSpot) {
+          pushSpot = onSpot;
+          return null;
+        },
+      );
+      addTearDown(context.dispose);
+      addTearDown(
+          () => SystemState.instance.syncServiceSuspended(suspended: false));
+
+      context.failoverService.warningMessagePath = '/tmp/suspended_audio.mp3';
+
+      context.audioService.enqueuePlayStreamResult(const Success(null));
+      context.audioService
+          .enqueuePlayStreamResult(const Failure<void>('restart failed'));
+
+      expect((await context.radioService.connect('334455')).isSuccess, isTrue);
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateConnected);
+      await _waitUntil(() => pushSpot != null);
+
+      context.audioService.emitState(
+        AudioStateError(
+          message: 'Network error',
+          config: liveConfig,
+          isRetryable: true,
+        ),
+      );
+      await _waitUntil(
+        () => context.radioService.currentState is RadioStateFailover,
+        timeout: const Duration(seconds: 8),
+      );
+
+      // The backend reports the suspension on the channel, as it does for any
+      // other config change.
+      await pushSpot!(<String, dynamic>{
+        'success': true,
+        'config': <String, dynamic>{
+          'warning_message': 'https://cdn.tunio.ai/assets_system/suspended.mp3',
+        },
+        'stream': <String, dynamic>{
+          'stream_url': liveConfig.streamUrl,
+          'volume': liveConfig.volume,
+        },
+      });
+
+      expect(SystemState.instance.serviceSuspended, isTrue,
+          reason: 'the frame must be parsed even while on the cache');
+      await _waitUntil(
+        () => context.failoverService.cacheWarningMessageCalls > 0,
+        timeout: const Duration(seconds: 25),
+      );
+    });
+
     test('reopens the channel on the host the endpoint measured fastest',
         () async {
       const latencies = {
@@ -1363,6 +1427,8 @@ class _FakeFailoverService implements IFailoverService {
 
   int _cachedTracksCount;
   File? randomTrack;
+  String? warningMessagePath;
+  int cacheWarningMessageCalls = 0;
 
   _FakeFailoverService({
     required int cachedTracksCount,
@@ -1377,7 +1443,8 @@ class _FakeFailoverService implements IFailoverService {
 
   @override
   Future<String?> cacheWarningMessage(String warningUrl) async {
-    return null;
+    cacheWarningMessageCalls++;
+    return warningMessagePath;
   }
 
   @override

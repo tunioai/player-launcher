@@ -2772,7 +2772,11 @@ final class EnhancedRadioService implements IRadioService {
     _warningLoopTimer?.cancel();
     _warningLoopTimer = null;
 
-    _stopConfigSync();
+    // Keep the channel open here too. A point stays muted for a suspension
+    // until someone pays, and that payment has to reach it — over a socket that
+    // was disposed it never could, leaving a settled account silent until a
+    // poll happened to notice.
+    _stopPollTimer();
     _stopPinging();
     _stopFailoverBackgroundMonitoring();
 
@@ -3332,8 +3336,14 @@ final class EnhancedRadioService implements IRadioService {
       //
       // A socket that dies is noticed within a ping interval and flips
       // isConnected, and the request below takes over again.
+      //
+      // Suspended mode is the exception: there the whole job of this loop is to
+      // notice that someone paid, and a venue left mute on a settled account is
+      // worse than four requests a minute from the few points in that state.
       final knownConfig = _latestFailoverProbeConfig ?? failover.originalConfig;
-      final config = (_channel?.isConnected ?? false) && knownConfig != null
+      final config = (_channel?.isConnected ?? false) &&
+              !_serviceSuspendedMode &&
+              knownConfig != null
           ? knownConfig
           : await _apiService
               .getStreamConfig(failover.token, currentPing: _currentPing)
@@ -3360,6 +3370,21 @@ final class EnhancedRadioService implements IRadioService {
         } else if (_latestSuccessfulStreamProbeUrl == config.streamUrl) {
           _latestSuccessfulStreamProbeUrl = null;
           _latestSuccessfulStreamProbeAt = null;
+        }
+
+        // The plan ran out while this point was playing from its cache.
+        // _applyConfig only runs from the Connected state, so without this the
+        // point plays music straight through a suspension until the live
+        // stream happens to come back.
+        if (!_serviceSuspendedMode && SystemState.instance.serviceSuspended) {
+          Logger.warning(
+              '🚫 SERVICE_SUSPENDED: suspension arrived while playing from the '
+              'cache - switching to the warning message');
+          await _activateServiceSuspendedMode(
+            token: failover.token,
+            fallbackConfig: config,
+          );
+          return;
         }
 
         if (_serviceSuspendedMode) {
