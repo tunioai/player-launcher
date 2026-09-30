@@ -86,6 +86,27 @@ final class EnhancedRadioService implements IRadioService {
   bool _restoreWhenProbeReady = false;
   static const Duration _failoverProbeFreshness = Duration(seconds: 20);
 
+  /// How long the live stream may be verifiably back before the point returns
+  /// to it without waiting for the cached track to end.
+  ///
+  /// Restoring on a track boundary is the good behaviour -- it does not cut a
+  /// song in half -- but it was the *only* trigger, and the boundary is not
+  /// guaranteed to arrive. A cached track has been observed to neither finish
+  /// nor error for three times its own length while the player still reported
+  /// playing and the live stream probed healthy every 15s throughout; the
+  /// point never came back. This is longer than a typical cached track, so the
+  /// boundary still wins in the normal case and this only catches the case
+  /// where it never comes at all.
+  static const Duration _defaultFailoverBoundaryGrace = Duration(minutes: 3);
+
+  /// Overridable so a test can watch this happen without waiting out the real
+  /// grace.
+  final Duration _failoverBoundaryGrace;
+
+  /// When the live stream first probed healthy again in this failover, or null
+  /// while it is still unreachable.
+  DateTime? _liveBackSince;
+
   // Retry management
   final RetryManager _retryManager = RetryManager();
   Timer? _retryTimer;
@@ -184,7 +205,10 @@ final class EnhancedRadioService implements IRadioService {
     required FailoverReportingService failoverReportingService,
     DeviceChannelClient? Function(Uri url, String pin, SpotHandler onSpot)?
         deviceChannelFactory,
-  })  : _audioService = audioService,
+    Duration? failoverBoundaryGrace,
+  })  : _failoverBoundaryGrace =
+            failoverBoundaryGrace ?? _defaultFailoverBoundaryGrace,
+        _audioService = audioService,
         _apiService = apiService,
         _storageService = storageService,
         _failoverService = failoverService,
@@ -2361,6 +2385,7 @@ final class EnhancedRadioService implements IRadioService {
     _latestFailoverProbeAt = null;
     _latestSuccessfulStreamProbeUrl = null;
     _latestSuccessfulStreamProbeAt = null;
+    _liveBackSince = null;
     _restoreWhenProbeReady = false;
 
     final now = DateTime.now();
@@ -2669,6 +2694,7 @@ final class EnhancedRadioService implements IRadioService {
           _latestFailoverProbeAt = null;
           _latestSuccessfulStreamProbeUrl = null;
           _latestSuccessfulStreamProbeAt = null;
+          _liveBackSince = null;
           _restoreWhenProbeReady = false;
           _resetHealthFailures();
           _lastFailoverRestoreTime =
@@ -3366,10 +3392,14 @@ final class EnhancedRadioService implements IRadioService {
         if (streamProbeSucceeded) {
           _latestSuccessfulStreamProbeUrl = config.streamUrl;
           _latestSuccessfulStreamProbeAt = DateTime.now();
+          _liveBackSince ??= _latestSuccessfulStreamProbeAt;
           Logger.info('🔄 FAILOVER BACKGROUND: Live stream probe succeeded');
-        } else if (_latestSuccessfulStreamProbeUrl == config.streamUrl) {
-          _latestSuccessfulStreamProbeUrl = null;
-          _latestSuccessfulStreamProbeAt = null;
+        } else {
+          _liveBackSince = null;
+          if (_latestSuccessfulStreamProbeUrl == config.streamUrl) {
+            _latestSuccessfulStreamProbeUrl = null;
+            _latestSuccessfulStreamProbeAt = null;
+          }
         }
 
         // The plan ran out while this point was playing from its cache.
@@ -3425,6 +3455,23 @@ final class EnhancedRadioService implements IRadioService {
           Logger.info(
               '🛰️ FAILOVER BACKGROUND: Offline mode disabled by backend - restoring live stream');
           _offlineModeFailoverActive = false;
+          _tryRestoreAfterTrackEnd(failover);
+          return;
+        }
+
+        // Restoring is normally left to the end of the cached track so a song
+        // is not cut in half. That boundary is not guaranteed to arrive, and
+        // when it does not there is nothing else that brings the point back --
+        // however healthy the live stream keeps proving to be, every fifteen
+        // seconds, right here. Past the grace the boundary has had its chance.
+        final liveBackSince = _liveBackSince;
+        if (liveBackSince != null &&
+            !_isFailoverOperationInProgress &&
+            DateTime.now().difference(liveBackSince) >=
+                _failoverBoundaryGrace) {
+          final waited = DateTime.now().difference(liveBackSince).inSeconds;
+          Logger.warning('🔄 RESTORE: live has been back for ${waited}s and no '
+              'cached track boundary arrived - restoring anyway');
           _tryRestoreAfterTrackEnd(failover);
           return;
         }

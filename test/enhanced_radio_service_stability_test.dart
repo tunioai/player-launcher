@@ -1017,6 +1017,56 @@ void main() {
       );
     });
 
+    test('returns to live when the cached track never ends', () async {
+      // Restoring hung off one trigger: the end of the cached track. On a
+      // device a cached track was seen to neither finish nor error for three
+      // times its own length while the player still reported playing, and with
+      // the live stream probing healthy every 15s throughout the point never
+      // came back. The boundary gets its chance and then stops being the only
+      // way home.
+      final context = await _createContext(
+        liveConfig: liveConfig,
+        cachedTracksCount: 3,
+        failoverBoundaryGrace: const Duration(milliseconds: 300),
+      );
+      addTearDown(context.dispose);
+
+      context.audioService.enqueuePlayStreamResult(const Success(null));
+      context.audioService
+          .enqueuePlayStreamResult(const Failure<void>('restart failed'));
+
+      expect((await context.radioService.connect('445566')).isSuccess, isTrue);
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateConnected);
+
+      context.audioService.emitState(
+        AudioStateError(
+          message: 'Network error',
+          config: liveConfig,
+          isRetryable: true,
+        ),
+      );
+      await _waitUntil(
+        () => context.radioService.currentState is RadioStateFailover,
+        timeout: const Duration(seconds: 8),
+      );
+
+      final playsInFailover = context.audioService.playStreamCalls;
+
+      // The cached track plays on and on: no completion is ever emitted, which
+      // is exactly the case that used to strand the point.
+      context.audioService.enqueuePlayStreamResult(const Success(null));
+
+      await _waitUntil(
+        () => context.audioService.playStreamCalls > playsInFailover,
+        timeout: const Duration(seconds: 30),
+      );
+      await _waitUntil(
+        () => context.radioService.currentState is RadioStateConnected,
+        timeout: const Duration(seconds: 15),
+      );
+    });
+
     test('reopens the channel on the host the endpoint measured fastest',
         () async {
       const latencies = {
@@ -1151,6 +1201,7 @@ Future<_TestContext> _createContext({
   ApiEndpoint? endpoint,
   DeviceChannelClient? Function(Uri url, String pin, SpotHandler onSpot)?
       deviceChannelFactory,
+  Duration? failoverBoundaryGrace,
 }) async {
   final storageService = await StorageService.getInstance();
   await storageService.clear();
@@ -1178,6 +1229,7 @@ Future<_TestContext> _createContext({
     failoverService: failoverService,
     failoverReportingService: reportingService,
     deviceChannelFactory: deviceChannelFactory ?? (_, __, ___) => null,
+    failoverBoundaryGrace: failoverBoundaryGrace,
   );
 
   return _TestContext(

@@ -27,6 +27,11 @@ class LocalWebServer implements Disposable {
 
   static const String _authCookieName = 'tunio_key';
 
+  /// How much of the log tail /api/log returns when the caller does not say.
+  /// Enough to cover a failover cycle and its recovery, small enough to page
+  /// through a phone's Wi-Fi without waiting.
+  static const int _defaultLogTailBytes = 256 * 1024;
+
   final StorageService _storageService;
   final IRadioService _radioService;
   final IFailoverService _failoverService;
@@ -96,6 +101,10 @@ class LocalWebServer implements Disposable {
 
       if (request.method == 'GET' && path == '/api/state') {
         return _sendJson(request, _buildStatePayload());
+      }
+
+      if (request.method == 'GET' && path == '/api/log') {
+        return _sendLogTail(request);
       }
 
       if (request.method == 'GET' && path == '/api/reports') {
@@ -1067,6 +1076,60 @@ class LocalWebServer implements Disposable {
     if (clearAuthCookie) {
       _clearAuthCookie(request);
     }
+    await request.response.close();
+  }
+
+  /// The tail of the on-disk log, as plain text.
+  ///
+  /// A release build prints nothing to logcat, so on an appliance in a venue
+  /// the log file was the only record of what happened and there was no way to
+  /// reach it: the file lives in the app's private storage, and `run-as` does
+  /// not work on a release build. Diagnosing anything meant guessing from the
+  /// outside. It sits behind the same admin key as the rest of this server.
+  ///
+  /// The tail rather than the whole file, because the log rotates at a size a
+  /// phone is happy to write but no browser wants to render.
+  Future<void> _sendLogTail(HttpRequest request) async {
+    final path = Logger.logFilePath;
+    if (path == null) {
+      return _sendText(request, 'File logging is not initialised.\n',
+          statusCode: HttpStatus.serviceUnavailable);
+    }
+
+    final file = File(path);
+    if (!await file.exists()) {
+      return _sendText(request, 'No log file at $path yet.\n',
+          statusCode: HttpStatus.notFound);
+    }
+
+    final requested = int.tryParse(request.uri.queryParameters['bytes'] ?? '');
+    final wanted = (requested ?? _defaultLogTailBytes).clamp(1024, 4 << 20);
+
+    try {
+      final length = await file.length();
+      final start = length > wanted ? length - wanted : 0;
+      final handle = await file.open();
+      try {
+        await handle.setPosition(start);
+        final bytes = await handle.read(length - start);
+        return _sendText(request, utf8.decode(bytes, allowMalformed: true));
+      } finally {
+        await handle.close();
+      }
+    } catch (e) {
+      return _sendText(request, 'Failed to read $path: $e\n',
+          statusCode: HttpStatus.internalServerError);
+    }
+  }
+
+  Future<void> _sendText(
+    HttpRequest request,
+    String body, {
+    int statusCode = HttpStatus.ok,
+  }) async {
+    request.response.statusCode = statusCode;
+    request.response.headers.contentType = ContentType.text;
+    request.response.write(body);
     await request.response.close();
   }
 
