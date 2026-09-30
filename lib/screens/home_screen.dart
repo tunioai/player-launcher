@@ -21,6 +21,7 @@ import '../services/radio_service.dart';
 import '../services/failover_service.dart';
 import '../services/autostart_service.dart';
 import '../services/app_update_service.dart';
+import '../services/desktop_lifecycle_service.dart';
 import '../widgets/code_input_widget.dart';
 import '../widgets/settings_dialog.dart';
 import '../widgets/status_indicator.dart';
@@ -90,6 +91,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _lastStreamUrl;
   bool _initialPlayFocusRequested = false;
   Timer? _visualizerHeartbeatTimer;
+  Timer? _visualizerFullScreenExitTimer;
   static const MethodChannel _visualizerChannel =
       MethodChannel('ai.tunio/visualizer');
   static const bool _androidLowPerformanceVisualizerMode = true;
@@ -190,6 +192,8 @@ class _HomeScreenState extends State<HomeScreen> {
     _windowsVisualizerController = null;
     _visualizerHeartbeatTimer?.cancel();
     _visualizerHeartbeatTimer = null;
+    _visualizerFullScreenExitTimer?.cancel();
+    _visualizerFullScreenExitTimer = null;
     _updateAvailabilityTimer?.cancel();
     _updateAvailabilityTimer = null;
     _updateAvailabilityRetryTimer?.cancel();
@@ -367,6 +371,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _visualizerReady = false;
     _hasAutoOpenedVisualizer = false;
     _stopVisualizerHeartbeat();
+    _syncVisualizerFullScreen(visible: false);
   }
 
   Future<void> _handleVisualizerChannelCall(MethodCall call) async {
@@ -820,6 +825,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _startVisualizerHeartbeat(forceRestart: true);
     }
 
+    _syncVisualizerFullScreen(visible: true);
     _focusVisualizerCloseButton();
     _scheduleVisualizerUpdate();
   }
@@ -856,6 +862,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _isVisualizerVisible = true;
       });
       _startVisualizerHeartbeat(forceRestart: true);
+      _syncVisualizerFullScreen(visible: true);
       _focusVisualizerCloseButton();
       _scheduleVisualizerUpdate();
       return;
@@ -918,6 +925,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _visualizerReady = false;
       });
 
+      _syncVisualizerFullScreen(visible: true);
       _focusVisualizerCloseButton();
       _scheduleVisualizerUpdate();
     } catch (e) {
@@ -957,6 +965,35 @@ class _HomeScreenState extends State<HomeScreen> {
     return controller;
   }
 
+  // A display attached to the stream is the whole reason the screen exists, so
+  // on desktop it takes over the window instead of sitting in it. Android has
+  // no equivalent: its visualizer is a native activity that is already
+  // fullscreen.
+  void _syncVisualizerFullScreen({required bool visible}) {
+    if (!_isDesktop) return;
+
+    _visualizerFullScreenExitTimer?.cancel();
+    _visualizerFullScreenExitTimer = null;
+
+    if (visible) {
+      DesktopLifecycleService.instance.enterVisualizerFullScreen();
+      return;
+    }
+
+    // Pointing the player at another stream, or the backend swapping the screen
+    // URL, tears the visualizer down and opens it again a moment later. Leaving
+    // fullscreen in between would walk a venue's display through two macOS
+    // Space transitions for nothing, so only leave once the screen stays shut.
+    _visualizerFullScreenExitTimer = Timer(
+      const Duration(milliseconds: 600),
+      () {
+        _visualizerFullScreenExitTimer = null;
+        if (_isVisualizerVisible) return;
+        DesktopLifecycleService.instance.exitVisualizerFullScreen();
+      },
+    );
+  }
+
   void _closeVisualizer() {
     if (!_isVisualizerVisible) {
       return;
@@ -982,6 +1019,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     _visualizerReady = false;
     _stopVisualizerHeartbeat();
+    _syncVisualizerFullScreen(visible: false);
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;

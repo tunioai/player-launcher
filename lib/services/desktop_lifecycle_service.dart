@@ -16,6 +16,7 @@ class DesktopLifecycleService with TrayListener, WindowListener {
 
   bool _initialized = false;
   bool _isQuitting = false;
+  bool _fullScreenForVisualizer = false;
 
   Future<void> initialize({required bool startHidden}) async {
     if (!isSupported || _initialized) return;
@@ -44,10 +45,15 @@ class DesktopLifecycleService with TrayListener, WindowListener {
 
   Future<void> _initializeTray() async {
     try {
+      // macOS draws the status item as a template image: it keeps the alpha and
+      // paints the shape itself, dark on a light menu bar and white on a dark
+      // one. Handing it the square app icon filled the whole 18pt box, so it
+      // takes the bare Tunio mark instead. Windows tray icons are full colour,
+      // so there the app icon is the right thing.
       await trayManager.setIcon(
         Platform.isWindows
             ? 'windows/runner/resources/app_icon.ico'
-            : 'assets/icon/app_icon.png',
+            : 'assets/icon/tray_icon.png',
         isTemplate: Platform.isMacOS,
       );
       await trayManager.setToolTip('Tunio Spot');
@@ -82,6 +88,34 @@ class DesktopLifecycleService with TrayListener, WindowListener {
 
     await windowManager.setSkipTaskbar(true);
     await windowManager.hide();
+  }
+
+  /// Takes the whole display for the screen attached to the stream, the way the
+  /// Android launcher opens the visualizer edge to edge. Brings the window back
+  /// from the tray first, so a point that autostarted hidden still lights up its
+  /// screen.
+  Future<void> enterVisualizerFullScreen() async {
+    if (!isSupported) return;
+
+    await showWindow();
+
+    // Someone already fullscreened the window by hand — leave their state
+    // alone, and with it the flag that decides whether we may undo it.
+    if (await windowManager.isFullScreen()) return;
+
+    _fullScreenForVisualizer = true;
+    await windowManager.setFullScreen(true);
+  }
+
+  /// Undoes [enterVisualizerFullScreen] when the screen goes away. A fullscreen
+  /// the user switched on themselves is left as it is.
+  Future<void> exitVisualizerFullScreen() async {
+    if (!isSupported || !_fullScreenForVisualizer) return;
+
+    _fullScreenForVisualizer = false;
+    if (await windowManager.isFullScreen()) {
+      await windowManager.setFullScreen(false);
+    }
   }
 
   Future<void> quit() async {

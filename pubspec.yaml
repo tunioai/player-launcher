@@ -41,6 +41,7 @@ flutter:
   uses-material-design: true
   assets:
     - assets/icon/app_icon.png
+    - assets/icon/tray_icon.png
     - windows/runner/resources/app_icon.ico
 
 # Configuration for flutter_launcher_icons
