@@ -747,6 +747,101 @@ void main() {
       expect(context.audioService.playLocalFileCalls, 0);
     });
 
+    test('a zone pause stops the music and keeps the stream attached',
+        () async {
+      // Pausing a zone used to reach the player as "your stream is gone",
+      // which cost it the failover cache and made a pause indistinguishable
+      // from an operator unassigning the stream. It now arrives as a flag, so
+      // the stream stays attached and only the music stops.
+      SpotHandler? pushSpot;
+      final context = await _createContext(
+        liveConfig: liveConfig,
+        cachedTracksCount: 2,
+        deviceChannelFactory: (url, pin, onSpot) {
+          pushSpot = onSpot;
+          return null;
+        },
+      );
+      addTearDown(context.dispose);
+
+      context.audioService.enqueuePlayStreamResult(const Success(null));
+      expect((await context.radioService.connect('123456')).isSuccess, isTrue);
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateConnected);
+      await _waitUntil(() => pushSpot != null);
+      expect(context.audioService.playStreamCalls, 1);
+
+      final stopsBefore = context.audioService.stopCalls;
+      // The poll answers the same thing the channel just pushed.
+      context.apiService.config = liveConfig.copyWithPaused(true);
+      await pushSpot!(_spotPayload(liveConfig, paused: true));
+
+      await _waitUntil(
+          () => context.radioService.currentState.config?.paused == true);
+      expect(context.audioService.stopCalls, greaterThan(stopsBefore));
+      expect(context.radioService.currentState.config?.hasStream, isTrue);
+
+      // Deliberate silence: neither the dead-air watchdog nor failover may
+      // answer it by starting something.
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      expect(context.audioService.playStreamCalls, 1);
+      expect(context.audioService.playLocalFileCalls, 0);
+      expect(context.radioService.currentState, isA<RadioStateConnected>());
+      expect(context.radioService.currentState.config?.paused, isTrue);
+    });
+
+    test('lifting a zone pause starts the music again', () async {
+      SpotHandler? pushSpot;
+      final context = await _createContext(
+        liveConfig: liveConfig,
+        cachedTracksCount: 2,
+        deviceChannelFactory: (url, pin, onSpot) {
+          pushSpot = onSpot;
+          return null;
+        },
+      );
+      addTearDown(context.dispose);
+
+      context.audioService.enqueuePlayStreamResult(const Success(null));
+      expect((await context.radioService.connect('123456')).isSuccess, isTrue);
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateConnected);
+      await _waitUntil(() => pushSpot != null);
+
+      context.apiService.config = liveConfig.copyWithPaused(true);
+      await pushSpot!(_spotPayload(liveConfig, paused: true));
+      await _waitUntil(
+          () => context.radioService.currentState.config?.paused == true);
+
+      context.audioService.enqueuePlayStreamResult(const Success(null));
+      context.apiService.config = liveConfig;
+      await pushSpot!(_spotPayload(liveConfig, paused: false));
+
+      await _waitUntil(() => context.audioService.playStreamCalls >= 2);
+      expect(context.radioService.currentState, isA<RadioStateConnected>());
+      expect(context.radioService.currentState.config?.paused, isFalse);
+      // Resuming is a plain start off the URL it already had, never the cache.
+      expect(context.audioService.playLocalFileCalls, 0);
+    });
+
+    test('connecting to a paused zone does not start the music', () async {
+      final pausedConfig = liveConfig.copyWithPaused(true);
+      final context = await _createContext(
+        liveConfig: pausedConfig,
+        cachedTracksCount: 2,
+      );
+      addTearDown(context.dispose);
+
+      expect((await context.radioService.connect('123456')).isSuccess, isTrue);
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateConnected);
+
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      expect(context.audioService.playStreamCalls, 0);
+      expect(context.audioService.playLocalFileCalls, 0);
+      expect(context.radioService.currentState, isA<RadioStateConnected>());
+    });
+
     test('reopens the channel on the host the endpoint measured fastest',
         () async {
       const latencies = {
@@ -817,6 +912,35 @@ Future<void> _waitUntil(
     await Future<void>.delayed(step);
   }
   fail('Timed out waiting for condition');
+}
+
+extension _PausedConfig on StreamConfig {
+  StreamConfig copyWithPaused(bool paused) => StreamConfig(
+        streamUrl: streamUrl,
+        volume: volume,
+        musicVolume: musicVolume,
+        title: title,
+        description: description,
+        current: current,
+        visualizerUrl: visualizerUrl,
+        streamUuid: streamUuid,
+        status: status,
+        paused: paused,
+      );
+}
+
+/// The body of a `spot` frame as the backend sends it, so these tests go
+/// through the real payload parsing rather than around it.
+Map<String, dynamic> _spotPayload(StreamConfig config, {required bool paused}) {
+  return <String, dynamic>{
+    'success': true,
+    'config': <String, dynamic>{},
+    'stream': <String, dynamic>{
+      'stream_url': config.streamUrl,
+      'volume': config.volume,
+      'paused': paused,
+    },
+  };
 }
 
 Future<_TestContext> _createContext({
@@ -904,6 +1028,7 @@ class _FakeAudioService implements IAudioService {
   int initializeCalls = 0;
   int playStreamCalls = 0;
   int playLocalFileCalls = 0;
+  int stopCalls = 0;
   Duration playLocalFileDelay = Duration.zero;
   bool autoAdvanceLivePosition = true;
   Duration liveSourcePreparationDelay = Duration.zero;
@@ -1044,6 +1169,7 @@ class _FakeAudioService implements IAudioService {
 
   @override
   Future<Result<void>> stop() async {
+    stopCalls++;
     _isLiveSourceActive = false;
     emitState(const AudioStateIdle());
     return const Success(null);

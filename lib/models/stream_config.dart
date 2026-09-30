@@ -12,6 +12,11 @@ class StreamConfig {
   final String? streamUuid;
   final String? status;
 
+  /// Whether the control panel has this point's zone paused. The stream stays
+  /// attached while paused — only the music stops — so the player keeps its
+  /// screen and its failover cache and resumes without refetching anything.
+  final bool paused;
+
   const StreamConfig({
     required this.streamUrl,
     this.volume = 1.0,
@@ -22,6 +27,7 @@ class StreamConfig {
     this.visualizerUrl,
     this.streamUuid,
     this.status,
+    this.paused = false,
   });
 
   /// Whether the backend attached a playable audio stream to this point. When
@@ -60,6 +66,7 @@ class StreamConfig {
         : (json['stream_url']?.toString() ?? '');
     final streamUuid = json['stream_uuid']?.toString();
     final status = json['status']?.toString();
+    final paused = json['paused'] is bool ? json['paused'] as bool : false;
     final volume = _parseVolume(json['volume']);
     final parsedMusicVolume = _parseOptionalVolume(json['music_volume']);
     final title = json['title']?.toString();
@@ -100,6 +107,7 @@ class StreamConfig {
       visualizerUrl: visualizerUrl,
       streamUuid: streamUuid,
       status: status,
+      paused: paused,
     );
   }
 
@@ -114,6 +122,7 @@ class StreamConfig {
       'current': current?.toJson(),
       if (visualizerUrl != null) 'visualizer_url': visualizerUrl,
       if (status != null) 'status': status,
+      'paused': paused,
     };
   }
 
@@ -129,12 +138,13 @@ class StreamConfig {
         other.description == description &&
         other.current == current &&
         other.streamUuid == streamUuid &&
-        other.status == status;
+        other.status == status &&
+        other.paused == paused;
   }
 
   @override
   int get hashCode => Object.hash(streamUrl, volume, musicVolume, visualizerUrl,
-      title, description, current, streamUuid, status);
+      title, description, current, streamUuid, status, paused);
 
   static double _parseVolume(dynamic raw, [double defaultValue = 1.0]) {
     if (raw == null) return defaultValue;

@@ -274,6 +274,15 @@ final class EnhancedRadioService implements IRadioService {
 
   bool get _autoLogicEnabled => !_userPaused && !_isDisposed;
 
+  /// The control panel has this point's zone paused: the music stops and
+  /// nothing else does. The silence is asked for, so every recovery path has to
+  /// leave it alone.
+  ///
+  /// It deliberately stays out of [_autoLogicEnabled]. That gate also guards
+  /// the config channel, and closing it would drop the very message that lifts
+  /// the pause, leaving the point silent for good.
+  bool get _zonePaused => _currentState.config?.paused ?? false;
+
   void _suspendAutoRecovery() {
     if (_userPaused) return;
 
@@ -385,6 +394,14 @@ final class EnhancedRadioService implements IRadioService {
       return;
     }
 
+    // A paused zone is the same kind of expected silence. Unlike screen-only
+    // mode the stream is still attached, so without this the watchdog would
+    // read the quiet as dead air and play straight through the pause.
+    if (_zonePaused) {
+      _silentSince = null;
+      return;
+    }
+
     final shouldBePlaying = _autoReconnectEnabled && !_userPaused;
     if (!shouldBePlaying || _audioService.isPlaybackActive) {
       _silentSince = null;
@@ -473,6 +490,11 @@ final class EnhancedRadioService implements IRadioService {
       }
     } else if (_currentState is RadioStateConnected &&
         (_currentState as RadioStateConnected).config.hasStream &&
+        // A zone pause stops the player from here, not from a headset button.
+        // Reading it as an external transport action would suspend auto
+        // recovery, and that gate also feeds the config channel — the resume
+        // would never arrive.
+        !_zonePaused &&
         (audioState is AudioStatePaused || audioState is AudioStateIdle) &&
         !_isConnectionInProgress &&
         !_isStreamSwitchInProgress &&
@@ -1335,18 +1357,21 @@ final class EnhancedRadioService implements IRadioService {
         return;
       }
 
-      // No audio stream attached to this point: run in "screen-only" mode.
-      // Reach a valid Connected state (so the visualizer/webview opens) WITHOUT
-      // initializing playback, and never enter the retry loop. If a stream_url
-      // shows up on a later config poll, _refreshConfig starts playback then.
-      if (!config.hasStream) {
-        Logger.info(
-            '🔄 CONNECTION: No stream_url in config - entering screen-only mode (webview only, no music playback)');
+      // Nothing to play yet: either no stream is attached to this point
+      // ("screen-only" mode), or its zone is paused. Either way, reach a valid
+      // Connected state — so the visualizer/webview opens — WITHOUT
+      // initializing playback, and never enter the retry loop. A stream_url
+      // appearing later, or the pause being lifted, starts playback from
+      // _applyConfig on the next channel frame or poll.
+      if (!config.hasStream || config.paused) {
+        Logger.info(config.paused
+            ? '🔄 CONNECTION: zone is paused - connecting without playback'
+            : '🔄 CONNECTION: No stream_url in config - entering screen-only mode (webview only, no music playback)');
         _currentConnectionStage = null;
         final stopResult = await _audioService.stop();
         if (stopResult.isFailure) {
           Logger.warning(
-              'Screen-only: failed to stop existing playback: ${stopResult.error}');
+              'Connecting without playback: failed to stop existing playback: ${stopResult.error}');
         }
         _resetHealthFailures();
         _retryManager.reset();
@@ -1829,6 +1854,20 @@ final class EnhancedRadioService implements IRadioService {
       return;
     }
 
+    // A paused zone stops the music and leaves the rest standing. Taken before
+    // the offline switch below on purpose: a pause must not be answered by
+    // playing the local cache instead.
+    final wasPaused = connected.config.paused;
+    final isPaused = newConfig?.paused ?? wasPaused;
+    if (isPaused) {
+      await _applyZonePaused(connected, newConfig ?? connected.config);
+      return;
+    }
+    if (wasPaused) {
+      await _applyZoneResumed(connected, newConfig ?? connected.config);
+      return;
+    }
+
     // Backend turned offline mode ON: switch live playback to local cache
     // right away instead of waiting for the next stream interruption. With
     // nothing cached yet we fall through to keep building the cache and try
@@ -1937,6 +1976,59 @@ final class EnhancedRadioService implements IRadioService {
       if (newConfig?.current != null) {
         _downloadTrackInBackground(newConfig!.current!);
       }
+    }
+  }
+
+  /// Silences a paused zone without disturbing anything else: the config, the
+  /// screen and the failover cache all stay as they are. Re-entered on every
+  /// poll and every channel frame while the pause lasts, so it has to be
+  /// harmless to repeat.
+  Future<void> _applyZonePaused(
+      RadioStateConnected connected, StreamConfig config) async {
+    final alreadyPaused = connected.config.paused;
+    _updateState(connected.copyWith(config: config));
+
+    if (alreadyPaused && !_audioService.isPlaybackActive) {
+      return;
+    }
+
+    Logger.info('⏸️ ZONE PAUSE: zone paused from the control panel - '
+        'stopping music, keeping the screen and the cache');
+
+    _isStreamSwitchInProgress = true;
+    try {
+      final result = await _audioService.stop();
+      if (result.isFailure) {
+        Logger.warning('Zone pause: failed to stop playback: ${result.error}');
+      }
+    } finally {
+      _isStreamSwitchInProgress = false;
+    }
+  }
+
+  /// Starts the music again when the pause is lifted. The stream URL never went
+  /// away, so this is a plain start rather than a reconnect.
+  Future<void> _applyZoneResumed(
+      RadioStateConnected connected, StreamConfig config) async {
+    _updateState(connected.copyWith(config: config));
+
+    if (!config.hasStream) {
+      Logger.info('▶️ ZONE RESUME: pause lifted, but no stream is attached - '
+          'staying in screen-only mode');
+      return;
+    }
+
+    Logger.info('▶️ ZONE RESUME: pause lifted - starting playback');
+
+    _isStreamSwitchInProgress = true;
+    try {
+      final result = await _audioService.playStream(config);
+      if (result.isFailure) {
+        Logger.error('Zone resume: failed to start playback: ${result.error}');
+        unawaited(_scheduleRetry('Failed to resume after a zone pause'));
+      }
+    } finally {
+      _isStreamSwitchInProgress = false;
     }
   }
 

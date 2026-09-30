@@ -1266,6 +1266,12 @@ class _HomeScreenState extends State<HomeScreen> {
   /// the button is hidden; it appears as soon as a stream_url arrives from the
   /// backend (or if audio is somehow already playing).
   bool get _shouldShowPlayButton {
+    // A paused zone is driven from the control panel. Starting playback here
+    // would be undone by the next config frame, so the control is not offered.
+    if (_radioState.config?.paused ?? false) {
+      return false;
+    }
+
     final isPlaying = _getAudioState()?.isPlaying ?? false;
     final hasStream = _radioState.config?.hasStream ?? false;
     return hasStream || isPlaying;
@@ -1956,6 +1962,16 @@ class _HomeScreenState extends State<HomeScreen> {
       spacing: 8,
       runSpacing: 8,
       children: [
+        // The control panel paused this point's zone. Silence is expected here,
+        // and whoever walks up to the player should see why without digging.
+        if (_radioState.config?.paused ?? false)
+          _buildStatusChip(
+            icon: Icons.pause_circle_filled,
+            label: 'Zone',
+            value: 'Paused',
+            color: Colors.orange,
+          ),
+
         // Network status - show "Offline Mode" during failover
         _buildStatusChip(
           icon: isFailoverPlaying
