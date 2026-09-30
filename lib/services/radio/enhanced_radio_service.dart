@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import '../../core/audio_state.dart';
 import '../../core/result.dart';
@@ -52,6 +53,18 @@ final class EnhancedRadioService implements IRadioService {
   // Configuration polling
   Timer? _configPollingTimer;
   static const Duration _configPollingInterval = Duration(minutes: 1);
+
+  /// The quiet head of that window. A redeploy drops every socket at the same
+  /// instant, and the seconds right after are when the pod being replaced is
+  /// least able to answer, so no device polls inside them.
+  static const Duration _pollStartQuietPeriod = Duration(seconds: 5);
+
+  /// Spreads the fallback poll across the fleet. Every device loses its socket
+  /// at the same instant when the API is redeployed, and an unjittered timer
+  /// then has all of them polling on the same second of every minute until
+  /// their sockets are back -- the new pod's first minute would be the whole
+  /// fleet arriving at once, repeatedly.
+  static final Random _pollJitter = Random();
   DeviceChannelClient? _channel;
   StreamSubscription<bool>? _channelSubscription;
   String? _channelPin;
@@ -1756,8 +1769,20 @@ final class EnhancedRadioService implements IRadioService {
 
   void _startPollTimer() {
     _configPollingTimer?.cancel();
-    _configPollingTimer = Timer.periodic(_configPollingInterval, (_) async {
-      await _refreshConfig();
+
+    // The first refresh lands at a random point inside the first interval, past
+    // the quiet head, and the periodic timer inherits that offset. Worst case a
+    // config change waits one interval, which is what plain polling always
+    // cost.
+    final spreadMs = _configPollingInterval.inMilliseconds -
+        _pollStartQuietPeriod.inMilliseconds;
+    final offset = _pollStartQuietPeriod +
+        Duration(milliseconds: _pollJitter.nextInt(spreadMs));
+    _configPollingTimer = Timer(offset, () {
+      unawaited(_refreshConfig());
+      _configPollingTimer = Timer.periodic(_configPollingInterval, (_) async {
+        await _refreshConfig();
+      });
     });
   }
 
@@ -1799,9 +1824,12 @@ final class EnhancedRadioService implements IRadioService {
         _stopPollTimer();
         return;
       }
+      // No immediate refresh here. A redeploy drops every socket at once, so an
+      // unjittered request on disconnect is the whole fleet hitting the API on
+      // the same second -- while the pod it is aimed at is the one still coming
+      // up. The jittered first poll below covers the same ground.
       Logger.warning('Config sync: channel down - falling back to polling');
       _startPollTimer();
-      unawaited(_refreshConfig());
     });
     channel.start();
   }

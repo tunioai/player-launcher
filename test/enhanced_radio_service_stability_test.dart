@@ -904,6 +904,55 @@ void main() {
       expect(context.radioService.currentState, isA<RadioStateFailover>());
     });
 
+    test('a dropped channel does not fire an instant config request', () async {
+      // An API redeploy drops every device's socket in the same instant. The
+      // disconnect used to answer with an immediate, unjittered getStreamConfig
+      // -- the whole fleet hitting the API on one second, aimed at the pod that
+      // was still coming up. The fallback poll is spread instead, and its first
+      // tick never lands in the seconds right after the drop.
+      final server = _LoopbackDeviceServer();
+      await server.start();
+
+      DeviceChannelClient? channel;
+      final context = await _createContext(
+        liveConfig: liveConfig,
+        cachedTracksCount: 0,
+        deviceChannelFactory: (url, pin, onSpot) {
+          return channel = DeviceChannelClient(
+            url: server.url,
+            pin: pin,
+            deviceId: 'test-device',
+            appVersion: '0.0.0+1',
+            onSpot: onSpot,
+            backoff: ReconnectBackoff(
+              base: const Duration(seconds: 30),
+              cap: const Duration(seconds: 30),
+              jitterMs: 0,
+            ),
+          );
+        },
+      );
+      addTearDown(context.dispose);
+
+      context.audioService.enqueuePlayStreamResult(const Success(null));
+      expect((await context.radioService.connect('223344')).isSuccess, isTrue);
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateConnected);
+      await _waitUntil(() => channel?.isConnected ?? false,
+          timeout: const Duration(seconds: 8));
+
+      final callsBefore = context.apiService.getStreamConfigCalls;
+
+      // The "redeploy": the far end goes away under every device at once.
+      await server.stop();
+      await _waitUntil(() => !(channel?.isConnected ?? true),
+          timeout: const Duration(seconds: 8));
+
+      await Future<void>.delayed(const Duration(seconds: 2));
+      expect(context.apiService.getStreamConfigCalls, callsBefore,
+          reason: 'the drop must not produce an immediate request');
+    });
+
     test('reopens the channel on the host the endpoint measured fastest',
         () async {
       const latencies = {
