@@ -1322,7 +1322,9 @@ class VisualizerActivity : Activity() {
         if (uri == null || !uri.scheme.equals("https", ignoreCase = true)) {
             return false
         }
-        if (!uri.host.equals("cdn.tunio.ai", ignoreCase = true)) {
+        // Any Tunio CDN: the API serves each account from its own one.
+        val host = uri.host.orEmpty().lowercase()
+        if (host != "tunio.ai" && !host.endsWith(".tunio.ai")) {
             return false
         }
         val path = uri.path.orEmpty()
