@@ -430,7 +430,10 @@ class _HomeScreenState extends State<HomeScreen> {
           _currentCode = token;
         }
 
-        _lastStreamUrl = currentRadioState.config?.streamUrl;
+        final initialStreamUrl = currentRadioState.config?.streamUrl;
+        if (_isRealStreamUrl(initialStreamUrl)) {
+          _lastStreamUrl = initialStreamUrl;
+        }
 
         final initialVisualizerUrl = currentRadioState.config?.visualizerUrl;
         if (SystemState.instance.serviceSuspended ||
@@ -469,12 +472,20 @@ class _HomeScreenState extends State<HomeScreen> {
               _volume = config.failoverVolume;
             }
 
+            // A failover that had no live config to fall over from carries a
+            // marker stream URL (offline://…). That is not a station change:
+            // the screen it opened from the remembered config must stay. The
+            // first real URL is only remembered, since nothing was shown for
+            // another station yet -- it must not close a screen either.
             final newStreamUrl = state.config?.streamUrl;
-            final hasStreamChanged = newStreamUrl != null &&
-                newStreamUrl.isNotEmpty &&
+            final isRealStreamUrl = _isRealStreamUrl(newStreamUrl);
+            final hasStreamChanged = isRealStreamUrl &&
+                _lastStreamUrl != null &&
                 newStreamUrl != _lastStreamUrl;
-            if (hasStreamChanged) {
+            if (isRealStreamUrl) {
               _lastStreamUrl = newStreamUrl;
+            }
+            if (hasStreamChanged) {
               _resetVisualizerState(closeNative: true);
             }
 
@@ -1319,6 +1330,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
     return audioState;
   }
+
+  // The radio service marks a failover that started without a live config
+  // with an offline:// stream URL; it says nothing about which station plays.
+  static bool _isRealStreamUrl(String? url) =>
+      url != null && url.isNotEmpty && !url.startsWith('offline://');
 
   String? get _visualizerUrl {
     if (SystemState.instance.serviceSuspended) {

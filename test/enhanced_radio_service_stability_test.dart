@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:tunio_radio_player/core/audio_state.dart';
 import 'package:tunio_radio_player/core/result.dart';
 import 'package:tunio_radio_player/core/system_state.dart';
+import 'package:tunio_radio_player/models/api_error.dart';
 import 'package:tunio_radio_player/models/current_track.dart';
 import 'package:tunio_radio_player/models/failover_event.dart';
 import 'package:tunio_radio_player/models/stream_config.dart';
@@ -1120,6 +1121,319 @@ void main() {
 
       expect(channelUrls.last.toString(), 'wss://api-eu.tunio.ai/v1/device');
       expect(context.radioService.currentState, isA<RadioStateConnected>());
+    });
+
+    test('a live config is remembered for a start without a network', () async {
+      const configWithScreen = StreamConfig(
+        streamUrl: 'https://example.com/live.aac',
+        volume: 1.0,
+        visualizerUrl: 'https://cp.tunio.ai/screen-player/abc',
+      );
+      final context = await _createContext(
+        liveConfig: configWithScreen,
+        cachedTracksCount: 3,
+      );
+      addTearDown(context.dispose);
+
+      context.audioService.enqueuePlayStreamResult(const Success(null));
+      expect((await context.radioService.connect('112233')).isSuccess, isTrue);
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateConnected);
+      await _waitUntil(
+          () => context.storageService.getLastStreamConfig('112233') != null);
+
+      final remembered = context.storageService.getLastStreamConfig('112233')!;
+      expect(remembered.visualizerUrl, configWithScreen.visualizerUrl);
+      expect(remembered.streamUrl, configWithScreen.streamUrl);
+      // A config left behind by another pairing must not open its screen.
+      expect(context.storageService.getLastStreamConfig('999999'), isNull);
+    });
+
+    test('a point that starts without a network opens its remembered screen',
+        () async {
+      // A box that boots before its uplink is up falls over to its cache, and
+      // used to sit on the pairing screen for the whole outage: the stand-in
+      // config such a failover ran on carried no screen URL. The config the
+      // point last played with does.
+      final server = _LoopbackDeviceServer();
+      await server.start();
+      addTearDown(server.stop);
+
+      DeviceChannelClient? channel;
+      final context = await _createContext(
+        liveConfig: liveConfig,
+        cachedTracksCount: 3,
+        deviceChannelFactory: (url, pin, onSpot) {
+          return channel = DeviceChannelClient(
+            url: server.url,
+            pin: pin,
+            deviceId: 'test-device',
+            appVersion: '0.0.0+1',
+            onSpot: onSpot,
+          );
+        },
+      );
+      addTearDown(context.dispose);
+
+      await context.storageService.saveLastStreamConfig(
+        '112233',
+        const StreamConfig(
+          streamUrl: 'https://example.com/live.aac',
+          volume: 1.0,
+          title: 'Fit Line',
+          visualizerUrl: 'https://cp.tunio.ai/screen-player/abc',
+        ),
+      );
+      // A paired point: the token is on disk, which is what the retry path
+      // and the startup failover run on.
+      await context.storageService.saveToken('112233');
+      context.apiService.getConfigError =
+          const ApiError(message: 'No internet connection');
+
+      await context.radioService.connect('112233');
+      // Startup failures are retried (the retry manager's first delays) before
+      // the point falls over; this is the real-time path the device takes.
+      await _waitUntil(
+        () => context.radioService.currentState is RadioStateFailover,
+        timeout: const Duration(seconds: 30),
+      );
+
+      final failover = context.radioService.currentState as RadioStateFailover;
+      expect(failover.originalConfig?.visualizerUrl,
+          'https://cp.tunio.ai/screen-player/abc');
+      expect(failover.originalConfig?.title, 'Fit Line');
+      expect(failover.originalConfig?.streamUrl, startsWith('offline://'));
+      expect(context.audioService.playLocalFileCalls, 1);
+
+      // The channel is opened from failover, so the push reaches the point
+      // the moment the network is back.
+      await _waitUntil(() => channel?.isConnected ?? false,
+          timeout: const Duration(seconds: 8));
+      expect(context.radioService.currentState, isA<RadioStateFailover>());
+    });
+
+    test('a screen-only point that starts without a network shows its screen',
+        () async {
+      // No stream means nothing to fall over to; it used to retry forever on
+      // the pairing screen. It has a screen to show, and the config it last
+      // ran with says which. The track left in the cache belongs to a
+      // previous pairing and must not play under this pin.
+      final server = _LoopbackDeviceServer();
+      await server.start();
+      addTearDown(server.stop);
+
+      DeviceChannelClient? channel;
+      final context = await _createContext(
+        liveConfig: liveConfig,
+        cachedTracksCount: 1,
+        deviceChannelFactory: (url, pin, onSpot) {
+          return channel = DeviceChannelClient(
+            url: server.url,
+            pin: pin,
+            deviceId: 'test-device',
+            appVersion: '0.0.0+1',
+            onSpot: onSpot,
+          );
+        },
+      );
+      addTearDown(context.dispose);
+
+      await context.storageService.saveToken('112233');
+      await context.storageService.saveLastStreamConfig(
+        '112233',
+        const StreamConfig(
+          streamUrl: '',
+          volume: 1.0,
+          visualizerUrl: 'https://cp.tunio.ai/screen-player/abc',
+        ),
+      );
+      context.apiService.getConfigError =
+          const ApiError(message: 'No internet connection');
+
+      await context.radioService.connect('112233');
+      await _waitUntil(
+        () => context.radioService.currentState is RadioStateConnected,
+        timeout: const Duration(seconds: 8),
+      );
+
+      // The startup path fires a second retry request on the way out; the
+      // screen must survive it.
+      await Future<void>.delayed(const Duration(seconds: 1));
+      final state = context.radioService.currentState;
+      expect(state, isA<RadioStateConnected>());
+      expect((state as RadioStateConnected).config.visualizerUrl,
+          'https://cp.tunio.ai/screen-player/abc');
+      expect(state.config.hasStream, isFalse);
+      expect(context.audioService.playStreamCalls, 0);
+      expect(context.audioService.playLocalFileCalls, 0);
+
+      await _waitUntil(() => channel?.isConnected ?? false,
+          timeout: const Duration(seconds: 8));
+    });
+
+    test('pairing a screen-only point drops the previous pairing\'s cache',
+        () async {
+      const screenOnly = StreamConfig(
+        streamUrl: '',
+        volume: 1.0,
+        visualizerUrl: 'https://cp.tunio.ai/screen-player/abc',
+      );
+      final context = await _createContext(
+        liveConfig: screenOnly,
+        cachedTracksCount: 2,
+      );
+      addTearDown(context.dispose);
+
+      expect((await context.radioService.connect('112233')).isSuccess, isTrue);
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateConnected);
+      await _waitUntil(() => context.failoverService.cachedTracksCount == 0);
+      expect(context.audioService.playStreamCalls, 0);
+    });
+
+    test('a config without a stream ends the cached music at once', () async {
+      // The stream is taken away while the point plays from its cache (or
+      // the cache was another pairing's). There is no live stream to wait
+      // for: the music stops and the point settles in screen-only mode
+      // instead of sitting on the cache until a track boundary.
+      final server = _LoopbackDeviceServer();
+      await server.start();
+      addTearDown(server.stop);
+
+      DeviceChannelClient? channel;
+      final context = await _createContext(
+        liveConfig: liveConfig,
+        cachedTracksCount: 3,
+        deviceChannelFactory: (url, pin, onSpot) {
+          return channel = DeviceChannelClient(
+            url: server.url,
+            pin: pin,
+            deviceId: 'test-device',
+            appVersion: '0.0.0+1',
+            onSpot: onSpot,
+          );
+        },
+      );
+      addTearDown(context.dispose);
+
+      context.audioService.enqueuePlayStreamResult(const Success(null));
+      context.audioService
+          .enqueuePlayStreamResult(const Failure<void>('restart failed'));
+
+      expect((await context.radioService.connect('654321')).isSuccess, isTrue);
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateConnected);
+      await _waitUntil(() => channel?.isConnected ?? false,
+          timeout: const Duration(seconds: 8));
+
+      context.audioService.emitState(
+        AudioStateError(
+          message: 'Network error',
+          config: liveConfig,
+          isRetryable: true,
+        ),
+      );
+      await _waitUntil(
+        () => context.radioService.currentState is RadioStateFailover,
+        timeout: const Duration(seconds: 8),
+      );
+      final stopsBefore = context.audioService.stopCalls;
+
+      server.sockets.single.add(encodeDeviceFrame('spot', data: {
+        'success': true,
+        'config': <String, dynamic>{},
+        'stream': <String, dynamic>{
+          'stream_url': '',
+          'volume': liveConfig.volume,
+          'visualizer_url': 'https://cp.tunio.ai/screen-player/abc',
+        },
+      }));
+
+      await _waitUntil(
+        () {
+          final state = context.radioService.currentState;
+          return state is RadioStateConnected && !state.config.hasStream;
+        },
+        timeout: const Duration(seconds: 8),
+      );
+      expect(context.audioService.stopCalls, greaterThan(stopsBefore));
+      await _waitUntil(() => context.failoverService.cachedTracksCount == 0);
+      // Only the live stream was ever started; nothing tried to play "".
+      expect(context.audioService.playStreamCalls, 2);
+    });
+
+    test('a screen that arrives during failover shows before the audio restore',
+        () async {
+      final server = _LoopbackDeviceServer();
+      await server.start();
+      addTearDown(server.stop);
+
+      DeviceChannelClient? channel;
+      final context = await _createContext(
+        liveConfig: liveConfig,
+        cachedTracksCount: 3,
+        deviceChannelFactory: (url, pin, onSpot) {
+          return channel = DeviceChannelClient(
+            url: server.url,
+            pin: pin,
+            deviceId: 'test-device',
+            appVersion: '0.0.0+1',
+            onSpot: onSpot,
+          );
+        },
+      );
+      addTearDown(context.dispose);
+
+      context.audioService.enqueuePlayStreamResult(const Success(null));
+      context.audioService
+          .enqueuePlayStreamResult(const Failure<void>('restart failed'));
+
+      expect((await context.radioService.connect('654321')).isSuccess, isTrue);
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateConnected);
+      await _waitUntil(() => channel?.isConnected ?? false,
+          timeout: const Duration(seconds: 8));
+
+      context.audioService.emitState(
+        AudioStateError(
+          message: 'Network error',
+          config: liveConfig,
+          isRetryable: true,
+        ),
+      );
+      await _waitUntil(
+        () => context.radioService.currentState is RadioStateFailover,
+        timeout: const Duration(seconds: 8),
+      );
+      expect(
+          (context.radioService.currentState as RadioStateFailover)
+              .originalConfig
+              ?.visualizerUrl,
+          isNull);
+
+      // The control panel attaches a screen while the point plays from its
+      // cache; the push carries the screen URL.
+      server.sockets.single.add(encodeDeviceFrame('spot', data: {
+        'success': true,
+        'config': <String, dynamic>{},
+        'stream': <String, dynamic>{
+          'stream_url': liveConfig.streamUrl,
+          'volume': liveConfig.volume,
+          'visualizer_url': 'https://cp.tunio.ai/screen-player/abc',
+        },
+      }));
+
+      await _waitUntil(
+        () {
+          final state = context.radioService.currentState;
+          return state is RadioStateFailover &&
+              state.originalConfig?.visualizerUrl ==
+                  'https://cp.tunio.ai/screen-player/abc';
+        },
+        timeout: const Duration(seconds: 8),
+      );
+      // Still playing from the cache: the screen did not wait for the restore.
+      expect(context.radioService.currentState, isA<RadioStateFailover>());
     });
   });
 }
