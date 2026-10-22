@@ -439,10 +439,14 @@ class _HomeScreenState extends State<HomeScreen> {
           _lastStreamUrl = initialStreamUrl;
         }
 
-        final initialVisualizerUrl = currentRadioState.config?.visualizerUrl;
+        // Same rule as the listener below: only a config that says "no
+        // screen" closes one. Starting up with no config yet is a transition.
+        final initialConfig = currentRadioState.config;
+        final initialVisualizerUrl = initialConfig?.visualizerUrl;
         if (SystemState.instance.serviceSuspended ||
-            initialVisualizerUrl == null ||
-            initialVisualizerUrl.isEmpty) {
+            (initialConfig != null &&
+                (initialVisualizerUrl == null ||
+                    initialVisualizerUrl.isEmpty))) {
           _resetVisualizerState(closeNative: true);
         }
 
@@ -493,12 +497,25 @@ class _HomeScreenState extends State<HomeScreen> {
               _resetVisualizerState(closeNative: true);
             }
 
-            final newVisualizerUrl = state.config?.visualizerUrl;
+            // A state carrying no config at all -- Connecting, or an error on
+            // the way to one -- is a transition, not an instruction to take
+            // the screen down. The screen belongs to the point, and a point
+            // reconnecting still has the one it was given.
+            //
+            // This is what put a venue's display back on the pairing screen
+            // whenever the audio hiccuped: a cached track slow to start trips
+            // the failover-stuck watchdog, the watchdog forces a recovery, the
+            // recovery passes through Connecting, and Connecting used to close
+            // the screen. Only a config that actually says "no screen" closes
+            // one now.
+            final newConfig = state.config;
+            final newVisualizerUrl = newConfig?.visualizerUrl;
             if (SystemState.instance.serviceSuspended ||
-                newVisualizerUrl == null ||
-                newVisualizerUrl.isEmpty) {
+                (newConfig != null &&
+                    (newVisualizerUrl == null || newVisualizerUrl.isEmpty))) {
               _resetVisualizerState(closeNative: true);
-            } else if (_loadedVisualizerUrl != null &&
+            } else if (newVisualizerUrl != null &&
+                _loadedVisualizerUrl != null &&
                 _currentVisualizerUrl != null &&
                 _currentVisualizerUrl != newVisualizerUrl) {
               _resetVisualizerState(closeNative: true);
