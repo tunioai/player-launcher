@@ -86,6 +86,15 @@ final class EnhancedRadioService implements IRadioService {
   bool _restoreWhenProbeReady = false;
   static const Duration _failoverProbeFreshness = Duration(seconds: 20);
 
+  /// Marks the stream URL of a failover that had no live config to fall over
+  /// from (see [_offlineFailoverConfig]).
+  static const String _offlineStreamScheme = 'offline://';
+
+  /// What [_rememberLiveConfig] last wrote, so the write happens once per
+  /// change and not on every audio-state tick that re-emits Connected.
+  StreamConfig? _rememberedConfig;
+  String? _rememberedConfigToken;
+
   /// How long the live stream may be verifiably back before the point returns
   /// to it without waiting for the cached track to end.
   ///
@@ -907,6 +916,14 @@ final class EnhancedRadioService implements IRadioService {
         }
       }
 
+      // A point that stayed Connected through the outage (screen-only, or a
+      // blip the stream rode out) has a channel waiting out its backoff.
+      // Connectivity coming back is local to this device, not a redeploy, so
+      // reconnecting at once is no stampede.
+      if (_currentState is RadioStateConnected) {
+        _channel?.nudge();
+      }
+
       // If we're in failover mode and network is restored, start background monitoring
       if (_currentState is RadioStateFailover) {
         Logger.info(
@@ -1418,6 +1435,12 @@ final class EnhancedRadioService implements IRadioService {
           audioState: const AudioStateIdle(),
         ));
         _startConfigSync();
+        // Whatever the track cache holds belongs to a previous pairing; a
+        // screen-only point must never play it on its next start without a
+        // network. (A paused zone keeps its cache: the stream is still there.)
+        if (!config.hasStream) {
+          unawaited(_failoverService.clearCache());
+        }
         return;
       }
 
@@ -1654,11 +1677,33 @@ final class EnhancedRadioService implements IRadioService {
       }
     }
 
+    // A screen-only point has no music to retry for, and a retry would pass
+    // through Connecting -- which takes its screen down. Whatever failed (a
+    // config poll, a network blip) the channel and the fallback poll pick up
+    // from the Connected state it is in; the screen stays.
+    if (_currentState case RadioStateConnected(:final config)
+        when !config.hasStream) {
+      Logger.info(
+          '🖥️ SCREEN-ONLY: keeping the screen, ignoring retry request: $reason');
+      return;
+    }
+
     // Try to reliably close the previous stream before establishing a new connection
     final stopResult = await _audioService.stop();
     if (stopResult.isFailure) {
       Logger.warning(
           'Retry scheduler: stop before retry failed: ${stopResult.error}');
+      return;
+    }
+
+    // The stop yielded. Startup fires two retry requests back to back (the
+    // attempt's own and the one from _restoreState), and the first may have
+    // put a screen-only point on its remembered screen in the meantime. Same
+    // rule as above: the screen stays.
+    if (_currentState case RadioStateConnected(:final config)
+        when !config.hasStream) {
+      Logger.info(
+          '🖥️ SCREEN-ONLY: keeping the screen, ignoring retry request: $reason');
       return;
     }
 
@@ -1668,6 +1713,22 @@ final class EnhancedRadioService implements IRadioService {
         reason.contains('SocketException') ||
         reason.contains('Network error') ||
         reason.contains('Connection timeout');
+
+    // A pin whose last live config had no stream is a screen-only point,
+    // whatever the track cache holds -- that cache is a previous pairing's,
+    // and its music must not play under this pin. Put it on the config it
+    // last ran with: the display opens from its cache, and the channel and
+    // the fallback poll bring the real config back when the network does.
+    // Retrying instead left it on the pairing screen for the whole outage.
+    if (isNetworkError) {
+      final remembered = _storageService.getLastStreamConfig(token);
+      if (remembered != null &&
+          !remembered.hasStream &&
+          remembered.visualizerUrl != null) {
+        _showRememberedScreen(token, remembered, reason);
+        return;
+      }
+    }
 
     final shouldDeferStartupFailover = isNetworkError &&
         _failoverService.cachedTracksCount > 0 &&
@@ -1686,11 +1747,9 @@ final class EnhancedRadioService implements IRadioService {
       Logger.info(
           '🚨 NETWORK FAILOVER: Network error detected with ${_failoverService.cachedTracksCount} cached tracks - activating failover instead of retry');
 
-      // Create a dummy connected state to use with existing failover logic
-      final dummyConfig = StreamConfig(
-        streamUrl: 'offline://cached',
-        volume: _storageService.getLastVolume(),
-      );
+      // A stand-in connected state so the existing failover logic applies
+      final dummyConfig =
+          _offlineFailoverConfig(token, '${_offlineStreamScheme}cached');
 
       final dummyConnectedState = RadioStateConnected(
         token: token,
@@ -1852,6 +1911,14 @@ final class EnhancedRadioService implements IRadioService {
       // unjittered request on disconnect is the whole fleet hitting the API on
       // the same second -- while the pod it is aimed at is the one still coming
       // up. The jittered first poll below covers the same ground.
+      //
+      // In failover the poll has nothing to do (the refresh only acts on a
+      // Connected point); the 15s background probe is the fallback there, and
+      // the restore starts the poll again if the channel is still down.
+      if (_currentState is! RadioStateConnected) {
+        Logger.warning('Config sync: channel down during failover');
+        return;
+      }
       Logger.warning('Config sync: channel down - falling back to polling');
       _startPollTimer();
     });
@@ -1904,6 +1971,13 @@ final class EnhancedRadioService implements IRadioService {
         Logger.error('Config refresh failed: $e');
         if (e is ApiError && !e.isFromBackend) {
           _endpoint.reportFailure();
+        }
+        // A screen-only point never plays: a failed poll is just a failed
+        // poll. The next one, or the channel, brings the config back.
+        if (!connected.config.hasStream) {
+          Logger.info(
+              '🖥️ SCREEN-ONLY: config refresh failed - keeping the screen, waiting for the next poll');
+          return;
         }
         // Don't trigger retry for config refresh failures unless audio is actually broken
         if (!_audioService.currentState.isPlaying) {
@@ -2367,6 +2441,14 @@ final class EnhancedRadioService implements IRadioService {
       return;
     }
 
+    // Nothing to fall over from, and nothing to fall over to: a screen-only
+    // point keeps its screen and its config sync, whatever tripped this.
+    if (!connectedState.config.hasStream) {
+      Logger.info(
+          '🖥️ SCREEN-ONLY: no stream to fail over from, keeping the screen ($reason)');
+      return;
+    }
+
     if (_currentState is RadioStateFailover) {
       final failover = _currentState as RadioStateFailover;
       if (failover.audioState.isPlaying) {
@@ -2443,6 +2525,12 @@ final class EnhancedRadioService implements IRadioService {
           currentTrackPath: randomTrack.path,
           attemptCount: 0,
         ));
+
+        // A point that fell over before it ever connected has no channel yet.
+        // Open one now: the push is how it hears that the network is back
+        // without re-asking the API every fifteen seconds. A channel that is
+        // already up for this pin is left alone.
+        _ensureChannel();
 
         // Start background monitoring for network recovery
         _startFailoverBackgroundMonitoring();
@@ -2659,6 +2747,43 @@ final class EnhancedRadioService implements IRadioService {
         }
 
         _restoreWhenProbeReady = false;
+
+        // No stream on this point (taken away while it played from the
+        // cache, or the cache belonged to a previous pairing): there is no
+        // live stream to go back to. Stop the cached music and settle in the
+        // screen-only Connected state, as _applyConfig does online. The lock
+        // is released by _startFailoverOperation when this returns.
+        if (!config.hasStream) {
+          Logger.warning(
+              '🖥️ RESTORE: config has no stream - leaving the cache for screen-only mode');
+          await _audioService.stop();
+          _offlineModeFailoverActive = false;
+          _latestFailoverProbeConfig = null;
+          _latestFailoverProbeAt = null;
+          _latestSuccessfulStreamProbeUrl = null;
+          _latestSuccessfulStreamProbeAt = null;
+          _liveBackSince = null;
+          _resetHealthFailures();
+          _stopFailoverBackgroundMonitoring();
+          _recordFailoverEvent(
+            direction: FailoverEventDirection.restore,
+            reason: 'screen-only config, cached music stopped',
+            pin: failover.token,
+            extra: {
+              'failoverAttempts': failover.attemptCount,
+            },
+          );
+          _updateState(RadioStateConnected(
+            token: failover.token,
+            config: config,
+            audioState: const AudioStateIdle(),
+          ));
+          _startConfigSync();
+          _startStateMonitoring();
+          unawaited(_failoverService.clearCache());
+          return;
+        }
+
         Logger.info(
             '🔄 RESTORE: Got fresh config, attempting to restore live stream');
 
@@ -2945,7 +3070,94 @@ final class EnhancedRadioService implements IRadioService {
 
       _currentState = newState;
       _stateController.add(_currentState);
+
+      if (newState is RadioStateConnected) {
+        _rememberLiveConfig(newState.token, newState.config);
+      }
     }
+  }
+
+  /// Keeps the config a point last played live with on disk. A point that
+  /// comes up without a network falls over on it (see
+  /// [_offlineFailoverConfig]), which is what lets the display open from its
+  /// cache instead of sitting on the pairing screen until the network is back.
+  ///
+  /// The current track is left out: it changes every few minutes and is of no
+  /// use offline, and rewriting the preferences file on every song is wear for
+  /// nothing.
+  void _rememberLiveConfig(String token, StreamConfig config) {
+    if (config.streamUrl.startsWith(_offlineStreamScheme)) return;
+
+    final toRemember = StreamConfig(
+      streamUrl: config.streamUrl,
+      volume: config.volume,
+      musicVolume: config.musicVolume,
+      title: config.title,
+      description: config.description,
+      visualizerUrl: config.visualizerUrl,
+      streamUuid: config.streamUuid,
+      status: config.status,
+      paused: config.paused,
+    );
+    if (_rememberedConfigToken == token && _rememberedConfig == toRemember) {
+      return;
+    }
+    _rememberedConfigToken = token;
+    _rememberedConfig = toRemember;
+    unawaited(_storageService
+        .saveLastStreamConfig(token, toRemember)
+        .catchError((Object error) {
+      Logger.warning('Could not store the live config: $error');
+    }));
+  }
+
+  /// Puts a screen-only point that cannot reach the API on the config it last
+  /// ran with. This is the Connected state a screen-only point lives in
+  /// anyway (see the screen-only branch of _performConnection): the display
+  /// opens from its cache, no playback is initialised, and the channel plus
+  /// the fallback poll replace the config the moment the network is back.
+  void _showRememberedScreen(
+      String token, StreamConfig remembered, String reason) {
+    Logger.warning(
+        '🖥️ SCREEN-ONLY OFFLINE: $reason - showing the remembered screen (${remembered.visualizerUrl}) until the network is back');
+    _retryTimer?.cancel();
+    _retryManager.reset();
+    _resetHealthFailures();
+    _updateState(RadioStateConnected(
+      token: token,
+      config: remembered,
+      audioState: const AudioStateIdle(),
+    ));
+    _startConfigSync();
+  }
+
+  /// The config a failover runs on when there is no live one to fall over
+  /// from: a point that starts, or is forced to recover, without a network.
+  ///
+  /// The stream URL is a marker -- the restore path fetches a fresh config
+  /// before going live anyway -- but the rest comes from the config this pin
+  /// last played with, so the display knows which screen to open while the
+  /// network is away. Without it the point sat on the pairing screen for as
+  /// long as the outage lasted, cached video and all.
+  StreamConfig _offlineFailoverConfig(String token, String marker) {
+    final remembered = _storageService.getLastStreamConfig(token);
+    // Warning level on purpose: a release build prints nothing below it, and
+    // this is the line that tells a field log why a screen came up offline.
+    if (remembered != null) {
+      Logger.warning(
+          '🛰️ OFFLINE FAILOVER: Using the remembered config (screen: ${remembered.visualizerUrl ?? '-'})');
+    } else {
+      Logger.warning(
+          '🛰️ OFFLINE FAILOVER: No remembered config for this pin - no screen until the network is back');
+    }
+    return StreamConfig(
+      streamUrl: marker,
+      volume: _storageService.getLastVolume(),
+      title: remembered?.title,
+      description: remembered?.description,
+      visualizerUrl: remembered?.visualizerUrl,
+      streamUuid: remembered?.streamUuid,
+    );
   }
 
   void _startPinging(String streamUrl) {
@@ -3214,11 +3426,9 @@ final class EnhancedRadioService implements IRadioService {
       Logger.info(
           '🚨 FORCE RECOVERY FAILOVER: Force recovery with ${_failoverService.cachedTracksCount} cached tracks - activating failover instead');
 
-      // Create a dummy connected state to use with existing failover logic
-      final dummyConfig = StreamConfig(
-        streamUrl: 'offline://recovery',
-        volume: _storageService.getLastVolume(),
-      );
+      // A stand-in connected state so the existing failover logic applies
+      final dummyConfig =
+          _offlineFailoverConfig(token, '${_offlineStreamScheme}recovery');
 
       final dummyConnectedState = RadioStateConnected(
         token: token,
@@ -3387,6 +3597,18 @@ final class EnhancedRadioService implements IRadioService {
         Logger.info(
             '🔄 FAILOVER BACKGROUND: Successfully retrieved config during failover');
 
+        // No stream on this point: nothing to probe and no track boundary
+        // worth waiting for. A screen-only point does not sit on cached music
+        // from another pairing; the restore settles it in screen-only mode.
+        // The restore insists on a fresh stream probe, and "no stream" is the
+        // probe's answer here.
+        if (!config.hasStream) {
+          _latestSuccessfulStreamProbeUrl = config.streamUrl;
+          _latestSuccessfulStreamProbeAt = DateTime.now();
+          _tryRestoreAfterTrackEnd(failover);
+          return;
+        }
+
         final streamProbeSucceeded = await _probeLiveStream(config.streamUrl);
         if (_isDisposed || _currentState is! RadioStateFailover) return;
         if (streamProbeSucceeded) {
@@ -3508,6 +3730,26 @@ final class EnhancedRadioService implements IRadioService {
             );
             _updateState(updatedFailover);
           }
+        }
+
+        // A point that fell over without a live config (see
+        // _offlineFailoverConfig) learns its screen from the first config the
+        // probe brings back. Publish it on the failover state so the display
+        // opens now: the audio restore waits for a track boundary, and the
+        // screen must not wait with it. A screen attached or swapped while the
+        // point plays from its cache arrives the same way.
+        final shown = _currentState;
+        if (shown is RadioStateFailover &&
+            shown.originalConfig?.visualizerUrl != config.visualizerUrl) {
+          Logger.warning(
+              '🔄 FAILOVER BACKGROUND: Screen URL changed during failover - publishing it (${config.visualizerUrl ?? '-'})');
+          _updateState(RadioStateFailover(
+            token: shown.token,
+            originalConfig: config,
+            audioState: shown.audioState,
+            currentTrackPath: shown.currentTrackPath,
+            attemptCount: shown.attemptCount,
+          ));
         }
       } else {
         Logger.warning(

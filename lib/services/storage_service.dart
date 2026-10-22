@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/failover_event.dart';
+import '../models/stream_config.dart';
 import '../utils/logger.dart';
 import '../utils/prefs_guard.dart';
 import 'credential_store.dart';
@@ -12,6 +13,7 @@ class StorageService {
   static const String _adminKeyKey = 'admin_key';
   static const String _adminKeyHashKey = 'admin_key_hash';
   static const String _lastVolumeKey = 'last_volume';
+  static const String _lastStreamConfigKey = 'last_stream_config';
   static const String _isAutoStartEnabledKey = 'auto_start_enabled';
   static const String _isDarkModeEnabledKey = 'dark_mode_enabled';
   static const String _screenRotationKey = 'screen_rotation';
@@ -139,6 +141,35 @@ class StorageService {
     final stored = _prefs!.getDouble(_lastVolumeKey);
     if (stored == null) return 1.0;
     return stored.clamp(0.0, 1.0);
+  }
+
+  // The config a point last played live with. A point that comes up without
+  // a network falls over on it, which is how it still knows its screen URL.
+  // Keyed by pin: a config left behind by a previous pairing must never open
+  // another point's screen.
+  Future<void> saveLastStreamConfig(String pin, StreamConfig config) async {
+    await _prefs!.setString(
+      _lastStreamConfigKey,
+      jsonEncode({'pin': pin, 'config': config.toJson()}),
+    );
+  }
+
+  StreamConfig? getLastStreamConfig(String pin) {
+    final raw = _prefs!.getString(_lastStreamConfigKey);
+    if (raw == null) return null;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map<String, dynamic> || decoded['pin'] != pin) {
+        return null;
+      }
+      final config = decoded['config'];
+      if (config is! Map<String, dynamic>) return null;
+      return StreamConfig.fromJson(config);
+    } catch (e) {
+      Logger.warning(
+          'Stored stream config is unreadable, ignoring it: $e', 'Storage');
+      return null;
+    }
   }
 
   Future<void> setAutoStartEnabled(bool enabled) async {

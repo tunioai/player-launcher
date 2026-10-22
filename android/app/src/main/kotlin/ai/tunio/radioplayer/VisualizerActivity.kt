@@ -20,6 +20,7 @@ import android.view.ViewConfiguration
 import android.view.WindowInsets
 import android.view.WindowManager
 import android.util.Log
+import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.ConsoleMessage
 import android.webkit.WebChromeClient
@@ -122,6 +123,14 @@ class VisualizerActivity : Activity() {
         private const val IMAGE_PREFETCH_DELAY_MS = 150L
         private const val IMAGE_DOWNLOAD_CONNECT_TIMEOUT_MS = 10_000
         private const val IMAGE_DOWNLOAD_READ_TIMEOUT_MS = 30_000
+        // Offline copy of the screen page (document, scripts, styles, screen
+        // JSON). A few megabytes in all, so the only budget is per item;
+        // entries nobody asked for in a month are dropped at startup.
+        private const val PAGE_CACHE_DIR_NAME = "visualizer_page_cache"
+        private const val PAGE_CACHE_MAX_ITEM_BYTES = 16L * 1024L * 1024L // 16 MB
+        private const val PAGE_CACHE_MAX_AGE_MS = 30L * 24L * 60L * 60L * 1000L
+        private const val PAGE_FETCH_CONNECT_TIMEOUT_MS = 10_000
+        private const val PAGE_FETCH_READ_TIMEOUT_MS = 20_000
         // Image prefetch stays tiny — images are small and non-urgent.
         private const val IMAGE_PREFETCH_MAX_BYTES_PER_SECOND = 32L * 1024L
         // Video trickle must actually GROW the cache-only rotation while a
@@ -351,6 +360,11 @@ class VisualizerActivity : Activity() {
 
             videoItems.sortByDescending { (it["bytes"] as? Long) ?: 0L }
 
+            val pageFiles = pageCacheDirFor(context).listFiles()
+                ?.filter { it.isFile && it.name.endsWith(".body") }
+                ?: emptyList()
+            val pageBytes = pageFiles.fold(0L) { acc, file -> acc + file.length() }
+
             return mapOf(
                 "video" to mapOf(
                     "count" to videoCount,
@@ -361,8 +375,17 @@ class VisualizerActivity : Activity() {
                     "count" to imageFiles.size,
                     "bytes" to imageBytes,
                 ),
+                "page" to mapOf(
+                    "count" to pageFiles.size,
+                    "bytes" to pageBytes,
+                ),
                 "newestMs" to newestMs,
             )
+        }
+
+        private fun pageCacheDirFor(context: Context): File {
+            val root = resolveVideoCacheDir(context).parentFile ?: context.cacheDir
+            return File(root, PAGE_CACHE_DIR_NAME).apply { mkdirs() }
         }
 
         fun clearScreenCache(context: Context) {
@@ -381,6 +404,9 @@ class VisualizerActivity : Activity() {
             }
             imageCacheDirFor(context).listFiles()
                 ?.filter { it.isFile && it.name.endsWith(".webp", ignoreCase = true) }
+                ?.forEach { it.delete() }
+            pageCacheDirFor(context).listFiles()
+                ?.filter { it.isFile }
                 ?.forEach { it.delete() }
         }
     }
@@ -457,6 +483,12 @@ class VisualizerActivity : Activity() {
     private lateinit var imageCacheDir: File
     private var imageCacheMaxBytes: Long = IMAGE_CACHE_MAX_BYTES
     private val imageCacheLocks = ConcurrentHashMap<String, Any>()
+    private lateinit var pageCacheDir: File
+    private val pageCacheLocks = ConcurrentHashMap<String, Any>()
+    // Host of the page being shown; its static assets are what the page cache
+    // keeps besides the document and the screen JSON.
+    @Volatile
+    private var pageHost: String? = null
     private val imagePrefetchExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private var imagePrefetchFuture: Future<*>? = null
     @Volatile
@@ -804,6 +836,8 @@ class VisualizerActivity : Activity() {
             TAG,
             "Image cache cap=${imageCacheMaxBytes / (1024L * 1024L)}MB dir=${imageCacheDir.absolutePath}",
         )
+        pageCacheDir = File(mediaCacheRoot, PAGE_CACHE_DIR_NAME).apply { mkdirs() }
+        prunePageCache()
     }
 
     private fun resolveImageCacheMaxBytes(cacheDir: File): Long {
@@ -893,6 +927,7 @@ class VisualizerActivity : Activity() {
                         return null
                     }
                     return interceptCachedImageRequest(request.url)
+                        ?: interceptPageRequest(request)
                 }
 
                 @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
@@ -1135,6 +1170,7 @@ class VisualizerActivity : Activity() {
 
     private fun loadUrl(url: String) {
         marqueeOverlayController.clearAll()
+        pageHost = Uri.parse(url).host
         webView.loadUrl(url)
     }
 
@@ -1567,6 +1603,213 @@ class VisualizerActivity : Activity() {
 
     private fun imageCacheFileForSource(source: String): File {
         return File(imageCacheDir, "${hashImageCacheKey(source)}.webp")
+    }
+
+    // ---- Offline copy of the screen page ----
+    //
+    // The WebView runs with LOAD_NO_CACHE, so without this a page opened while
+    // the network is down -- a point that boots before its router does, or one
+    // that reopens its screen while playing from the cache -- gets the
+    // browser's error page, cached video and all. Network first: every
+    // successful load refreshes the copy on disk, and when the network fails
+    // the copy is served instead. Covers the document, its scripts and styles
+    // (same host) and the screen JSON the page fetches; live-only traffic (the
+    // SSE stream) is left alone.
+
+    private sealed class PageFetch {
+        class Fresh(val response: WebResourceResponse) : PageFetch()
+
+        /** The server answered and said no; the page should see that. */
+        object Rejected : PageFetch()
+
+        /** No usable answer: offline, timed out, or the backend mid-deploy. */
+        object Unavailable : PageFetch()
+    }
+
+    private fun interceptPageRequest(request: WebResourceRequest): WebResourceResponse? {
+        val uri = request.url ?: return null
+        if (!isPageCacheableRequest(request, uri)) {
+            return null
+        }
+        val url = uri.toString()
+        val key = hashImageCacheKey(url)
+        val lock = pageCacheLocks.getOrPut(key) { Any() }
+        return synchronized(lock) {
+            when (val fetched = fetchPageResource(url, request.requestHeaders, key)) {
+                is PageFetch.Fresh -> fetched.response
+                PageFetch.Rejected -> null
+                PageFetch.Unavailable -> readCachedPageResource(key, url)
+            }
+        }
+    }
+
+    private fun isPageCacheableRequest(request: WebResourceRequest, uri: Uri): Boolean {
+        val scheme = uri.scheme?.lowercase()
+        if (scheme != "https" && scheme != "http") {
+            return false
+        }
+        val headers = request.requestHeaders.orEmpty()
+        if (headers.keys.any { it.equals("Range", ignoreCase = true) }) {
+            return false
+        }
+        val accept = headers.entries.firstOrNull { it.key.equals("Accept", ignoreCase = true) }?.value
+        if (accept != null && accept.contains("text/event-stream")) {
+            return false
+        }
+        if (request.isForMainFrame) {
+            return true
+        }
+        val path = uri.path.orEmpty()
+        if (path.contains("/public/v1/screens/")) {
+            // The SSE stream is live by definition and never ends.
+            return !path.endsWith("/events")
+        }
+        val host = pageHost ?: return false
+        return uri.host.equals(host, ignoreCase = true)
+    }
+
+    private fun fetchPageResource(
+        url: String,
+        requestHeaders: Map<String, String>?,
+        key: String,
+    ): PageFetch {
+        val tempFile = File(pageCacheDir, "$key.tmp")
+        var connection: HttpURLConnection? = null
+        try {
+            connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                connectTimeout = PAGE_FETCH_CONNECT_TIMEOUT_MS
+                readTimeout = PAGE_FETCH_READ_TIMEOUT_MS
+                instanceFollowRedirects = true
+                requestMethod = "GET"
+                useCaches = false
+            }
+            requestHeaders?.forEach { (name, value) ->
+                // Conditional headers would turn a hit into a 304 there is
+                // nothing to store from; the encoding is negotiated -- and
+                // decoded -- by HttpURLConnection itself.
+                when (name.lowercase()) {
+                    "if-none-match", "if-modified-since", "accept-encoding", "connection", "host" -> Unit
+                    else -> connection.setRequestProperty(name, value)
+                }
+            }
+            CookieManager.getInstance().getCookie(url)?.let { cookie ->
+                connection.setRequestProperty("Cookie", cookie)
+            }
+
+            val status = connection.responseCode
+            if (status !in 200..299) {
+                Log.d(TAG, "Page fetch $status for $url")
+                return if (status >= 500) PageFetch.Unavailable else PageFetch.Rejected
+            }
+            val contentType = connection.contentType.orEmpty()
+            val mimeType = contentType.substringBefore(';').trim().ifEmpty { "application/octet-stream" }
+            val encoding = Regex("charset=([^;\\s]+)", RegexOption.IGNORE_CASE)
+                .find(contentType)?.groupValues?.get(1)?.trim('"')
+            val headers = LinkedHashMap<String, String>()
+            connection.headerFields.forEach { (name, values) ->
+                if (name == null || values.isNullOrEmpty()) return@forEach
+                when (name.lowercase()) {
+                    // The body is stored decoded and re-served from a file.
+                    "content-encoding", "content-length", "transfer-encoding", "connection", "keep-alive" -> return@forEach
+                    "set-cookie" -> {
+                        values.forEach { CookieManager.getInstance().setCookie(url, it) }
+                        return@forEach
+                    }
+                }
+                headers[name] = values.joinToString(", ")
+            }
+
+            var written = 0L
+            BufferedInputStream(connection.inputStream).use { input ->
+                BufferedOutputStream(tempFile.outputStream()).use { output ->
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) {
+                            break
+                        }
+                        written += read
+                        if (written > PAGE_CACHE_MAX_ITEM_BYTES) {
+                            throw IllegalStateException("Page resource exceeds cache item limit")
+                        }
+                        output.write(buffer, 0, read)
+                    }
+                }
+            }
+
+            val bodyFile = File(pageCacheDir, "$key.body")
+            val metaFile = File(pageCacheDir, "$key.meta")
+            val reason = connection.responseMessage?.takeIf { it.isNotBlank() } ?: "OK"
+            val meta = JSONObject().apply {
+                put("url", url)
+                put("status", status)
+                put("reason", reason)
+                put("mimeType", mimeType)
+                put("encoding", encoding ?: JSONObject.NULL)
+                put("headers", JSONObject(headers as Map<*, *>))
+            }
+            if (!tempFile.renameTo(bodyFile)) {
+                throw IllegalStateException("Could not place page resource in cache")
+            }
+            metaFile.writeText(meta.toString())
+            val now = System.currentTimeMillis()
+            bodyFile.setLastModified(now)
+            metaFile.setLastModified(now)
+            return PageFetch.Fresh(
+                WebResourceResponse(mimeType, encoding, status, reason, headers, FileInputStream(bodyFile)),
+            )
+        } catch (error: Throwable) {
+            Log.d(TAG, "Page fetch failed for $url: ${error.message}")
+            return PageFetch.Unavailable
+        } finally {
+            connection?.disconnect()
+            if (tempFile.exists()) {
+                tempFile.delete()
+            }
+        }
+    }
+
+    private fun readCachedPageResource(key: String, url: String): WebResourceResponse? {
+        val bodyFile = File(pageCacheDir, "$key.body")
+        val metaFile = File(pageCacheDir, "$key.meta")
+        if (!bodyFile.isFile || !metaFile.isFile) {
+            Log.d(TAG, "Page cache miss while offline: $url")
+            return null
+        }
+        return try {
+            val meta = JSONObject(metaFile.readText())
+            val headers = LinkedHashMap<String, String>()
+            meta.optJSONObject("headers")?.let { stored ->
+                stored.keys().forEach { name -> headers[name] = stored.optString(name) }
+            }
+            headers["X-Tunio-Offline-Copy"] = "1"
+            val encoding = if (meta.isNull("encoding")) null else meta.optString("encoding").ifEmpty { null }
+            val now = System.currentTimeMillis()
+            bodyFile.setLastModified(now)
+            metaFile.setLastModified(now)
+            Log.i(TAG, "Page cache serving the offline copy: $url")
+            WebResourceResponse(
+                meta.optString("mimeType").ifEmpty { "application/octet-stream" },
+                encoding,
+                200,
+                "OK",
+                headers,
+                FileInputStream(bodyFile),
+            )
+        } catch (error: Throwable) {
+            Log.d(TAG, "Page cache entry unreadable for $url: ${error.message}")
+            null
+        }
+    }
+
+    private fun prunePageCache() {
+        val cutoff = System.currentTimeMillis() - PAGE_CACHE_MAX_AGE_MS
+        pageCacheDir.listFiles()?.forEach { file ->
+            if (!file.isFile) return@forEach
+            if (file.name.endsWith(".tmp") || file.lastModified() < cutoff) {
+                file.delete()
+            }
+        }
     }
 
     private fun setBackgroundPrefetchPriority() {
