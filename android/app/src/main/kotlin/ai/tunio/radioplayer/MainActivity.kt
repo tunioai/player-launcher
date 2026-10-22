@@ -144,10 +144,11 @@ class MainActivity: AudioServiceActivity() {
                 "openVisualizer" -> {
                     val url = call.argument<String>("url")
                     val lowPerformanceMode = call.argument<Boolean>("lowPerformanceMode") ?: false
+                    val rotation = call.argument<Int>("rotation") ?: 0
                     if (url.isNullOrEmpty()) {
                         result.error("INVALID_URL", "Visualizer URL is missing", null)
                     } else {
-                        VisualizerController.open(this, url, lowPerformanceMode)
+                        VisualizerController.open(this, url, lowPerformanceMode, rotation)
                         result.success(null)
                     }
                 }
@@ -159,6 +160,10 @@ class MainActivity: AudioServiceActivity() {
                         VisualizerController.update(script)
                         result.success(null)
                     }
+                }
+                "setVisualizerRotation" -> {
+                    VisualizerController.setRotation(call.argument<Int>("rotation") ?: 0)
+                    result.success(null)
                 }
                 "closeVisualizer" -> {
                     VisualizerController.close()

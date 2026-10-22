@@ -13,6 +13,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.StatFs
 import android.os.SystemClock
+import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
@@ -110,6 +111,7 @@ class VisualizerActivity : Activity() {
     companion object {
         const val EXTRA_URL = "visualizer_url"
         const val EXTRA_LOW_PERFORMANCE_MODE = "low_performance_mode"
+        const val EXTRA_ROTATION = "screen_rotation"
         private const val TAG = "VisualizerActivity"
         private const val VIDEO_CACHE_DIR_NAME = "visualizer_video_cache"
         private const val IMAGE_CACHE_DIR_NAME = "visualizer_image_cache"
@@ -383,7 +385,9 @@ class VisualizerActivity : Activity() {
         }
     }
 
+    private lateinit var stageLayout: FrameLayout
     private lateinit var rootLayout: FrameLayout
+    private var screenRotation: Int = 0
     private lateinit var videoLayer: FrameLayout
     private lateinit var videoPlayerView: PlayerView
     private lateinit var dimOverlayView: View
@@ -463,6 +467,7 @@ class VisualizerActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         lowPerformanceMode = intent?.getBooleanExtra(EXTRA_LOW_PERFORMANCE_MODE, false) ?: false
+        screenRotation = normalizeRotation(intent?.getIntExtra(EXTRA_ROTATION, 0) ?: 0)
         // Allow inspecting the screen-player WebView from desktop Chrome via
         // chrome://inspect (Elements/Console/Performance/Paint-flashing) — only
         // in debuggable builds, so production/release stays locked down.
@@ -491,7 +496,37 @@ class VisualizerActivity : Activity() {
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
         lowPerformanceMode = intent?.getBooleanExtra(EXTRA_LOW_PERFORMANCE_MODE, lowPerformanceMode) ?: lowPerformanceMode
+        if (intent?.hasExtra(EXTRA_ROTATION) == true) {
+            setScreenRotation(intent.getIntExtra(EXTRA_ROTATION, 0))
+        }
         intent?.getStringExtra(EXTRA_URL)?.let { loadUrl(it) }
+    }
+
+    fun setScreenRotation(degrees: Int) {
+        val normalized = normalizeRotation(degrees)
+        if (normalized == screenRotation) return
+        screenRotation = normalized
+        applyScreenRotation()
+    }
+
+    private fun normalizeRotation(degrees: Int): Int =
+        when (degrees) {
+            90, 180, 270 -> degrees
+            else -> 0
+        }
+
+    private fun applyScreenRotation() {
+        val stageWidth = stageLayout.width
+        val stageHeight = stageLayout.height
+        if (stageWidth <= 0 || stageHeight <= 0) return
+        val sideways = screenRotation == 90 || screenRotation == 270
+        val width = if (sideways) stageHeight else stageWidth
+        val height = if (sideways) stageWidth else stageHeight
+        val params = rootLayout.layoutParams as FrameLayout.LayoutParams
+        if (params.width != width || params.height != height) {
+            rootLayout.layoutParams = FrameLayout.LayoutParams(width, height, Gravity.CENTER)
+        }
+        rootLayout.rotation = screenRotation.toFloat()
     }
 
     override fun onDestroy() {
@@ -1076,7 +1111,26 @@ class VisualizerActivity : Activity() {
             }
         }
 
-        return rootLayout
+        stageLayout = FrameLayout(this).apply {
+            setBackgroundColor(Color.BLACK)
+            clipChildren = true
+        }
+        stageLayout.addView(
+            rootLayout,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                Gravity.CENTER,
+            ),
+        )
+        stageLayout.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+            if (right - left == oldRight - oldLeft && bottom - top == oldBottom - oldTop) {
+                return@addOnLayoutChangeListener
+            }
+            stageLayout.post { applyScreenRotation() }
+        }
+
+        return stageLayout
     }
 
     private fun loadUrl(url: String) {

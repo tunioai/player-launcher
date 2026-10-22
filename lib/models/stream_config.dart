@@ -17,6 +17,10 @@ class StreamConfig {
   /// screen and its failover cache and resumes without refetching anything.
   final bool paused;
 
+  /// Clockwise degrees (0, 90, 180, 270) the screen content is turned by, for
+  /// a display mounted on its side or upside down.
+  final int screenRotation;
+
   const StreamConfig({
     required this.streamUrl,
     this.volume = 1.0,
@@ -28,6 +32,7 @@ class StreamConfig {
     this.streamUuid,
     this.status,
     this.paused = false,
+    this.screenRotation = 0,
   });
 
   /// Whether the backend attached a playable audio stream to this point. When
@@ -67,6 +72,7 @@ class StreamConfig {
     final streamUuid = json['stream_uuid']?.toString();
     final status = json['status']?.toString();
     final paused = json['paused'] is bool ? json['paused'] as bool : false;
+    final screenRotation = _parseScreenRotation(json['screen_rotation']);
     final volume = _parseVolume(json['volume']);
     final parsedMusicVolume = _parseOptionalVolume(json['music_volume']);
     final title = json['title']?.toString();
@@ -108,6 +114,7 @@ class StreamConfig {
       streamUuid: streamUuid,
       status: status,
       paused: paused,
+      screenRotation: screenRotation,
     );
   }
 
@@ -123,6 +130,7 @@ class StreamConfig {
       if (visualizerUrl != null) 'visualizer_url': visualizerUrl,
       if (status != null) 'status': status,
       'paused': paused,
+      'screen_rotation': screenRotation,
     };
   }
 
@@ -139,12 +147,21 @@ class StreamConfig {
         other.current == current &&
         other.streamUuid == streamUuid &&
         other.status == status &&
-        other.paused == paused;
+        other.paused == paused &&
+        other.screenRotation == screenRotation;
   }
 
   @override
   int get hashCode => Object.hash(streamUrl, volume, musicVolume, visualizerUrl,
-      title, description, current, streamUuid, status, paused);
+      title, description, current, streamUuid, status, paused, screenRotation);
+
+  static int _parseScreenRotation(dynamic raw) {
+    final degrees = raw is num ? raw.toInt() : int.tryParse('$raw');
+    return switch (degrees) {
+      90 || 180 || 270 => degrees!,
+      _ => 0,
+    };
+  }
 
   static double _parseVolume(dynamic raw, [double defaultValue = 1.0]) {
     if (raw == null) return defaultValue;

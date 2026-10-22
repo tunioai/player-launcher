@@ -88,6 +88,7 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _visualizerReady = false;
   bool _hasAutoOpenedVisualizer = false;
   String? _currentVisualizerUrl;
+  int _nativeVisualizerRotation = 0;
   String? _lastStreamUrl;
   bool _initialPlayFocusRequested = false;
   Timer? _visualizerHeartbeatTimer;
@@ -488,6 +489,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 _currentVisualizerUrl != newVisualizerUrl) {
               _resetVisualizerState(closeNative: true);
             }
+            _syncNativeVisualizerRotation();
 
             if (!_radioState.isConnected) {
               _hasAutoOpenedVisualizer = false;
@@ -624,7 +626,10 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: Stack(
                   children: [
                     Positioned.fill(
-                      child: _buildVisualizerWebView(),
+                      child: RotatedBox(
+                        quarterTurns: _screenRotation ~/ 90,
+                        child: _buildVisualizerWebView(),
+                      ),
                     ),
                     Positioned(
                       bottom: 12,
@@ -830,12 +835,30 @@ class _HomeScreenState extends State<HomeScreen> {
     _scheduleVisualizerUpdate();
   }
 
+  int get _screenRotation => _radioState.config?.screenRotation ?? 0;
+
+  void _syncNativeVisualizerRotation() {
+    if (defaultTargetPlatform != TargetPlatform.android) return;
+    final rotation = _screenRotation;
+    if (rotation == _nativeVisualizerRotation) return;
+    _nativeVisualizerRotation = rotation;
+    if (!_isVisualizerVisible) return;
+    _visualizerChannel.invokeMethod('setVisualizerRotation', {
+      'rotation': rotation,
+    }).catchError((Object e) {
+      Logger.error('HomeScreen: Failed to rotate native visualizer: $e');
+    });
+  }
+
   Future<void> _openNativeVisualizer(Uri targetUri, String originalUrl) async {
     try {
+      final rotation = _screenRotation;
       await _visualizerChannel.invokeMethod('openVisualizer', {
         'url': targetUri.toString(),
         'lowPerformanceMode': _androidLowPerformanceVisualizerMode,
+        'rotation': rotation,
       });
+      _nativeVisualizerRotation = rotation;
       setState(() {
         _visualizerController = null;
         _loadedVisualizerUrl = targetUri.toString();
