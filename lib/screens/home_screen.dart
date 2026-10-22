@@ -22,6 +22,7 @@ import '../services/failover_service.dart';
 import '../services/autostart_service.dart';
 import '../services/app_update_service.dart';
 import '../services/desktop_lifecycle_service.dart';
+import '../services/screen_rotation.dart';
 import '../widgets/code_input_widget.dart';
 import '../widgets/settings_dialog.dart';
 import '../widgets/status_indicator.dart';
@@ -106,6 +107,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    ScreenRotation.degrees.addListener(_syncNativeVisualizerRotation);
     if (_isAndroid) {
       _visualizerChannel.setMethodCallHandler(_handleVisualizerChannelCall);
       // Once the UI is up, make sure the OS won't freeze the app in the
@@ -171,6 +173,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    ScreenRotation.degrees.removeListener(_syncNativeVisualizerRotation);
     if (_isAndroid) {
       _visualizerChannel.setMethodCallHandler(null);
     }
@@ -489,7 +492,10 @@ class _HomeScreenState extends State<HomeScreen> {
                 _currentVisualizerUrl != newVisualizerUrl) {
               _resetVisualizerState(closeNative: true);
             }
-            _syncNativeVisualizerRotation();
+            final linkedRotation = state.config?.screenRotation;
+            if (linkedRotation != null) {
+              ScreenRotation.applyLinked(linkedRotation);
+            }
 
             if (!_radioState.isConnected) {
               _hasAutoOpenedVisualizer = false;
@@ -626,10 +632,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: Stack(
                   children: [
                     Positioned.fill(
-                      child: RotatedBox(
-                        quarterTurns: _screenRotation ~/ 90,
-                        child: _buildVisualizerWebView(),
-                      ),
+                      child: _buildVisualizerWebView(),
                     ),
                     Positioned(
                       bottom: 12,
@@ -835,11 +838,9 @@ class _HomeScreenState extends State<HomeScreen> {
     _scheduleVisualizerUpdate();
   }
 
-  int get _screenRotation => _radioState.config?.screenRotation ?? 0;
-
   void _syncNativeVisualizerRotation() {
     if (defaultTargetPlatform != TargetPlatform.android) return;
-    final rotation = _screenRotation;
+    final rotation = ScreenRotation.degrees.value;
     if (rotation == _nativeVisualizerRotation) return;
     _nativeVisualizerRotation = rotation;
     if (!_isVisualizerVisible) return;
@@ -852,7 +853,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _openNativeVisualizer(Uri targetUri, String originalUrl) async {
     try {
-      final rotation = _screenRotation;
+      final rotation = ScreenRotation.degrees.value;
       await _visualizerChannel.invokeMethod('openVisualizer', {
         'url': targetUri.toString(),
         'lowPerformanceMode': _androidLowPerformanceVisualizerMode,
@@ -1626,6 +1627,16 @@ class _HomeScreenState extends State<HomeScreen> {
                                 ),
                               ),
                             ),
+
+                            if (_radioState is RadioStateDisconnected)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 8),
+                                child: TextButton.icon(
+                                  onPressed: ScreenRotation.rotateClockwise,
+                                  icon: const Icon(Icons.screen_rotation),
+                                  label: const Text('Rotate screen'),
+                                ),
+                              ),
 
                             // Show connected status if connected
                             if (_radioState.isConnected)

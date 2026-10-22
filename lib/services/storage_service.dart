@@ -14,6 +14,7 @@ class StorageService {
   static const String _lastVolumeKey = 'last_volume';
   static const String _isAutoStartEnabledKey = 'auto_start_enabled';
   static const String _isDarkModeEnabledKey = 'dark_mode_enabled';
+  static const String _screenRotationKey = 'screen_rotation';
   static const String _failoverEventsKey = 'failover_events';
   static const String _failoverTrackLastPlayedKey =
       'failover_track_last_played_v1';
@@ -159,6 +160,14 @@ class StorageService {
 
   Future<void> clearDarkModePreference() async {
     await _prefs!.remove(_isDarkModeEnabledKey);
+  }
+
+  Future<void> setScreenRotation(int degrees) async {
+    await _prefs!.setInt(_screenRotationKey, degrees);
+  }
+
+  int screenRotation() {
+    return _prefs!.getInt(_screenRotationKey) ?? 0;
   }
 
   Future<void> clear() async {

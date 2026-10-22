@@ -8,6 +8,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'core/service_locator.dart';
 import 'services/desktop_lifecycle_service.dart';
+import 'services/screen_rotation.dart';
 import 'services/storage_service.dart';
 import 'utils/platform_info.dart';
 
@@ -15,6 +16,7 @@ import 'screens/home_screen.dart';
 import 'utils/cli_args.dart';
 import 'utils/logger.dart';
 import 'utils/insecure_http_overrides.dart';
+import 'widgets/rotated_app.dart';
 
 void main(List<String> arguments) {
   // Run everything inside a guarded zone so uncaught async errors land in the
@@ -118,6 +120,7 @@ class _TunioAppState extends State<TunioApp> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _setupSystemUI();
     _loadThemePreference();
+    ScreenRotation.restore();
   }
 
   void _loadThemePreference() async {
@@ -184,11 +187,11 @@ class _TunioAppState extends State<TunioApp> with WidgetsBindingObserver {
       // open — leaving remote-only users unable to enter their code.
       builder: (context, child) {
         if (child == null) return const SizedBox.shrink();
-        if (!PlatformInfo.isTv) return child;
+        if (!PlatformInfo.isTv) return RotatedApp(child: child);
         final media = MediaQuery.of(context);
         return MediaQuery(
           data: media.copyWith(navigationMode: NavigationMode.directional),
-          child: child,
+          child: RotatedApp(child: child),
         );
       },
       home: HomeScreen(
