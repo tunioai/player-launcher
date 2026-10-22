@@ -55,6 +55,10 @@ flutter_launcher_icons:
   windows:
     generate: true
     image_path: "assets/icon/app_icon.png"
-  # Optional: adaptive icon for Android
-  adaptive_icon_background: "#1A131F"
-  #adaptive_icon_foreground: "assets/icon/app_icon_foreground.png"
+  # Adaptive icon for Android. The background is the same #101113 the Stories
+  # app uses, so the two sit together on a home screen instead of one of them
+  # getting a white plate drawn under it by the launcher. The foreground is the
+  # mark alone, inset to the safe zone, because the system crops this layer to
+  # whatever shape the launcher wants -- circle, squircle or rounded square.
+  adaptive_icon_background: "#101113"
+  adaptive_icon_foreground: "assets/icon/app_icon_foreground.png"
