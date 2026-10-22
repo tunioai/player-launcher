@@ -73,9 +73,13 @@ android {
 
     flavorDimensions += "distribution"
     productFlavors {
-        // Google Play distribution
+        // Google Play distribution. Play's automatic integrity protection
+        // rejects a bundle whose minimum is below SDK 24, so this channel
+        // alone is raised. The appliance boxes standalone ships to are older
+        // than that, so the project-wide minimum stays where it is.
         play {
             dimension = "distribution"
+            minSdk = 24
             signingConfig signingConfigs.release
         }
         // Direct/standalone APK with in-app self-update
