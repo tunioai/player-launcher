@@ -27,6 +27,7 @@ class MainActivity: AudioServiceActivity() {
     private val UPDATER_CHANNEL = "ai.tunio/updater"
     
     override fun onCreate(savedInstanceState: Bundle?) {
+        LegacyRootTrust.installIfNeeded(applicationContext)
         super.onCreate(savedInstanceState)
         
         handleAutoStart()
