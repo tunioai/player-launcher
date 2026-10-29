@@ -705,12 +705,12 @@ class VisualizerActivity : Activity() {
                             if (handoverAwaitingFirstFrame) {
                                 handoverAwaitingFirstFrame = false
                                 val instance = player
-                                if (instance != null && instance.currentPosition > REVEAL_REALIGN_THRESHOLD_MS) {
+                                if (instance != null && (syncVideoPositionMs != null || instance.currentPosition > REVEAL_REALIGN_THRESHOLD_MS)) {
                                     Log.d(
                                         TAG,
                                         "handover realign: clip drifted to ${instance.currentPosition}ms before first frame, restarting from 0",
                                     )
-                                    instance.seekTo(0)
+                                    instance.seekTo(syncTargetPositionMs())
                                 }
                             }
                             // Report readiness — the page anchors the scene
@@ -1268,6 +1268,52 @@ class VisualizerActivity : Activity() {
         }
     }
 
+    private var syncVideoPositionMs: Long? = null
+    private var syncVideoReceivedAtMs = 0L
+    private var syncVideoDurationMs = 0L
+
+    private fun syncTargetPositionMs(): Long {
+        val position = syncVideoPositionMs ?: return 0L
+        return (position + SystemClock.elapsedRealtime() - syncVideoReceivedAtMs)
+            .coerceIn(0L, (syncVideoDurationMs - 50L).coerceAtLeast(0L))
+    }
+
+    private fun correctSyncVideo() {
+        if (syncVideoPositionMs == null || waitingForFirstFrame || handoverAwaitingFirstFrame) return
+        val instance = player ?: return
+        if (instance.playbackState != Player.STATE_READY && instance.playbackState != Player.STATE_ENDED) return
+        val target = syncTargetPositionMs()
+        val drift = target - instance.currentPosition
+        if (kotlin.math.abs(drift) > 200L) {
+            instance.seekTo(target)
+            instance.setPlaybackSpeed(1f)
+        } else {
+            instance.setPlaybackSpeed(if (kotlin.math.abs(drift) > 40L) { if (drift > 0) 1.03f else 0.97f } else 1f)
+        }
+        if (instance.playbackState != Player.STATE_ENDED) instance.play()
+    }
+
+    private fun handleSyncVideo(json: JSONObject) {
+        val source = json.optString("source")
+        val ownerId = json.optString("ownerId")
+        val duration = json.optLong("durationMs", 0L)
+        if (source.isBlank() || ownerId.isBlank() || duration <= 0L) return
+        syncVideoPositionMs = json.optLong("positionMs", 0L).coerceAtLeast(0L)
+        syncVideoReceivedAtMs = SystemClock.elapsedRealtime()
+        syncVideoDurationMs = duration
+        cancelPendingClear()
+        val changed = currentOwnerId != ownerId || playlist != listOf(source)
+        if (changed) {
+            val request = JSONObject(json.toString())
+                .put("playlist", org.json.JSONArray().put(source))
+                .put("playbackMode", "ordered")
+                .put("sceneDurationMs", 0L)
+            handleSetPlaylist(request)
+            syncPageTransparencyForNativeVideo(webView)
+        }
+        correctSyncVideo()
+    }
+
     private fun handleNativeVideoMessage(payload: String) {
         val json = try {
             JSONObject(payload)
@@ -1276,7 +1322,12 @@ class VisualizerActivity : Activity() {
         }
 
         when (json.optString("action")) {
-            "setPlaylist" -> handleSetPlaylist(json)
+            "syncVideo" -> { handleSyncVideo(json); return }
+            "setPlaylist" -> {
+                syncVideoPositionMs = null
+                player?.setPlaybackSpeed(1f)
+                handleSetPlaylist(json)
+            }
             "precache" -> handlePrecache(json)
             "clear" -> requestClearNativeVideo(json.optString("ownerId"))
             "setMarquee" -> marqueeOverlayController.setMarquee(json)
@@ -2144,6 +2195,8 @@ class VisualizerActivity : Activity() {
     }
 
     private fun clearNativeVideo() {
+        syncVideoPositionMs = null
+        player?.setPlaybackSpeed(1f)
         Log.d(TAG, "clearNativeVideo")
         cancelPendingClear()
         cancelVideoPrefetch()
@@ -2469,7 +2522,7 @@ class VisualizerActivity : Activity() {
                 // onRenderedFirstFrame; realign hidden playback to zero and
                 // reveal the layer.
                 player?.pause()
-                player?.seekTo(0)
+                player?.seekTo(syncTargetPositionMs())
                 player?.playWhenReady = true
                 player?.play()
                 pendingRevealAfterTransform = true
@@ -2493,9 +2546,9 @@ class VisualizerActivity : Activity() {
         // decoder would just drift the clock again. Viewers always see the
         // clip from the start; the scene-end window absorbs the extra tail.
         val instance = player
-        if (instance != null && instance.currentPosition > REVEAL_REALIGN_THRESHOLD_MS) {
+        if (instance != null && (syncVideoPositionMs != null || instance.currentPosition > REVEAL_REALIGN_THRESHOLD_MS)) {
             Log.d(TAG, "reveal realign: clip drifted to ${instance.currentPosition}ms while hidden, restarting from 0")
-            instance.seekTo(0)
+            instance.seekTo(syncTargetPositionMs())
         }
         waitingForFirstFrame = false
         pendingRevealAfterTransform = false
@@ -2679,6 +2732,7 @@ class VisualizerActivity : Activity() {
     }
 
     private fun runPlaybackGuardCycle() {
+        correctSyncVideo()
         val instance = player ?: return
         if (playlist.isEmpty() || videoLayer.visibility != View.VISIBLE) {
             return
@@ -2966,6 +3020,9 @@ class VisualizerActivity : Activity() {
     private inner class NativeVideoJsBridge {
         @JavascriptInterface
         fun isAvailable(): Boolean = true
+
+        @JavascriptInterface
+        fun getSyncVersion(): Int = 1
 
         // The SPA probes this before offloading features to the native layer;
         // older APKs lack the method, so the web falls back to DOM rendering.

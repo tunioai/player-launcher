@@ -6,6 +6,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
+import android.os.SystemClock
 import android.os.Build
 import android.util.Log
 import android.util.TypedValue
@@ -53,6 +54,8 @@ class MarqueeOverlayController(private val context: Context) {
         val speedPxPerSecond: Float,
         val pauseMs: Long,
         val alpha: Float,
+        val syncStartedAtMs: Long?,
+        val syncTravelDurationMs: Long,
     )
 
     private class Overlay(
@@ -160,6 +163,8 @@ class MarqueeOverlayController(private val context: Context) {
             speedPxPerSecond = (json.optDouble("speedPxPerSecond", 200.0) * scaleX).toFloat().coerceAtLeast(1f),
             pauseMs = (json.optDouble("pauseSeconds", 0.0) * 1000.0).roundToLong().coerceIn(0L, 10_000L),
             alpha = json.optDouble("opacity", 1.0).toFloat().coerceIn(0f, 1f),
+            syncStartedAtMs = if (json.has("syncElapsedMs")) SystemClock.elapsedRealtime() - json.optLong("syncElapsedMs", 0L).coerceAtLeast(0L) else null,
+            syncTravelDurationMs = json.optLong("syncTravelDurationMs", 0L).coerceAtLeast(0L),
         )
 
         val existing = overlays[ownerId]
@@ -239,7 +244,10 @@ class MarqueeOverlayController(private val context: Context) {
     private fun restartCycle(overlay: Overlay) {
         overlay.cycleToken += 1
         overlay.textView.animate().cancel()
-        overlay.textView.visibility = View.INVISIBLE
+        // A clock refresh should not blank an already laid-out ticker.
+        if (overlay.spec?.syncStartedAtMs == null || overlay.textView.width <= 0) {
+            overlay.textView.visibility = View.INVISIBLE
+        }
         scheduleCycleAfterLayout(overlay, overlay.cycleToken)
     }
 
@@ -276,16 +284,25 @@ class MarqueeOverlayController(private val context: Context) {
 
         val startX = containerWidth.toFloat()
         val endX = -textWidth.toFloat()
-        val durationMs = max(
+        val durationMs = if (spec.syncStartedAtMs != null && spec.syncTravelDurationMs > 0) spec.syncTravelDurationMs else max(
             MIN_TRAVEL_DURATION_MS,
             ((startX - endX) / spec.speedPxPerSecond * 1000f).roundToLong(),
         )
 
-        overlay.textView.translationX = startX
+        val phase = spec.syncStartedAtMs?.let {
+            (SystemClock.elapsedRealtime() - it).coerceAtLeast(0L) % (durationMs + spec.pauseMs)
+        } ?: 0L
+        if (phase >= durationMs) {
+            overlay.textView.translationX = endX
+            overlay.textView.visibility = View.VISIBLE
+            overlay.textView.postDelayed({ if (token == overlay.cycleToken) runCycle(overlay, token) }, durationMs + spec.pauseMs - phase)
+            return
+        }
+        overlay.textView.translationX = startX + (endX - startX) * phase.toFloat() / durationMs
         overlay.textView.visibility = View.VISIBLE
         overlay.textView.animate()
             .translationX(endX)
-            .setDuration(durationMs)
+            .setDuration(durationMs - phase)
             .setInterpolator(LinearInterpolator())
             .withEndAction {
                 if (token != overlay.cycleToken) {
