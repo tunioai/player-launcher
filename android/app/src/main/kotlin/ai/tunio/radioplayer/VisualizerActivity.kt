@@ -185,6 +185,12 @@ class VisualizerActivity : Activity() {
         // marks its cache entry as bad and schedules a clean re-download.
         private const val MID_CLIP_REBUFFER_POSITION_MS = 2_000L
         private const val MID_CLIP_REBUFFERS_BEFORE_EVICTION = 2
+        // Sync with the group's program: a drift past the first is seeked,
+        // past the second nudged by ±3% speed. A seek aims ahead by at most
+        // the third (a slow first seek must not make every next one overshoot).
+        private const val SYNC_HARD_SEEK_DRIFT_MS = 200L
+        private const val SYNC_SOFT_DRIFT_MS = 40L
+        private const val SYNC_SEEK_LATENCY_MAX_MS = 1_500L
         // The page announces the scene duration with setPlaylist. Inside this
         // window before the scene ends, a finishing clip freezes on its last
         // frame instead of rolling into a fresh pass that the scene switch
@@ -662,9 +668,14 @@ class VisualizerActivity : Activity() {
                         if (playbackState == Player.STATE_READY && waitingForFirstFrame) {
                             scheduleFirstFrameReadyFallback()
                         }
+                        if (playbackState == Player.STATE_READY || playbackState == Player.STATE_ENDED) {
+                            onSyncSeekSettled()
+                        }
                         // Mid-playback rebuffer = the visible "micro-freeze".
                         // Cheap diagnostic, visible via `adb logcat -s VisualizerActivity`.
-                        if (playbackState == Player.STATE_BUFFERING && !waitingForFirstFrame) {
+                        // A seek of the sync's own buffers too; it says nothing
+                        // about the cache entry and must not get it evicted.
+                        if (playbackState == Player.STATE_BUFFERING && !waitingForFirstFrame && syncSeekRequestedAtMs == 0L) {
                             val position = player?.currentPosition ?: 0L
                             val source = player?.currentMediaItem?.localConfiguration?.uri?.toString()
                             Log.w(TAG, "rebuffering at ${position}ms of $source")
@@ -683,7 +694,11 @@ class VisualizerActivity : Activity() {
                         }
                         markPlaybackProgressIfAdvanced()
                         if (playbackState == Player.STATE_ENDED) {
-                            if (isInSceneEndWindow()) {
+                            if (syncVideoPositionMs != null) {
+                                // The group's program picks what plays next; a
+                                // cut here would restart the clip out of step.
+                                Log.d(TAG, "clip ended in sync, holding last frame for the program")
+                            } else if (isInSceneEndWindow()) {
                                 // Scene switch imminent: hold the last frame.
                                 // The guard resumes rotation if it never comes.
                                 Log.d(TAG, "clip ended inside the scene-end window, holding last frame")
@@ -710,7 +725,7 @@ class VisualizerActivity : Activity() {
                                         TAG,
                                         "handover realign: clip drifted to ${instance.currentPosition}ms before first frame, restarting from 0",
                                     )
-                                    instance.seekTo(syncTargetPositionMs())
+                                    realignRevealedClip(instance)
                                 }
                             }
                             // Report readiness — the page anchors the scene
@@ -1271,26 +1286,70 @@ class VisualizerActivity : Activity() {
     private var syncVideoPositionMs: Long? = null
     private var syncVideoReceivedAtMs = 0L
     private var syncVideoDurationMs = 0L
+    // An appliance's decoder takes hundreds of ms to land a seek. Aimed at
+    // where the program is when it is asked, every seek lands that far behind,
+    // past the hard-seek threshold, and the next check seeks again — forever.
+    // Seeks aim ahead by what the previous ones took to become ready.
+    private var syncSeekRequestedAtMs = 0L
+    private var syncSeekLatencyMs = 0L
+
+    private fun syncProgramPositionMs(): Long? {
+        val position = syncVideoPositionMs ?: return null
+        return position + SystemClock.elapsedRealtime() - syncVideoReceivedAtMs
+    }
+
+    // Catalog durations are whole seconds; the encoded clip can end earlier.
+    private fun syncClipEndMs(): Long {
+        val decoded = player?.duration?.takeIf { it != C.TIME_UNSET && it > 0L } ?: syncVideoDurationMs
+        return (minOf(syncVideoDurationMs, decoded) - 50L).coerceAtLeast(0L)
+    }
 
     private fun syncTargetPositionMs(): Long {
-        val position = syncVideoPositionMs ?: return 0L
-        return (position + SystemClock.elapsedRealtime() - syncVideoReceivedAtMs)
-            .coerceIn(0L, (syncVideoDurationMs - 50L).coerceAtLeast(0L))
+        val program = syncProgramPositionMs() ?: return 0L
+        return program.coerceIn(0L, syncClipEndMs())
+    }
+
+    private fun syncSeekTo(instance: ExoPlayer) {
+        val program = syncProgramPositionMs() ?: return
+        syncSeekRequestedAtMs = SystemClock.elapsedRealtime()
+        instance.seekTo((program + syncSeekLatencyMs).coerceIn(0L, syncClipEndMs()))
+        // A seek back is not a stall: without this the guard sees no progress
+        // until the clip passes its old position and recovers a healthy player.
+        markPlaybackProgressIfAdvanced(forceRefresh = true)
+    }
+
+    private fun onSyncSeekSettled() {
+        if (syncSeekRequestedAtMs <= 0L) return
+        val tookMs = SystemClock.elapsedRealtime() - syncSeekRequestedAtMs
+        syncSeekRequestedAtMs = 0L
+        syncSeekLatencyMs = (if (syncSeekLatencyMs == 0L) tookMs else (syncSeekLatencyMs * 3 + tookMs) / 4)
+            .coerceAtMost(SYNC_SEEK_LATENCY_MAX_MS)
+    }
+
+    // Where a clip that just showed restarts: the group's position in sync,
+    // otherwise its beginning.
+    private fun realignRevealedClip(instance: ExoPlayer) {
+        if (syncVideoPositionMs != null) syncSeekTo(instance) else instance.seekTo(0)
     }
 
     private fun correctSyncVideo() {
         if (syncVideoPositionMs == null || waitingForFirstFrame || handoverAwaitingFirstFrame) return
         val instance = player ?: return
-        if (instance.playbackState != Player.STATE_READY && instance.playbackState != Player.STATE_ENDED) return
-        val target = syncTargetPositionMs()
-        val drift = target - instance.currentPosition
-        if (kotlin.math.abs(drift) > 200L) {
-            instance.seekTo(target)
+        val state = instance.playbackState
+        if (state != Player.STATE_READY && state != Player.STATE_ENDED) return
+        val program = syncProgramPositionMs() ?: return
+        // The group is still on this clip past its decoded end: hold whatever
+        // shows (its last frame, or the loop's next pass) until the program
+        // wraps or moves on, instead of seeking at the end over and over.
+        if (program >= syncClipEndMs()) return
+        val drift = program - instance.currentPosition
+        if (kotlin.math.abs(drift) > SYNC_HARD_SEEK_DRIFT_MS) {
+            syncSeekTo(instance)
             instance.setPlaybackSpeed(1f)
         } else {
-            instance.setPlaybackSpeed(if (kotlin.math.abs(drift) > 40L) { if (drift > 0) 1.03f else 0.97f } else 1f)
+            instance.setPlaybackSpeed(if (kotlin.math.abs(drift) > SYNC_SOFT_DRIFT_MS) { if (drift > 0) 1.03f else 0.97f } else 1f)
         }
-        if (instance.playbackState != Player.STATE_ENDED) instance.play()
+        if (state != Player.STATE_ENDED) instance.play()
     }
 
     private fun handleSyncVideo(json: JSONObject) {
@@ -1325,6 +1384,7 @@ class VisualizerActivity : Activity() {
             "syncVideo" -> { handleSyncVideo(json); return }
             "setPlaylist" -> {
                 syncVideoPositionMs = null
+                syncSeekRequestedAtMs = 0L
                 player?.setPlaybackSpeed(1f)
                 handleSetPlaylist(json)
             }
@@ -2196,6 +2256,7 @@ class VisualizerActivity : Activity() {
 
     private fun clearNativeVideo() {
         syncVideoPositionMs = null
+        syncSeekRequestedAtMs = 0L
         player?.setPlaybackSpeed(1f)
         Log.d(TAG, "clearNativeVideo")
         cancelPendingClear()
@@ -2522,7 +2583,7 @@ class VisualizerActivity : Activity() {
                 // onRenderedFirstFrame; realign hidden playback to zero and
                 // reveal the layer.
                 player?.pause()
-                player?.seekTo(syncTargetPositionMs())
+                player?.let(::realignRevealedClip)
                 player?.playWhenReady = true
                 player?.play()
                 pendingRevealAfterTransform = true
@@ -2548,7 +2609,7 @@ class VisualizerActivity : Activity() {
         val instance = player
         if (instance != null && (syncVideoPositionMs != null || instance.currentPosition > REVEAL_REALIGN_THRESHOLD_MS)) {
             Log.d(TAG, "reveal realign: clip drifted to ${instance.currentPosition}ms while hidden, restarting from 0")
-            instance.seekTo(syncTargetPositionMs())
+            realignRevealedClip(instance)
         }
         waitingForFirstFrame = false
         pendingRevealAfterTransform = false
