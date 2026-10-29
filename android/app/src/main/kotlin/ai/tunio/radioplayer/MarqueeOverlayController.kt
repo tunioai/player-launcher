@@ -16,6 +16,7 @@ import android.view.animation.LinearInterpolator
 import android.widget.FrameLayout
 import android.widget.TextView
 import org.json.JSONObject
+import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.roundToInt
@@ -43,6 +44,7 @@ class MarqueeOverlayController(private val context: Context) {
         private const val OUTLINE_COLOR = 0xE6000000.toInt()
         private const val MIN_TRAVEL_DURATION_MS = 2500L
         private const val LAYOUT_RETRY_DELAY_MS = 16L
+        private const val SYNC_CLOCK_TOLERANCE_MS = 100L
         private const val LAYOUT_RETRY_LIMIT = 120
     }
 
@@ -111,10 +113,12 @@ class MarqueeOverlayController(private val context: Context) {
     private val overlays = mutableMapOf<String, Overlay>()
 
     fun setMarquee(json: JSONObject) {
-        setMarqueeInternal(json, 0)
+        // The sync clock is anchored when the message arrives, also for a
+        // retry that waits for layout (anchored then, the phase was off by the wait).
+        setMarqueeInternal(json, 0, SystemClock.elapsedRealtime())
     }
 
-    private fun setMarqueeInternal(json: JSONObject, attempt: Int) {
+    private fun setMarqueeInternal(json: JSONObject, attempt: Int, receivedAtMs: Long) {
         val ownerId = json.optString("ownerId")
         if (ownerId.isEmpty()) {
             return
@@ -129,7 +133,7 @@ class MarqueeOverlayController(private val context: Context) {
 
         if (layer.width <= 0 || layer.height <= 0) {
             if (attempt < LAYOUT_RETRY_LIMIT) {
-                layer.postDelayed({ setMarqueeInternal(json, attempt + 1) }, LAYOUT_RETRY_DELAY_MS)
+                layer.postDelayed({ setMarqueeInternal(json, attempt + 1, receivedAtMs) }, LAYOUT_RETRY_DELAY_MS)
             }
             return
         }
@@ -163,7 +167,7 @@ class MarqueeOverlayController(private val context: Context) {
             speedPxPerSecond = (json.optDouble("speedPxPerSecond", 200.0) * scaleX).toFloat().coerceAtLeast(1f),
             pauseMs = (json.optDouble("pauseSeconds", 0.0) * 1000.0).roundToLong().coerceIn(0L, 10_000L),
             alpha = json.optDouble("opacity", 1.0).toFloat().coerceIn(0f, 1f),
-            syncStartedAtMs = if (json.has("syncElapsedMs")) SystemClock.elapsedRealtime() - json.optLong("syncElapsedMs", 0L).coerceAtLeast(0L) else null,
+            syncStartedAtMs = if (json.has("syncElapsedMs")) receivedAtMs - json.optLong("syncElapsedMs", 0L).coerceAtLeast(0L) else null,
             syncTravelDurationMs = json.optLong("syncTravelDurationMs", 0L).coerceAtLeast(0L),
         )
 
@@ -179,11 +183,25 @@ class MarqueeOverlayController(private val context: Context) {
         }
 
         existing.container.layoutParams = params
-        if (existing.spec != spec) {
-            existing.spec = spec
-            applySpec(existing, spec)
-            restartCycle(existing)
+        val previous = existing.spec
+        if (previous == spec) {
+            return
         }
+        // The page re-sends the sync clock every few seconds; it moves by the
+        // bridge's jitter only. Restarting the ticker for that made it jump.
+        val clockOnly = previous?.copy(syncStartedAtMs = spec.syncStartedAtMs) == spec
+        val previousStart = previous?.syncStartedAtMs
+        val nextStart = spec.syncStartedAtMs
+        if (clockOnly && previousStart != null && nextStart != null &&
+            abs(previousStart - nextStart) <= SYNC_CLOCK_TOLERANCE_MS
+        ) {
+            return
+        }
+        existing.spec = spec
+        if (!clockOnly) {
+            applySpec(existing, spec)
+        }
+        restartCycle(existing)
     }
 
     fun clearMarquee(ownerId: String?) {

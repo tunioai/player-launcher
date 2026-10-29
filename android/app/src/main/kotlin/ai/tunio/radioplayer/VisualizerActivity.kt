@@ -189,8 +189,24 @@ class VisualizerActivity : Activity() {
         // past the second nudged by ±3% speed. A seek aims ahead by at most
         // the third (a slow first seek must not make every next one overshoot).
         private const val SYNC_HARD_SEEK_DRIFT_MS = 200L
-        private const val SYNC_SOFT_DRIFT_MS = 40L
-        private const val SYNC_SEEK_LATENCY_MAX_MS = 1_500L
+        private const val SYNC_SOFT_DRIFT_MS = 60L
+        private const val SYNC_SOFT_EXIT_MS = 20L
+        // Up to 3 s: an exact seek far from a keyframe (the clips have one
+        // every ~8 s) takes that long on an S905-class box.
+        private const val SYNC_SEEK_LATENCY_MAX_MS = 3_000L
+        private const val SYNC_SEEK_LEAD_MARGIN_MS = 150L
+        // A seek that took longer than this was not the decoder's doing.
+        private const val SYNC_SEEK_STALE_MS = 5_000L
+        // Ahead of the program by up to this: pause on the frame and wait.
+        private const val SYNC_HOLD_MAX_MS = 3_000L
+        // A handover whose first frame is never reported stops blocking
+        // correction after this.
+        private const val SYNC_HANDOVER_GRACE_MS = 1_500L
+        private const val SYNC_CLIP_RETRY_MS = 3_000L
+        // The program's next clip downloads above the clips' bitrate (720p up
+        // to 2.5 Mbit/s) so it keeps ahead of playback; the precache's rate
+        // would fall behind a run of clips not on disk.
+        private const val SYNC_NEXT_CLIP_MAX_BYTES_PER_SECOND = 384L * 1024L
         // The page announces the scene duration with setPlaylist. Inside this
         // window before the scene ends, a finishing clip freezes on its last
         // frame instead of rolling into a fresh pass that the scene switch
@@ -476,6 +492,16 @@ class VisualizerActivity : Activity() {
     private lateinit var playbackCacheDataSourceFactory: CacheDataSource.Factory
     private lateinit var prefetchCacheDataSourceFactory: CacheDataSource.Factory
     private lateinit var precacheCacheDataSourceFactory: CacheDataSource.Factory
+    private lateinit var syncClipCacheDataSourceFactory: CacheDataSource.Factory
+    private lateinit var syncDueCacheDataSourceFactory: CacheDataSource.Factory
+    private val syncClipExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    private var syncClipFuture: Future<*>? = null
+    @Volatile
+    private var syncClipWriter: CacheWriter? = null
+    private var syncClipSource: String? = null
+    private var syncClipDueNow = false
+    @Volatile
+    private var syncClipRetryAtMs = 0L
     private var lastPrecacheKey: String = ""
     private val mediaPrefetchPermit = Semaphore(1, true)
     private val prefetchExecutor: ExecutorService = Executors.newSingleThreadExecutor()
@@ -577,6 +603,12 @@ class VisualizerActivity : Activity() {
         marqueeOverlayController.clearAll()
         cancelVideoPrefetch()
         prefetchExecutor.shutdownNow()
+        try {
+            syncClipWriter?.cancel()
+        } catch (_: Throwable) {
+            // no-op
+        }
+        syncClipExecutor.shutdownNow()
         cancelImagePrefetch()
         imagePrefetchExecutor.shutdownNow()
         videoPlayerView.player = null
@@ -807,6 +839,27 @@ class VisualizerActivity : Activity() {
             .setUpstreamDataSourceFactory(limitedPrecacheUpstreamFactory)
             .setCacheKeyFactory(cacheKeyFactory)
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+
+        // A synced screen's next clip: ahead of playback, below full speed.
+        val limitedSyncClipUpstreamFactory = DataSource.Factory {
+            BandwidthLimitedDataSource(
+                upstreamFactory.createDataSource(),
+                SYNC_NEXT_CLIP_MAX_BYTES_PER_SECOND,
+            )
+        }
+        // Blocking: a file another writer still holds is waited for, not read
+        // past the cache (that downloaded all of it and stored nothing).
+        syncClipCacheDataSourceFactory = CacheDataSource.Factory()
+            .setCache(cache)
+            .setUpstreamDataSourceFactory(limitedSyncClipUpstreamFactory)
+            .setCacheKeyFactory(cacheKeyFactory)
+            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR or CacheDataSource.FLAG_BLOCK_ON_CACHE)
+        // The clip due while the one before it holds: full speed.
+        syncDueCacheDataSourceFactory = CacheDataSource.Factory()
+            .setCache(cache)
+            .setUpstreamDataSourceFactory(upstreamFactory)
+            .setCacheKeyFactory(cacheKeyFactory)
+            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR or CacheDataSource.FLAG_BLOCK_ON_CACHE)
     }
 
 
@@ -1286,12 +1339,36 @@ class VisualizerActivity : Activity() {
     private var syncVideoPositionMs: Long? = null
     private var syncVideoReceivedAtMs = 0L
     private var syncVideoDurationMs = 0L
-    // An appliance's decoder takes hundreds of ms to land a seek. Aimed at
-    // where the program is when it is asked, every seek lands that far behind,
-    // past the hard-seek threshold, and the next check seeks again — forever.
-    // Seeks aim ahead by what the previous ones took to become ready.
+    // The program's clip after the one on screen (the same one when it loops).
+    private var syncNextSource: String? = null
+    // The program moved on to a clip that is not on disk yet while another one
+    // shows: that one stays (its last frame) until this one is cached, rather
+    // than dropping to the page's bare background for the download.
+    private var syncAwaitingSource: String? = null
+    // Sources seen on disk, so the per-message check of the next clip does not
+    // query the cache (its lock is shared with the writers) four times a second.
+    private val syncCachedSources = HashSet<String>()
+    // Ahead of the program: paused on the frame until the program catches up.
+    // A seek back costs an appliance's decoder more than the wait.
+    private var syncHolding = false
+    private val syncHoldReleaseRunnable = Runnable { releaseSyncHold() }
+    // Correction at ±3% speed starts past SYNC_SOFT_DRIFT_MS and stops under
+    // SYNC_SOFT_EXIT_MS: no flapping (and codec rate changes) at one threshold.
+    private var syncSoftCorrecting = false
+    // An appliance's decoder takes hundreds of ms to land a seek (seconds far
+    // from a keyframe). Aimed at where the program is when it is asked, every
+    // seek lands behind it, past the hard-seek threshold, and the next one
+    // follows. Seeks aim ahead by what the previous ones took; landing ahead
+    // is waited out with a pause.
     private var syncSeekRequestedAtMs = 0L
+    private var syncSeekMeasured = false
     private var syncSeekLatencyMs = 0L
+    private var handoverStartedAtMs = 0L
+    private var syncCorrectionPosted = false
+    private val syncCorrectionRunnable = Runnable {
+        syncCorrectionPosted = false
+        correctSyncVideo()
+    }
 
     private fun syncProgramPositionMs(): Long? {
         val position = syncVideoPositionMs ?: return null
@@ -1309,10 +1386,31 @@ class VisualizerActivity : Activity() {
         return program.coerceIn(0L, syncClipEndMs())
     }
 
+    private fun releaseSyncHold() {
+        playbackGuardHandler.removeCallbacks(syncHoldReleaseRunnable)
+        if (!syncHolding) return
+        syncHolding = false
+        player?.play()
+    }
+
+    // A pipeline (re)start, handover or cut: a seek in flight is not the
+    // decoder's measure any more, and nothing is paused for the program.
+    private fun resetSyncSeek() {
+        syncSeekRequestedAtMs = 0L
+        syncHolding = false
+        syncSoftCorrecting = false
+        playbackGuardHandler.removeCallbacks(syncHoldReleaseRunnable)
+    }
+
     private fun syncSeekTo(instance: ExoPlayer) {
         val program = syncProgramPositionMs() ?: return
+        val state = instance.playbackState
+        syncSeekMeasured = state == Player.STATE_READY || state == Player.STATE_ENDED
         syncSeekRequestedAtMs = SystemClock.elapsedRealtime()
-        instance.seekTo((program + syncSeekLatencyMs).coerceIn(0L, syncClipEndMs()))
+        syncHolding = false
+        playbackGuardHandler.removeCallbacks(syncHoldReleaseRunnable)
+        val leadMs = (syncSeekLatencyMs * 5 / 4 + SYNC_SEEK_LEAD_MARGIN_MS).coerceAtMost(SYNC_SEEK_LATENCY_MAX_MS)
+        instance.seekTo((program + leadMs).coerceIn(0L, syncClipEndMs()))
         // A seek back is not a stall: without this the guard sees no progress
         // until the clip passes its old position and recovers a healthy player.
         markPlaybackProgressIfAdvanced(forceRefresh = true)
@@ -1322,34 +1420,125 @@ class VisualizerActivity : Activity() {
         if (syncSeekRequestedAtMs <= 0L) return
         val tookMs = SystemClock.elapsedRealtime() - syncSeekRequestedAtMs
         syncSeekRequestedAtMs = 0L
+        // Only a seek of a clip already playing measures the decoder.
+        if (!syncSeekMeasured || tookMs > SYNC_SEEK_STALE_MS) return
         syncSeekLatencyMs = (if (syncSeekLatencyMs == 0L) tookMs else (syncSeekLatencyMs * 3 + tookMs) / 4)
             .coerceAtMost(SYNC_SEEK_LATENCY_MAX_MS)
     }
 
-    // Where a clip that just showed restarts: the group's position in sync,
-    // otherwise its beginning.
+    // Where a clip that just showed goes: in sync to the group's position
+    // (only when out of step and no seek is landing yet: an appliance shows
+    // every seek), else its start.
     private fun realignRevealedClip(instance: ExoPlayer) {
-        if (syncVideoPositionMs != null) syncSeekTo(instance) else instance.seekTo(0)
+        if (syncVideoPositionMs == null) {
+            instance.seekTo(0)
+            return
+        }
+        if (syncSeekRequestedAtMs != 0L) return
+        val program = syncProgramPositionMs() ?: return
+        if (kotlin.math.abs(program - instance.currentPosition) > SYNC_HARD_SEEK_DRIFT_MS) {
+            syncSeekTo(instance)
+        }
+    }
+
+    // After the messages already queued: a burst of them, delivered at once
+    // after the UI thread stalled, corrects once and to the newest position,
+    // not with a seek back to a stale one and another forward.
+    private fun scheduleSyncCorrection() {
+        if (syncCorrectionPosted) return
+        syncCorrectionPosted = true
+        playbackGuardHandler.post(syncCorrectionRunnable)
     }
 
     private fun correctSyncVideo() {
-        if (syncVideoPositionMs == null || waitingForFirstFrame || handoverAwaitingFirstFrame) return
+        if (syncVideoPositionMs == null || waitingForFirstFrame) return
+        // onRenderedFirstFrame may never come on an appliance: past the grace a
+        // handed-over clip is corrected like any other.
+        if (handoverAwaitingFirstFrame && SystemClock.elapsedRealtime() - handoverStartedAtMs < SYNC_HANDOVER_GRACE_MS) return
         val instance = player ?: return
+        val looping = syncAwaitingSource == null && (syncNextSource == null || syncNextSource == playlist.firstOrNull())
+        if (!looping) {
+            // The next clip is another (or the one due is still downloading):
+            // this one plays to its end and holds its last frame (the codec
+            // stays) for the program to switch, instead of rolling into a pass
+            // of it the other screens never show.
+            trimQueueToCurrentItem()
+        }
+        if (syncAwaitingSource != null) {
+            releaseSyncHold()
+            return
+        }
         val state = instance.playbackState
         if (state != Player.STATE_READY && state != Player.STATE_ENDED) return
         val program = syncProgramPositionMs() ?: return
-        // The group is still on this clip past its decoded end: hold whatever
-        // shows (its last frame, or the loop's next pass) until the program
-        // wraps or moves on, instead of seeking at the end over and over.
-        if (program >= syncClipEndMs()) return
-        val drift = program - instance.currentPosition
-        if (kotlin.math.abs(drift) > SYNC_HARD_SEEK_DRIFT_MS) {
-            syncSeekTo(instance)
-            instance.setPlaybackSpeed(1f)
-        } else {
-            instance.setPlaybackSpeed(if (kotlin.math.abs(drift) > SYNC_SOFT_DRIFT_MS) { if (drift > 0) 1.03f else 0.97f } else 1f)
+        val clipEnd = syncClipEndMs()
+        // Past the decoded end the group is still on this clip: let it reach
+        // its end (or the loop's next pass) and hold until the program wraps
+        // or moves on.
+        if (program >= clipEnd) {
+            releaseSyncHold()
+            return
+        }
+        // Ended a little early: the frame holds. Back inside the clip (the
+        // clock was recalibrated, the same clip came again): seek, from ENDED too.
+        if (state == Player.STATE_ENDED && !looping && program >= clipEnd - SYNC_HARD_SEEK_DRIFT_MS) return
+        var drift = program - instance.currentPosition
+        // A loop's next pass starts when the file ends, the program's when its
+        // catalog duration does: positions compare within the loop.
+        val period = instance.duration
+        if (looping && period != C.TIME_UNSET && period > 0L) {
+            if (drift > period / 2) drift -= period else if (drift < -period / 2) drift += period
+        }
+        if (syncHolding) {
+            if (drift >= -SYNC_SOFT_EXIT_MS) {
+                releaseSyncHold()
+            } else if (instance.playWhenReady) {
+                // Resumed by someone else while it waits: it would run ahead.
+                instance.pause()
+            }
+            return
+        }
+        val ahead = -drift
+        val absDrift = kotlin.math.abs(drift)
+        when {
+            ahead > SYNC_HARD_SEEK_DRIFT_MS && ahead <= SYNC_HOLD_MAX_MS && state == Player.STATE_READY -> {
+                syncSoftCorrecting = false
+                instance.setPlaybackSpeed(1f)
+                instance.pause()
+                syncHolding = true
+                // Released on time, not at the next message (up to 250 ms late).
+                playbackGuardHandler.removeCallbacks(syncHoldReleaseRunnable)
+                playbackGuardHandler.postDelayed(syncHoldReleaseRunnable, ahead)
+                return
+            }
+            absDrift > SYNC_HARD_SEEK_DRIFT_MS -> {
+                syncSoftCorrecting = false
+                syncSeekTo(instance)
+                instance.setPlaybackSpeed(1f)
+            }
+            else -> {
+                syncSoftCorrecting = if (syncSoftCorrecting) absDrift > SYNC_SOFT_EXIT_MS else absDrift > SYNC_SOFT_DRIFT_MS
+                instance.setPlaybackSpeed(if (!syncSoftCorrecting) 1f else if (drift > 0) 1.03f else 0.97f)
+            }
         }
         if (state != Player.STATE_ENDED) instance.play()
+    }
+
+    private fun applyPlacementIfMoved(rect: JSONObject?) {
+        val before = currentPlacement
+        storePlacement(rect)
+        if (currentPlacement != before) {
+            applyStoredPlacement()
+        }
+    }
+
+    private fun isSyncSourceCached(source: String): Boolean {
+        if (source in syncCachedSources) return true
+        // Still downloading: not on disk yet, and no need to ask the cache.
+        if (syncClipSource == source && syncClipFuture?.isDone == false) return false
+        val cached = hasCachedDataForSource(source)
+        if (cached) syncCachedSources.add(source)
+        return cached
     }
 
     private fun handleSyncVideo(json: JSONObject) {
@@ -1360,20 +1549,118 @@ class VisualizerActivity : Activity() {
         syncVideoPositionMs = json.optLong("positionMs", 0L).coerceAtLeast(0L)
         syncVideoReceivedAtMs = SystemClock.elapsedRealtime()
         syncVideoDurationMs = duration
+        syncNextSource = json.optString("nextSource").ifBlank { null }
         cancelPendingClear()
-        val changed = currentOwnerId != ownerId || playlist != listOf(source)
-        if (changed) {
+        if (currentOwnerId != ownerId || playlist != listOf(source)) {
+            // Shown, not merely laid out: a clip still waiting for its first
+            // frame is one the program has already left.
+            val onScreen = currentOwnerId == ownerId &&
+                playlist.isNotEmpty() &&
+                !waitingForFirstFrame &&
+                videoLayer.visibility == View.VISIBLE &&
+                videoPlayerView.alpha == 1f &&
+                (player?.mediaItemCount ?: 0) > 0
+            if (onScreen && !isSyncSourceCached(source)) {
+                if (syncAwaitingSource != source) {
+                    Log.i(TAG, "sync: $source is not cached yet, the clip on screen holds")
+                }
+                syncAwaitingSource = source
+                downloadSyncClip(source, dueNow = true)
+                scheduleSyncCorrection()
+                return
+            }
+            // Another block (scene) or nothing to hold: the regular path, whose
+            // priority download must not meet ours on the same file.
+            if (currentOwnerId != ownerId || syncClipSource == source) {
+                cancelSyncClipDownload()
+            }
+            syncAwaitingSource = null
+            resetSyncSeek()
             val request = JSONObject(json.toString())
                 .put("playlist", org.json.JSONArray().put(source))
                 .put("playbackMode", "ordered")
                 .put("sceneDurationMs", 0L)
             handleSetPlaylist(request)
             syncPageTransparencyForNativeVideo(webView)
+        } else {
+            syncAwaitingSource = null
+            applyPlacementIfMoved(json.optJSONObject("rect"))
         }
-        correctSyncVideo()
+        // The next clip, ahead of time; not while the first clip of a scene
+        // downloads at full speed, it goes first.
+        val next = syncNextSource
+        if (next != null && next != source && !awaitingFirstCachedClip && !isSyncSourceCached(next)) {
+            downloadSyncClip(next, dueNow = false)
+        }
+        scheduleSyncCorrection()
+    }
+
+    // The sync's own downloads: the program's next clip ahead of time, or the
+    // one due and not on disk while the clip before it holds. One at a time,
+    // the newest need wins (a cancelled download keeps its cached spans). The
+    // precache yields to it (one background download, as before), and its
+    // factories block on a file another writer still holds instead of reading
+    // past the cache and storing nothing.
+    private fun downloadSyncClip(source: String, dueNow: Boolean) {
+        val running = syncClipFuture?.isDone == false
+        if (running && syncClipSource == source && (syncClipDueNow || !dueNow)) return
+        if (!running && syncClipSource == source && SystemClock.elapsedRealtime() < syncClipRetryAtMs) return
+        cancelSyncClipDownload()
+        if (!awaitingFirstCachedClip) {
+            cancelVideoPrefetch()
+        }
+        syncClipSource = source
+        syncClipDueNow = dueNow
+        val factory = if (dueNow) syncDueCacheDataSourceFactory else syncClipCacheDataSourceFactory
+        syncClipFuture = syncClipExecutor.submit {
+            val uri = Uri.parse(source)
+            val writer = CacheWriter(
+                factory.createDataSource(),
+                DataSpec.Builder().setUri(uri).setKey(buildVideoCacheKey(uri)).build(),
+                null,
+                null,
+            )
+            syncClipWriter = writer
+            try {
+                writer.cache()
+                if (hasCachedDataForSource(source)) {
+                    Log.i(TAG, "sync clip cached (${if (dueNow) "due" else "next"}): $source")
+                } else {
+                    syncClipRetryAtMs = SystemClock.elapsedRealtime() + SYNC_CLIP_RETRY_MS
+                    Log.w(TAG, "sync clip download ended without the file on disk: $source")
+                }
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            } catch (_: InterruptedIOException) {
+                // Cancelled for a newer need.
+            } catch (error: Throwable) {
+                syncClipRetryAtMs = SystemClock.elapsedRealtime() + SYNC_CLIP_RETRY_MS
+                Log.d(TAG, "sync clip caching failed for $source: ${error.message}")
+            } finally {
+                if (syncClipWriter === writer) {
+                    syncClipWriter = null
+                }
+            }
+        }
+    }
+
+    private fun cancelSyncClipDownload() {
+        try {
+            syncClipWriter?.cancel()
+        } catch (_: Throwable) {
+            // no-op
+        }
+        syncClipFuture?.cancel(true)
+        syncClipFuture = null
+        syncClipSource = null
     }
 
     private fun handleNativeVideoMessage(payload: String) {
+        // Posted before the WebView went away and run after onDestroy shut the
+        // executors down: a submit there would crash the app, radio and all.
+        if (isDestroyed) {
+            return
+        }
         val json = try {
             JSONObject(payload)
         } catch (_: Throwable) {
@@ -1384,7 +1671,11 @@ class VisualizerActivity : Activity() {
             "syncVideo" -> { handleSyncVideo(json); return }
             "setPlaylist" -> {
                 syncVideoPositionMs = null
-                syncSeekRequestedAtMs = 0L
+                syncNextSource = null
+                syncAwaitingSource = null
+                syncCachedSources.clear()
+                resetSyncSeek()
+                cancelSyncClipDownload()
                 player?.setPlaybackSpeed(1f)
                 handleSetPlaylist(json)
             }
@@ -2031,6 +2322,7 @@ class VisualizerActivity : Activity() {
     // black shutter — while the priority download fills the cache.
     private fun enterAwaitingCachedState() {
         firstFrameWaitToken += 1
+        resetSyncSeek()
         waitingForFirstFrame = false
         pendingRevealAfterTransform = false
         suppressWaitingBlackout = false
@@ -2119,6 +2411,11 @@ class VisualizerActivity : Activity() {
     // the whole list — category playlists can hold hundreds of clips; the rest
     // trickle in via the regular background prefetch across rotations.
     private fun handlePrecache(json: JSONObject) {
+        // The sync's download (next or due clip) goes first: one background
+        // download at a time, and never two writers on one file.
+        if (syncClipFuture?.isDone == false || syncAwaitingSource != null) {
+            return
+        }
         if (awaitingFirstCachedClip) {
             // The full-speed first-clip download owns the link right now.
             return
@@ -2246,17 +2543,23 @@ class VisualizerActivity : Activity() {
 
         currentIndex = firstIndex
         instance.addMediaItem(mediaItem)
+        resetSyncSeek()
         instance.seekToNextMediaItem()
         instance.playWhenReady = true
         instance.play()
         handoverAwaitingFirstFrame = true
+        handoverStartedAtMs = SystemClock.elapsedRealtime()
         scenePlaybackStartedAtMs = SystemClock.elapsedRealtime()
         markPlaybackProgressIfAdvanced(forceRefresh = true)
     }
 
     private fun clearNativeVideo() {
         syncVideoPositionMs = null
-        syncSeekRequestedAtMs = 0L
+        syncNextSource = null
+        syncAwaitingSource = null
+        syncCachedSources.clear()
+        resetSyncSeek()
+        cancelSyncClipDownload()
         player?.setPlaybackSpeed(1f)
         Log.d(TAG, "clearNativeVideo")
         cancelPendingClear()
@@ -2293,6 +2596,11 @@ class VisualizerActivity : Activity() {
     }
 
     private fun scheduleVideoPrefetch(playlistSnapshot: List<String>) {
+        // In sync the playlist is the one clip on screen: the sync fetches the
+        // program's next clips itself, and this would only cancel the precache.
+        if (syncVideoPositionMs != null) {
+            return
+        }
         // Playback itself writes the active clip to cache. Excluding it here
         // avoids a second concurrent HTTP request for the same video.
         val activeSource = playlistSnapshot.getOrNull(currentIndex)
@@ -2520,6 +2828,7 @@ class VisualizerActivity : Activity() {
         }
 
         handoverAwaitingFirstFrame = false
+        resetSyncSeek()
         resetPlaybackGuardState()
         startPlaybackGuard()
 
@@ -2740,6 +3049,7 @@ class VisualizerActivity : Activity() {
         mediaIdToPlaylistIndex.clear()
         mediaIdSerial = 0
         currentIndex = index
+        resetSyncSeek()
 
         val mediaItem = createMediaItemForIndex(index) ?: return
         player?.apply {
@@ -2831,7 +3141,7 @@ class VisualizerActivity : Activity() {
         val playbackState = instance.playbackState
         val stallDurationMs = if (lastPlaybackProgressRealtimeMs <= 0L) 0L else now - lastPlaybackProgressRealtimeMs
 
-        if (!instance.playWhenReady) {
+        if (!instance.playWhenReady && !syncHolding) {
             Log.w(TAG, "PlaybackGuard recovery: playWhenReady=false")
             instance.playWhenReady = true
             instance.play()
@@ -3083,7 +3393,7 @@ class VisualizerActivity : Activity() {
         fun isAvailable(): Boolean = true
 
         @JavascriptInterface
-        fun getSyncVersion(): Int = 1
+        fun getSyncVersion(): Int = 2
 
         // The SPA probes this before offloading features to the native layer;
         // older APKs lack the method, so the web falls back to DOM rendering.
