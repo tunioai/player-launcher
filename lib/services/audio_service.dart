@@ -10,6 +10,7 @@ import '../core/result.dart';
 import '../core/dependency_injection.dart';
 import '../core/audio_state.dart';
 import '../models/stream_config.dart';
+import 'live_stall.dart';
 import '../utils/logger.dart';
 import '../utils/audio_config.dart';
 import 'audio/windows_playback_operation_queue.dart';
@@ -915,8 +916,15 @@ final class EnhancedAudioService implements IAudioService {
           ? const Duration(seconds: 60) // HLS: 60 seconds
           : _bufferStallThreshold; // Regular: 20 seconds
 
+      final playbackStalledFor =
+          _lastProgressAt == null ? null : now.difference(_lastProgressAt!);
+
       if (timeSinceStart > stallThreshold &&
-          bufferStalledFor > stallThreshold) {
+          isLiveBufferStalled(
+            sinceBufferUpdate: bufferStalledFor,
+            sincePlaybackProgress: playbackStalledFor,
+            threshold: stallThreshold,
+          )) {
         Logger.error(
             '${isHls ? "HLS" : "STREAM"} STALL: No buffer updates for ${bufferStalledFor.inSeconds}s');
         _handlePlayerError(
