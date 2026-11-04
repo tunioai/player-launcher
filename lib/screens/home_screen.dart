@@ -23,6 +23,7 @@ import '../services/autostart_service.dart';
 import '../services/app_update_service.dart';
 import '../services/desktop_lifecycle_service.dart';
 import '../services/screen_rotation.dart';
+import '../services/stream_type.dart';
 import '../widgets/code_input_widget.dart';
 import '../widgets/settings_dialog.dart';
 import '../widgets/status_indicator.dart';
@@ -63,6 +64,7 @@ class _HomeScreenState extends State<HomeScreen> {
   final FocusNode _codeFocusNode = FocusNode();
   final FocusNode _connectButtonFocusNode = FocusNode();
   final FocusNode _playButtonFocusNode = FocusNode();
+  final FocusNode _streamTypeButtonFocusNode = FocusNode();
   final FocusNode _themeButtonFocusNode = FocusNode();
   final FocusNode _settingsButtonFocusNode = FocusNode();
   final FocusNode _updateButtonFocusNode = FocusNode();
@@ -184,6 +186,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _codeFocusNode.dispose();
     _connectButtonFocusNode.dispose();
     _playButtonFocusNode.dispose();
+    _streamTypeButtonFocusNode.dispose();
     _themeButtonFocusNode.dispose();
     _settingsButtonFocusNode.dispose();
     _updateButtonFocusNode.dispose();
@@ -216,6 +219,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _codeFocusNode.addListener(() => setState(() {}));
     _connectButtonFocusNode.addListener(() => setState(() {}));
     _playButtonFocusNode.addListener(() => setState(() {}));
+    _streamTypeButtonFocusNode.addListener(() => setState(() {}));
     _themeButtonFocusNode.addListener(() => setState(() {}));
     _settingsButtonFocusNode.addListener(() => setState(() {}));
     _updateButtonFocusNode.addListener(() => setState(() {}));
@@ -523,6 +527,10 @@ class _HomeScreenState extends State<HomeScreen> {
             final linkedRotation = state.config?.screenRotation;
             if (linkedRotation != null) {
               ScreenRotation.applyLinked(linkedRotation);
+            }
+            final linkedStreamType = state.config?.streamType;
+            if (linkedStreamType != null) {
+              StreamTypePreference.applyLinked(linkedStreamType);
             }
 
             if (!_radioState.isConnected) {
@@ -1950,21 +1958,16 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     ];
 
-    // Playback mode indicator
+    // Playback mode indicator; also the stream type switch (HLS / AAC / auto),
+    // reachable with a TV remote like the play button next to it.
     if (_radioState.isConnected) {
-      final isHlsStream = _isHlsStream(_radioState.config?.streamUrl);
       indicators.add(
-        _buildSimpleLabel(
-          icon: _radioState is RadioStateFailover
-              ? Icons.offline_bolt
-              : Icons.live_tv,
-          value: _radioState is RadioStateFailover
-              ? 'Failover'
-              : isHlsStream
-                  ? 'Live (HLS)'
-                  : 'Live',
-          color:
-              _radioState is RadioStateFailover ? Colors.orange : Colors.green,
+        AnimatedBuilder(
+          animation: Listenable.merge([
+            StreamTypePreference.selected,
+            StreamTypePreference.fallbackReason,
+          ]),
+          builder: (context, _) => _buildStreamTypeButton(),
         ),
       );
 
@@ -1987,6 +1990,94 @@ class _HomeScreenState extends State<HomeScreen> {
       crossAxisAlignment: WrapCrossAlignment.center,
       children: indicators,
     );
+  }
+
+  Widget _buildStreamTypeButton() {
+    final config = _radioState.config;
+    final inFailover = _radioState is RadioStateFailover;
+    final playsAac = config != null &&
+        config.aacUrl != null &&
+        config.streamUrl == config.aacUrl;
+    final fallback = StreamTypePreference.usingFallback && playsAac;
+    final label = inFailover
+        ? 'Failover'
+        : playsAac
+            ? (fallback ? 'Live (AAC · auto)' : 'Live (AAC)')
+            : _isHlsStream(config?.streamUrl)
+                ? 'Live (HLS)'
+                : 'Live';
+    final color = inFailover || fallback ? Colors.orange : Colors.green;
+    final focused = _streamTypeButtonFocusNode.hasFocus;
+
+    return Tooltip(
+      message: fallback
+          ? 'HLS is unstable here, playing the AAC stream until restart'
+          : 'Stream: ${StreamTypePreference.selected.value.name.toUpperCase()}',
+      child: InkWell(
+        focusNode: _streamTypeButtonFocusNode,
+        onTap: _openStreamTypeDialog,
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: focused ? TunioColors.primary : Colors.transparent,
+              width: 2,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _buildSimpleLabel(
+                icon: inFailover ? Icons.offline_bolt : Icons.live_tv,
+                value: label,
+                color: color,
+              ),
+              Icon(Icons.arrow_drop_down, size: 18, color: color),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openStreamTypeDialog() async {
+    final current = StreamTypePreference.selected.value;
+    const options = <(StreamType, String, String)>[
+      (
+        StreamType.auto,
+        'Auto',
+        'HLS; switches to AAC until restart if HLS is unstable here',
+      ),
+      (StreamType.hls, 'HLS', 'Always the HLS stream'),
+      (StreamType.aac, 'AAC', 'Always the plain AAC stream'),
+    ];
+    final chosen = await showDialog<StreamType>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: const Text('Stream'),
+        children: [
+          for (final (type, title, subtitle) in options)
+            ListTile(
+              autofocus: type == current,
+              focusColor: TunioColors.primary.withValues(alpha: 0.2),
+              leading: Icon(
+                type == current
+                    ? Icons.radio_button_checked
+                    : Icons.radio_button_unchecked,
+                color: TunioColors.primary,
+              ),
+              title: Text(title),
+              subtitle: Text(subtitle),
+              onTap: () => Navigator.of(context).pop(type),
+            ),
+        ],
+      ),
+    );
+    if (chosen != null) {
+      await StreamTypePreference.choose(chosen);
+    }
   }
 
   bool _isHlsStream(String? url) {

@@ -1,8 +1,19 @@
+import '../services/stream_type.dart';
 import '../utils/logger.dart';
 import 'current_track.dart';
 
 class StreamConfig {
+  /// The stream this point plays: one of [hlsUrl] and [aacUrl], picked by
+  /// [StreamTypePreference].
   final String streamUrl;
+
+  /// The two live streams the backend offers, kept so the point can move
+  /// between them without a new config.
+  final String? hlsUrl;
+  final String? aacUrl;
+
+  /// The stream type chosen for the point in the control panel.
+  final StreamType streamType;
   final double volume;
   final double? musicVolume;
   final String? title;
@@ -23,6 +34,9 @@ class StreamConfig {
 
   const StreamConfig({
     required this.streamUrl,
+    this.hlsUrl,
+    this.aacUrl,
+    this.streamType = StreamType.auto,
     this.volume = 1.0,
     this.musicVolume,
     this.title,
@@ -65,10 +79,10 @@ class StreamConfig {
   factory StreamConfig.fromJson(Map<String, dynamic> json) {
     Logger.debug('Parsing StreamConfig from JSON: $json', 'StreamConfig');
 
-    final hlsUrl = json['stream_hls_url'];
-    final streamUrl = (hlsUrl is String && hlsUrl.isNotEmpty)
-        ? hlsUrl
-        : (json['stream_url']?.toString() ?? '');
+    final hlsUrl = _parseOptionalUrl(json['stream_hls_url']);
+    final aacUrl = _parseOptionalUrl(json['stream_url']);
+    final streamUrl =
+        StreamTypePreference.resolve(hlsUrl: hlsUrl, aacUrl: aacUrl);
     final streamUuid = json['stream_uuid']?.toString();
     final status = json['status']?.toString();
     final paused = json['paused'] is bool ? json['paused'] as bool : false;
@@ -105,6 +119,9 @@ class StreamConfig {
 
     return StreamConfig(
       streamUrl: streamUrl,
+      hlsUrl: hlsUrl,
+      aacUrl: aacUrl,
+      streamType: StreamType.parse(json['stream_type']),
       volume: volume,
       musicVolume: parsedMusicVolume,
       title: title,
@@ -118,9 +135,35 @@ class StreamConfig {
     );
   }
 
+  /// This config with the stream picked again, after the stream type changed.
+  StreamConfig withResolvedStream() {
+    if (hlsUrl == null && aacUrl == null) return this;
+    final resolved =
+        StreamTypePreference.resolve(hlsUrl: hlsUrl, aacUrl: aacUrl);
+    if (resolved == streamUrl) return this;
+    return StreamConfig(
+      streamUrl: resolved,
+      hlsUrl: hlsUrl,
+      aacUrl: aacUrl,
+      streamType: streamType,
+      volume: volume,
+      musicVolume: musicVolume,
+      title: title,
+      description: description,
+      current: current,
+      visualizerUrl: visualizerUrl,
+      streamUuid: streamUuid,
+      status: status,
+      paused: paused,
+      screenRotation: screenRotation,
+    );
+  }
+
   Map<String, dynamic> toJson() {
     return {
-      'stream_url': streamUrl,
+      'stream_url': aacUrl ?? streamUrl,
+      if (hlsUrl != null) 'stream_hls_url': hlsUrl,
+      'stream_type': streamType.name,
       if (streamUuid != null) 'stream_uuid': streamUuid,
       'volume': volume,
       if (musicVolume != null) 'music_volume': musicVolume,
@@ -139,6 +182,9 @@ class StreamConfig {
     if (identical(this, other)) return true;
     return other is StreamConfig &&
         other.streamUrl == streamUrl &&
+        other.hlsUrl == hlsUrl &&
+        other.aacUrl == aacUrl &&
+        other.streamType == streamType &&
         other.volume == volume &&
         other.musicVolume == musicVolume &&
         other.visualizerUrl == visualizerUrl &&
@@ -152,8 +198,21 @@ class StreamConfig {
   }
 
   @override
-  int get hashCode => Object.hash(streamUrl, volume, musicVolume, visualizerUrl,
-      title, description, current, streamUuid, status, paused, screenRotation);
+  int get hashCode => Object.hash(
+      streamUrl,
+      hlsUrl,
+      aacUrl,
+      streamType,
+      volume,
+      musicVolume,
+      visualizerUrl,
+      title,
+      description,
+      current,
+      streamUuid,
+      status,
+      paused,
+      screenRotation);
 
   static int _parseScreenRotation(dynamic raw) {
     final degrees = raw is num ? raw.toInt() : int.tryParse('$raw');

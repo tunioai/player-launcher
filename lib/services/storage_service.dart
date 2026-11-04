@@ -17,6 +17,7 @@ class StorageService {
   static const String _isAutoStartEnabledKey = 'auto_start_enabled';
   static const String _isDarkModeEnabledKey = 'dark_mode_enabled';
   static const String _screenRotationKey = 'screen_rotation';
+  static const String _streamTypeKey = 'stream_type';
   static const String _failoverEventsKey = 'failover_events';
   static const String _failoverTrackLastPlayedKey =
       'failover_track_last_played_v1';
@@ -199,6 +200,14 @@ class StorageService {
 
   int screenRotation() {
     return _prefs!.getInt(_screenRotationKey) ?? 0;
+  }
+
+  Future<void> setStreamType(String type) async {
+    await _prefs!.setString(_streamTypeKey, type);
+  }
+
+  String? streamType() {
+    return _prefs!.getString(_streamTypeKey);
   }
 
   Future<void> clear() async {

@@ -7,6 +7,7 @@ import 'package:just_audio_background/just_audio_background.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'core/service_locator.dart';
+import 'services/stream_type.dart';
 import 'services/desktop_lifecycle_service.dart';
 import 'services/screen_rotation.dart';
 import 'services/storage_service.dart';
@@ -67,6 +68,17 @@ void main(List<String> arguments) {
     }
 
     await PlatformInfo.initialize();
+
+    try {
+      await StreamTypePreference.restore();
+      // TUNIO_STREAM_TYPE=hls|aac|auto pins the stream for this run, for support.
+      final pinnedStream = Platform.environment['TUNIO_STREAM_TYPE'];
+      if (pinnedStream != null) {
+        StreamTypePreference.selected.value = StreamType.parse(pinnedStream);
+      }
+    } catch (e) {
+      Logger.error('Failed to restore the stream type: $e', 'startup');
+    }
 
     try {
       await ServiceLocator.initialize(cliArgs: cliArgs);

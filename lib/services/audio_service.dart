@@ -11,6 +11,7 @@ import '../core/dependency_injection.dart';
 import '../core/audio_state.dart';
 import '../models/stream_config.dart';
 import 'live_stall.dart';
+import 'stream_type.dart';
 import '../utils/logger.dart';
 import '../utils/audio_config.dart';
 import 'audio/windows_playback_operation_queue.dart';
@@ -901,6 +902,7 @@ final class EnhancedAudioService implements IAudioService {
               '🚨 PLAYBACK STALL: position frozen at ${position.inSeconds}s for ${frozenFor.inSeconds}s while playing (${isHls ? 'HLS' : 'live'}) - raising network error');
           // Reset so we don't re-fire on every tick while recovery is running.
           _lastProgressAt = now;
+          if (isHls) StreamTypePreference.reportHlsStall();
           _handlePlayerError(Exception(
               'Network error: playback stalled for ${frozenFor.inSeconds}s without progress'));
           return;
@@ -933,6 +935,7 @@ final class EnhancedAudioService implements IAudioService {
           )) {
         Logger.error(
             '${isHls ? "HLS" : "STREAM"} STALL: No buffer updates for ${bufferStalledFor.inSeconds}s');
+        if (isHls) StreamTypePreference.reportHlsStall();
         _handlePlayerError(
             TimeoutException('Buffer stalled during playback', stallThreshold));
         return;
@@ -1059,6 +1062,7 @@ final class EnhancedAudioService implements IAudioService {
             .timeout(timeout);
         _ensurePlaybackOperationCurrent(playbackGeneration);
         _isLiveSourcePrepared = true;
+        if (isHls) StreamTypePreference.reportHlsLoaded();
 
         final setSourceDuration = DateTime.now().difference(setSourceStartTime);
         Logger.info(
@@ -1072,6 +1076,7 @@ final class EnhancedAudioService implements IAudioService {
           timeout: timeout,
           elapsed: elapsed,
         );
+        if (isHls) StreamTypePreference.reportHlsLoadHang();
         // A WinRT player that let a load hang this long does not load anything
         // afterwards: every later attempt timed out the same way for hours, so
         // the point never left the cache. The next attempt gets a fresh one.

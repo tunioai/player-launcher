@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-enum FailoverEventDirection { failover, restore }
+enum FailoverEventDirection { failover, restore, streamSwitch }
 
 class FailoverEvent {
   final String id;

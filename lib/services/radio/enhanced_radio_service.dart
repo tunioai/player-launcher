@@ -19,6 +19,7 @@ import '../audio_service.dart';
 import '../failover_reporting_service.dart';
 import '../failover_service.dart';
 import '../storage_service.dart';
+import '../stream_type.dart';
 import 'failover_recovery_backoff.dart';
 import 'i_radio_service.dart';
 import 'radio_state_extensions.dart';
@@ -222,7 +223,39 @@ final class EnhancedRadioService implements IRadioService {
         _storageService = storageService,
         _failoverService = failoverService,
         _failoverReportingService = failoverReportingService,
-        _channelFactory = deviceChannelFactory ?? _defaultChannelFactory;
+        _channelFactory = deviceChannelFactory ?? _defaultChannelFactory {
+    StreamTypePreference.selected.addListener(_onStreamTypeChanged);
+    StreamTypePreference.fallbackReason.addListener(_onStreamTypeChanged);
+  }
+
+  /// The stream type changed (picked by hand, from the control panel, or auto
+  /// leaving HLS): a connected point switches streams through the same path a
+  /// changed stream URL from the backend takes. A point in the cache picks the
+  /// new stream on its next restore, which resolves a fresh config.
+  void _onStreamTypeChanged() {
+    final state = _currentState;
+    final RadioStateConnected? connected =
+        state is RadioStateConnected ? state : null;
+    final config = connected?.config ??
+        (state is RadioStateFailover ? state.originalConfig : null);
+    if (config == null) return;
+    final next = config.withResolvedStream();
+    if (next.streamUrl == config.streamUrl) return;
+
+    final from = config.streamUrl == config.aacUrl ? 'aac' : 'hls';
+    final to = next.streamUrl == next.aacUrl ? 'aac' : 'hls';
+    _recordFailoverEvent(
+      direction: FailoverEventDirection.streamSwitch,
+      reason:
+          '$from->$to: ${StreamTypePreference.fallbackReason.value ?? 'chosen ${StreamTypePreference.selected.value.name}'}',
+      pin: connected?.token ??
+          (state is RadioStateFailover ? state.token : null),
+      extra: {'streamType': StreamTypePreference.selected.value.name},
+    );
+    if (connected != null && !_isDisposed) {
+      unawaited(_applyConfig(connected, next));
+    }
+  }
 
   static DeviceChannelClient _defaultChannelFactory(
       Uri url, String pin, SpotHandler onSpot) {
@@ -2094,9 +2127,17 @@ final class EnhancedRadioService implements IRadioService {
             } else {
               Logger.info(
                   '✅ STREAM SWITCH: Successfully switched to new stream URL');
-              Logger.info(
-                  '🧹 CLEANUP: Stream URL switched successfully, clearing failover cache');
-              unawaited(_failoverService.clearCache());
+              // HLS and AAC of one station share the cache; only a new
+              // station makes the cached music stale.
+              final sameStation =
+                  (newConfig.hlsUrl != null || newConfig.aacUrl != null) &&
+                      newConfig.hlsUrl == connected.config.hlsUrl &&
+                      newConfig.aacUrl == connected.config.aacUrl;
+              if (!sameStation) {
+                Logger.info(
+                    '🧹 CLEANUP: Stream URL switched successfully, clearing failover cache');
+                unawaited(_failoverService.clearCache());
+              }
             }
           }
         } finally {
@@ -3804,6 +3845,8 @@ final class EnhancedRadioService implements IRadioService {
   Future<void> dispose() async {
     if (_isDisposed) return;
     _isDisposed = true;
+    StreamTypePreference.selected.removeListener(_onStreamTypeChanged);
+    StreamTypePreference.fallbackReason.removeListener(_onStreamTypeChanged);
 
     Logger.info('Disposing RadioService');
 
