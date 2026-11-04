@@ -1072,6 +1072,12 @@ final class EnhancedAudioService implements IAudioService {
           timeout: timeout,
           elapsed: elapsed,
         );
+        // A WinRT player that let a load hang this long does not load anything
+        // afterwards: every later attempt timed out the same way for hours, so
+        // the point never left the cache. The next attempt gets a fresh one.
+        if (Platform.isWindows) {
+          await _resetAudioPlayer('Windows setAudioSource timed out');
+        }
         _ensurePlaybackOperationCurrent(playbackGeneration);
         throw TimeoutException('setAudioSource operation timed out');
       } catch (error, stackTrace) {

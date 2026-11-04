@@ -3687,13 +3687,15 @@ final class EnhancedRadioService implements IRadioService {
         // however healthy the live stream keeps proving to be, every fifteen
         // seconds, right here. Past the grace the boundary has had its chance.
         final liveBackSince = _liveBackSince;
+        final now = DateTime.now();
         if (liveBackSince != null &&
             !_isFailoverOperationInProgress &&
-            DateTime.now().difference(liveBackSince) >=
-                _failoverBoundaryGrace) {
-          final waited = DateTime.now().difference(liveBackSince).inSeconds;
+            now.difference(liveBackSince) >= _failoverBoundaryGrace &&
+            _failoverRecoveryBackoff.forcedRestoreDue(now)) {
+          final waited = now.difference(liveBackSince).inSeconds;
           Logger.warning('🔄 RESTORE: live has been back for ${waited}s and no '
               'cached track boundary arrived - restoring anyway');
+          _failoverRecoveryBackoff.recordForcedRestore(now);
           _tryRestoreAfterTrackEnd(failover);
           return;
         }

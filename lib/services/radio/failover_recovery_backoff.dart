@@ -6,8 +6,16 @@ final class FailoverRecoveryBackoff {
   // diagnostics, but it must never suppress a restore opportunity.
   static const List<int> _trackSkipSchedule = [0, 0, 0, 0, 0];
 
+  // A restore that cuts a cached track short is spaced out: the first one may
+  // come as soon as the live stream has been back for the grace period, each
+  // further one waits twice as long, up to ten minutes.
+  static const Duration forcedRestoreFirstDelay = Duration(minutes: 1);
+  static const Duration forcedRestoreMaxDelay = Duration(minutes: 10);
+
   int _instabilityLevel = 0;
   int _pendingTrackSkips = 0;
+  Duration _forcedRestoreDelay = forcedRestoreFirstDelay;
+  DateTime? _forcedRestoreNotBefore;
 
   int get pendingTrackSkips => _pendingTrackSkips;
   int get instabilityLevel => _instabilityLevel;
@@ -29,6 +37,20 @@ final class FailoverRecoveryBackoff {
   void recordSuccessfulRestore() {
     _instabilityLevel = 0;
     _pendingTrackSkips = 0;
+    _forcedRestoreDelay = forcedRestoreFirstDelay;
+    _forcedRestoreNotBefore = null;
+  }
+
+  bool forcedRestoreDue(DateTime now) {
+    final notBefore = _forcedRestoreNotBefore;
+    return notBefore == null || !now.isBefore(notBefore);
+  }
+
+  void recordForcedRestore(DateTime now) {
+    _forcedRestoreNotBefore = now.add(_forcedRestoreDelay);
+    final doubled = _forcedRestoreDelay * 2;
+    _forcedRestoreDelay =
+        doubled > forcedRestoreMaxDelay ? forcedRestoreMaxDelay : doubled;
   }
 
   int? consumePendingSkip() {
