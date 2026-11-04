@@ -75,6 +75,9 @@ final class EnhancedAudioService implements IAudioService {
   // surfaces an error). Position progress is the only reliable signal here.
   Duration _lastProgressPosition = Duration.zero;
   DateTime? _lastProgressAt;
+  // When the position last actually moved. Unlike _lastProgressAt it is not
+  // refreshed just because an HLS player still reports READY.
+  DateTime? _lastPositionMovedAt;
 
   Timer? _loadingTimeoutTimer;
   Timer? _hangDetectionTimer;
@@ -731,6 +734,7 @@ final class EnhancedAudioService implements IAudioService {
   void _resetStallTracking() {
     _lastProgressPosition = Duration.zero;
     _lastProgressAt = null;
+    _lastPositionMovedAt = null;
   }
 
   void _handleConnectivityChange(List<ConnectivityResult> results) {
@@ -881,6 +885,7 @@ final class EnhancedAudioService implements IAudioService {
       if (position > _lastProgressPosition || hlsPositionChanged) {
         _lastProgressPosition = position;
         _lastProgressAt = now;
+        _lastPositionMovedAt = now;
       } else if (isHls &&
           _audioPlayer.processingState != ProcessingState.buffering) {
         // A sliding HLS timeline may keep or rebase the public position while
@@ -916,8 +921,9 @@ final class EnhancedAudioService implements IAudioService {
           ? const Duration(seconds: 60) // HLS: 60 seconds
           : _bufferStallThreshold; // Regular: 20 seconds
 
-      final playbackStalledFor =
-          _lastProgressAt == null ? null : now.difference(_lastProgressAt!);
+      final playbackStalledFor = _lastPositionMovedAt == null
+          ? null
+          : now.difference(_lastPositionMovedAt!);
 
       if (timeSinceStart > stallThreshold &&
           isLiveBufferStalled(
