@@ -30,6 +30,10 @@
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Tunio Spot shows its address on the local network so the venue can manage the player from a browser.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Tunio Spot reads the Wi-Fi network name to show which network the player is connected to.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Tunio Spot only plays audio. Microphone access is never used, but web pages shown in the player may ask for it.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UIBackgroundModes</key>
