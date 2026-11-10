@@ -1,0 +1,25 @@
+{
+  "app_id": "6832968734",
+  "locales": {
+    "en-US": {
+      "name": "Tunio Spot",
+      "subtitle": "Background music for venues",
+      "privacyPolicyUrl": "https://tunio.ai/en/privacy-policy",
+      "supportUrl": "https://tunio.ai/en/contacts",
+      "marketingUrl": "https://tunio.ai/en/tunio-link",
+      "promotionalText": "Turn an iPhone or iPad into the music player of your cafe, shop or gym: connect it to your Tunio station with a PIN and it plays on its own.",
+      "keywords": "background music,business music,cafe music,store music,in-store,venue,player,radio,playlist",
+      "description": "Tunio Spot is the player for Tunio, background music for businesses. Install it on the device that plays music in your venue, connect it to your station with the PIN from your Tunio dashboard, and it plays the station's music, announcements and ads on its own.\n\nMade to run all day\n- Keeps playing in the background and with the screen locked.\n- Recovers by itself when the connection drops and comes back.\n- Keeps a set of tracks on the device and plays them while the internet is down, so the room never falls silent.\n\nManaged from the dashboard\n- Change the music, schedule and volume from your Tunio dashboard; the player follows.\n- Shows whether it is connected, offline or playing from its own tracks.\n\nYou need a Tunio account and a station to use the app. Create one at tunio.ai."
+    },
+    "ru": {
+      "name": "Tunio Spot",
+      "subtitle": "Фоновая музыка для бизнеса",
+      "privacyPolicyUrl": "https://tunio.ai/ru/privacy-policy",
+      "supportUrl": "https://tunio.ai/ru/contacts",
+      "marketingUrl": "https://tunio.ai/ru/tunio-link",
+      "promotionalText": "Превратите iPhone или iPad в музыкальный плеер кафе, магазина или зала: подключите его к станции Tunio по PIN-коду, и он будет играть сам.",
+      "keywords": "фоновая музыка,музыка для бизнеса,музыка в кафе,музыка в магазин,плеер,радио,заведение,эфир",
+      "description": "Tunio Spot — плеер Tunio, фоновой музыки для бизнеса. Установите его на устройство, через которое в заведении играет музыка, подключите к своей станции PIN-кодом из личного кабинета Tunio, и он сам будет играть музыку станции, объявления и рекламу.\n\nСделан, чтобы работать весь день\n- Играет в фоне и на заблокированном экране.\n- Сам восстанавливается, когда связь пропадает и возвращается.\n- Хранит набор треков на устройстве и играет их, пока нет интернета, чтобы в зале не наступала тишина.\n\nУправляется из кабинета\n- Меняйте музыку, расписание и громкость в личном кабинете Tunio, плеер подстроится.\n- Показывает, на связи ли он, работает ли офлайн или играет свои треки.\n\nДля работы нужен аккаунт Tunio и станция. Создайте их на tunio.ai."
+    }
+  }
+}
