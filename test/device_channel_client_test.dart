@@ -70,6 +70,7 @@ void main() {
         cap: const Duration(milliseconds: 40),
         jitterMs: 0,
       ),
+      silenceDelay: const Duration(milliseconds: 60),
     );
   });
 
@@ -144,5 +145,78 @@ void main() {
 
     await Future<void>.delayed(const Duration(milliseconds: 150));
     expect(server.handshakes.length, 1);
+  });
+
+  group('playback state', () {
+    // Every frame the client sent on a socket, decoded, as it arrives.
+    List<DeviceChannelFrame> record(WebSocket socket) {
+      final frames = <DeviceChannelFrame>[];
+      socket.listen((dynamic raw) {
+        final frame = DeviceChannelFrame.decode(raw as String);
+        if (frame != null) frames.add(frame);
+      });
+      return frames;
+    }
+
+    List<Object?> states(List<DeviceChannelFrame> frames) => frames
+        .where((frame) => frame.type == 'state')
+        .map((frame) => frame.data?['playing'])
+        .toList();
+
+    Future<void> settle([int ms = 150]) =>
+        Future<void>.delayed(Duration(milliseconds: ms));
+
+    test('sends what the point plays after hello, and each change', () async {
+      client.reportPlaying(true);
+      final socketFuture = server.accepted.first;
+      client.start();
+      final frames = record(await socketFuture);
+      await settle(50);
+
+      expect(frames.map((f) => f.type), ['hello', 'state']);
+      expect(states(frames), [true]);
+
+      client.reportPlaying(false);
+      await settle();
+      expect(states(frames), [true, false]);
+    });
+
+    test('a moment of silence is not reported, a lasting one is', () async {
+      final socketFuture = server.accepted.first;
+      client.start();
+      final frames = record(await socketFuture);
+      await settle(50);
+      expect(states(frames), isEmpty, reason: 'nothing reported yet');
+
+      client.reportPlaying(true);
+      client.reportPlaying(false); // a blip between failover tracks
+      await settle(20);
+      client.reportPlaying(true);
+      await settle();
+      expect(states(frames), [true]);
+
+      client.reportPlaying(false);
+      client.reportPlaying(false);
+      await settle();
+      expect(states(frames), [true, false]);
+    });
+
+    test('reports again after a reconnect', () async {
+      final sockets = StreamIterator(server.accepted);
+      client.start();
+      await sockets.moveNext();
+      final first = sockets.current;
+      record(first);
+      client.reportPlaying(true);
+      await settle(50);
+
+      await first.close();
+      await sockets.moveNext();
+      final second = record(sockets.current);
+      await settle(50);
+      expect(second.map((f) => f.type), ['hello', 'state']);
+      expect(states(second), [true]);
+      await sockets.cancel();
+    });
   });
 }

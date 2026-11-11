@@ -12,6 +12,11 @@ final class DeviceChannelClient {
   static const String _tag = 'DeviceChannel';
   static const Duration pingInterval = Duration(seconds: 20);
 
+  /// How long silence lasts before it is reported. The player passes through
+  /// paused and idle for a moment between failover tracks and on a restore,
+  /// and each blip would show the point as stopped in the control panel.
+  static const Duration defaultSilenceDelay = Duration(seconds: 3);
+
   final Uri url;
   final String pin;
   final String deviceId;
@@ -22,6 +27,7 @@ final class DeviceChannelClient {
   final SocketConnector _connect;
   final SpotSequenceGuard _sequence = SpotSequenceGuard();
   final StreamController<bool> _connection = StreamController<bool>.broadcast();
+  final Duration _silenceDelay;
 
   WebSocket? _socket;
   StreamSubscription<dynamic>? _subscription;
@@ -29,6 +35,11 @@ final class DeviceChannelClient {
   Completer<void>? _reconnectWait;
   bool _running = false;
   bool _connected = false;
+
+  /// Whether the point sounds, as last reported: sent on every change and
+  /// again after each (re)connect. Null until the first report.
+  bool? _playing;
+  Timer? _silenceTimer;
 
   DeviceChannelClient({
     required this.url,
@@ -39,8 +50,10 @@ final class DeviceChannelClient {
     this.extraHeaders = const {},
     ReconnectBackoff? backoff,
     SocketConnector? connector,
+    Duration silenceDelay = defaultSilenceDelay,
   })  : _backoff = backoff ?? ReconnectBackoff(),
-        _connect = connector ?? _defaultConnector;
+        _connect = connector ?? _defaultConnector,
+        _silenceDelay = silenceDelay;
 
   static Future<WebSocket> _defaultConnector(
       Uri url, Map<String, String> headers) {
@@ -58,10 +71,34 @@ final class DeviceChannelClient {
     _unawaited(_loop());
   }
 
+  /// Reports whether the point sounds. Sound goes out at once; silence only
+  /// once it has lasted the silence delay.
+  void reportPlaying(bool playing) {
+    if (playing) {
+      _silenceTimer?.cancel();
+      _silenceTimer = null;
+      _setPlaying(true);
+      return;
+    }
+    if (_playing == false || _silenceTimer != null) return;
+    _silenceTimer = Timer(_silenceDelay, () {
+      _silenceTimer = null;
+      _setPlaying(false);
+    });
+  }
+
+  void _setPlaying(bool playing) {
+    if (_playing == playing) return;
+    _playing = playing;
+    _send(stateFrame(playing: playing));
+  }
+
   Future<void> stop() async {
     _running = false;
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
+    _silenceTimer?.cancel();
+    _silenceTimer = null;
     _releaseWait();
     await _closeSocket();
   }
@@ -115,6 +152,9 @@ final class DeviceChannelClient {
     Logger.info('Channel connected to $url', _tag);
 
     _send(helloFrame(deviceId: deviceId, version: appVersion));
+    // A new connection is a new session to the server: it knows nothing yet.
+    final playing = _playing;
+    if (playing != null) _send(stateFrame(playing: playing));
 
     final closed = Completer<void>();
     _subscription = socket.listen(
