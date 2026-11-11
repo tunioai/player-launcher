@@ -613,6 +613,11 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  void _connectFromInput() {
+    if (!PlatformInfo.isTv) FocusManager.instance.primaryFocus?.unfocus();
+    _connect();
+  }
+
   Future<void> _changePin() async {
     // Stop the current stream (and any auto-reconnect loop) immediately, clear
     // the PIN field and focus it, so the user can calmly type a new code
@@ -1625,9 +1630,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                       true; // Mark that user is editing
                                 });
                               },
-                              onSubmitted: () {
-                                _connect();
-                              },
+                              onSubmitted: _connectFromInput,
                               // Keep the field editable at all times. Disabling
                               // it while a (re)connection was in progress made the
                               // input drop focus and close the keyboard mid-edit,
@@ -1647,7 +1650,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                 // code. The button is never disabled, so the user
                                 // can always break out of a reconnect loop.
                                 onPressed: _radioState is RadioStateDisconnected
-                                    ? _connect
+                                    ? _connectFromInput
                                     : _changePin,
                                 icon: Icon(_radioState is RadioStateDisconnected
                                     ? Icons.login

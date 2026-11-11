@@ -2,7 +2,7 @@ name: tunio_radio_player
 description: "A Flutter radio streaming application with auto-start functionality"
 publish_to: 'none'
 
-version: 1.13.0+39
+version: 1.13.0+40
 
 environment:
   sdk: '>=3.5.0 <4.0.0'
