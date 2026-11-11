@@ -83,6 +83,12 @@ String helloFrame({
   });
 }
 
+/// Whether the point sounds, for the control panel: a point stopped on its own
+/// device reads there as silent rather than as playing its stream.
+String stateFrame({required bool playing}) {
+  return encodeDeviceFrame('state', data: {'playing': playing});
+}
+
 final class SpotSequenceGuard {
   int _last = 0;
 

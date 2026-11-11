@@ -1934,6 +1934,7 @@ final class EnhancedRadioService implements IRadioService {
     _channel = channel;
     _channelPin = pin;
     _channelUrl = url;
+    _reportPlayback();
     _channelSubscription = channel.connectionStream.listen((connected) {
       if (connected) {
         Logger.info('Config sync: channel up - pausing the fallback poll');
@@ -3111,11 +3112,35 @@ final class EnhancedRadioService implements IRadioService {
 
       _currentState = newState;
       _stateController.add(_currentState);
+      _reportPlayback();
 
       if (newState is RadioStateConnected) {
         _rememberLiveConfig(newState.token, newState.config);
       }
     }
+  }
+
+  /// Whether the point sounds, as the control panel is told over the channel:
+  /// the stream or the offline cache plays, or is about to (loading,
+  /// buffering). Paused, stopped, failed or not connected is silence. Null for
+  /// a screen-only point, which has no music to be playing or not.
+  static bool? soundsAt(RadioState state) {
+    final config = state.config;
+    if (config != null && !config.hasStream) return null;
+    bool audible(AudioState audio) =>
+        audio is AudioStatePlaying ||
+        audio is AudioStateBuffering ||
+        audio is AudioStateLoading;
+    return switch (state) {
+      RadioStateConnected(:final audioState) => audible(audioState),
+      RadioStateFailover(:final audioState) => audible(audioState),
+      _ => false,
+    };
+  }
+
+  void _reportPlayback() {
+    final playing = soundsAt(_currentState);
+    if (playing != null) _channel?.reportPlaying(playing);
   }
 
   /// Keeps the config a point last played live with on disk. A point that
