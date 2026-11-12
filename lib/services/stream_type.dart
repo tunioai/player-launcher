@@ -77,12 +77,11 @@ class StreamTypePreference {
   static String resolve({String? hlsUrl, String? aacUrl}) {
     final hls = hlsUrl?.trim() ?? '';
     final aac = aacUrl?.trim() ?? '';
-    final wantsAac = defaultTargetPlatform != TargetPlatform.iOS &&
-        switch (selected.value) {
-          StreamType.aac => true,
-          StreamType.hls => false,
-          StreamType.auto => fallbackReason.value != null,
-        };
+    final wantsAac = switch (selected.value) {
+      StreamType.aac => true,
+      StreamType.hls => false,
+      StreamType.auto => fallbackReason.value != null,
+    };
     if (wantsAac && aac.isNotEmpty) return aac;
     return hls.isNotEmpty ? hls : aac;
   }
