@@ -48,14 +48,15 @@ void main(List<String> arguments) {
       );
     }
 
-    // Foreground media service (Android only): keeps the app process alive
+    // Foreground media service on Android: keeps the app process alive
     // while a playback session is active, so background failover keeps running
-    // with the screen off. Must run before any AudioPlayer is created.
-    // Windows/macOS keep plain just_audio. androidNotificationOngoing requires
+    // with the screen off. On iOS the same service puts the station on the
+    // Lock Screen and in Control Center with play/pause. Must run before any
+    // AudioPlayer is created. Windows/macOS keep plain just_audio. androidNotificationOngoing requires
     // the default androidStopForegroundOnPause:true (asserted by audio_service).
     // Wrapped in try/catch so an init failure degrades to "no FGS", never a
     // black screen.
-    if (Platform.isAndroid) {
+    if (Platform.isAndroid || Platform.isIOS) {
       try {
         await JustAudioBackground.init(
           androidNotificationChannelId: 'ai.tunio.radioplayer.channel.audio',
