@@ -15,6 +15,12 @@ abstract interface class IRadioService implements Disposable {
   Future<Result<void>> connect(String token);
   Future<Result<void>> disconnect();
   Future<Result<void>> playPause();
+
+  /// Silences the music on the listener's request, as the in-app pause does.
+  Future<Result<void>> pause();
+
+  /// Brings the music back after a pause, as the in-app play does.
+  Future<Result<void>> play();
   Future<Result<void>> setVolume(double volume);
   Future<Result<void>> reconnect();
 

@@ -98,9 +98,10 @@
             android:enabled="true"
             android:exported="false" />
 
-        <!-- just_audio_background: media-playback foreground service so the app
+        <!-- audio_service: media-playback foreground service so the app
              process stays alive (and failover logic keeps running) while a
-             playback session is active in the background. -->
+             playback session is active in the background, plus the media
+             notification and lock-screen controls. -->
         <service android:name="com.ryanheise.audioservice.AudioService"
             android:foregroundServiceType="mediaPlayback"
             android:exported="true">

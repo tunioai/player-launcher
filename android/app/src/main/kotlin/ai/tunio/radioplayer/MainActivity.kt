@@ -18,9 +18,9 @@ import io.flutter.plugin.common.MethodChannel
 import java.io.File
 
 // AudioServiceActivity (a thin FlutterActivity subclass) is required by
-// audio_service / just_audio_background so JustAudioBackground.init() can attach
-// to this activity's FlutterEngine. Without it init() throws and main() aborts
-// before runApp(), leaving a black screen.
+// audio_service so AudioService.init() can attach to this activity's
+// FlutterEngine. Without it init() throws and the media controls and the
+// foreground service never come up.
 class MainActivity: AudioServiceActivity() {
     private val CHANNEL = "com.example.tunio_radio_player/autostart"
     private val VISUALIZER_CHANNEL = "ai.tunio/visualizer"
