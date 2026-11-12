@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:just_audio/just_audio.dart';
-import 'package:just_audio_background/just_audio_background.dart';
 import 'package:audio_session/audio_session.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 
@@ -192,7 +191,9 @@ final class EnhancedAudioService implements IAudioService {
       final session = await AudioSession.instance;
       await session.configure(const AudioSessionConfiguration(
         avAudioSessionCategory: AVAudioSessionCategory.playback,
-        avAudioSessionCategoryOptions: AVAudioSessionCategoryOptions.duckOthers,
+        // No duckOthers/mixWithOthers: iOS gives the Lock Screen and Control
+        // Center only to an app whose session does not mix with others.
+        avAudioSessionCategoryOptions: AVAudioSessionCategoryOptions.none,
         avAudioSessionMode: AVAudioSessionMode.defaultMode,
         avAudioSessionRouteSharingPolicy:
             AVAudioSessionRouteSharingPolicy.defaultPolicy,
@@ -1022,19 +1023,17 @@ final class EnhancedAudioService implements IAudioService {
   AudioSource _buildLiveAudioSource({
     required StreamConfig config,
     required bool isHls,
-    required MediaItem tag,
     required Map<String, String> headers,
   }) {
     final streamUri = Uri.parse(config.streamUrl);
     return isHls
-        ? HlsAudioSource(streamUri, headers: headers, tag: tag)
-        : AudioSource.uri(streamUri, headers: headers, tag: tag);
+        ? HlsAudioSource(streamUri, headers: headers)
+        : AudioSource.uri(streamUri, headers: headers);
   }
 
   Future<void> _setLiveAudioSource({
     required StreamConfig config,
     required bool isHls,
-    required MediaItem tag,
     required Map<String, String> headers,
     required Duration timeout,
     required int playbackGeneration,
@@ -1045,7 +1044,6 @@ final class EnhancedAudioService implements IAudioService {
       final audioSource = _buildLiveAudioSource(
         config: config,
         isHls: isHls,
-        tag: tag,
         headers: headers,
       );
       final setSourceStartTime = DateTime.now();
@@ -1188,11 +1186,6 @@ final class EnhancedAudioService implements IAudioService {
 
         Logger.info('🎵 AUDIO_DEBUG: Setting audio source...');
 
-        final streamTag = MediaItem(
-          id: config.streamUrl,
-          title: config.title ?? 'Live Stream',
-          artist: config.description ?? '',
-        );
         final streamHeaders = AudioConfig.getStreamingHeaders();
 
         if (isHls) {
@@ -1217,7 +1210,6 @@ final class EnhancedAudioService implements IAudioService {
         await _setLiveAudioSource(
           config: config,
           isHls: isHls,
-          tag: streamTag,
           headers: streamHeaders,
           timeout: setSourceTimeout,
           playbackGeneration: playbackGeneration,
@@ -1341,14 +1333,7 @@ final class EnhancedAudioService implements IAudioService {
         _resetStallTracking();
 
         Logger.info('🎵 FAILOVER: Creating audio source from local file...');
-        final audioSource = AudioSource.file(
-          filePath,
-          tag: MediaItem(
-            id: filePath,
-            title: _currentConfig!.title ?? 'Failover Track',
-            artist: _currentConfig!.description ?? '',
-          ),
-        );
+        final audioSource = AudioSource.file(filePath);
 
         Logger.info('🎵 FAILOVER: Setting audio source...');
         const failoverSetSourceTimeout = Duration(seconds: 10);

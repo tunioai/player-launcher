@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'package:http/http.dart' as http;
@@ -18,6 +19,10 @@ abstract interface class IFailoverService implements Disposable {
   Future<void> clearWarningMessageCache();
   Future<List<File>> getAvailableTracks();
   Future<File?> getRandomTrack();
+
+  /// What the cached file at [trackPath] is, when it was cached with its
+  /// details; null for a file cached before they were kept, or unreadable.
+  Future<CurrentTrack?> cachedTrack(String trackPath);
   Future<void> clearCache();
   int get cachedTracksCount;
   Stream<int> get cachedTracksCountStream;
@@ -83,6 +88,7 @@ class FailoverService implements IFailoverService {
       if (age < AppConstants.trackCacheTTL) {
         Logger.debug(
             'FailoverService: Track ${track.uuid} already cached and still fresh (${age.inHours}h old)');
+        await _keepTrackDetails(file, track);
         return;
       } else {
         Logger.info(
@@ -118,6 +124,7 @@ class FailoverService implements IFailoverService {
         if (response.statusCode == 200) {
           // Write file in background
           await file.writeAsBytes(response.bodyBytes);
+          await _keepTrackDetails(file, track);
           Logger.info(
               'FailoverService: Successfully downloaded ${track.fileName} (${response.bodyBytes.length} bytes)');
 
@@ -138,7 +145,7 @@ class FailoverService implements IFailoverService {
           'FailoverService: Error downloading track ${track.uuid}: $e');
       // Clean up partial file if it exists
       if (await file.exists()) {
-        await file.delete();
+        await _deleteCachedTrack(file);
       }
       rethrow;
     } finally {
@@ -321,6 +328,48 @@ class FailoverService implements IFailoverService {
   }
 
   @override
+  Future<CurrentTrack?> cachedTrack(String trackPath) async {
+    try {
+      final details = _detailsFileFor(trackPath);
+      if (!await details.exists()) return null;
+      final json = jsonDecode(await details.readAsString());
+      return json is Map<String, dynamic> ? CurrentTrack.fromJson(json) : null;
+    } catch (e) {
+      Logger.warning('FailoverService: Unreadable details for $trackPath: $e');
+      return null;
+    }
+  }
+
+  /// Keeps what a cached file is next to it, so playback from the cache can
+  /// name the track it plays.
+  Future<void> _keepTrackDetails(File trackFile, CurrentTrack track) async {
+    final details = _detailsFileFor(trackFile.path);
+    try {
+      if (await details.exists()) return;
+      await details.writeAsString(jsonEncode(track.toJson()));
+    } catch (e) {
+      Logger.warning(
+          'FailoverService: Could not keep details for ${track.uuid}: $e');
+    }
+  }
+
+  Future<void> _deleteCachedTrack(File trackFile) async {
+    await trackFile.delete();
+    final details = _detailsFileFor(trackFile.path);
+    if (await details.exists()) {
+      await details.delete();
+    }
+  }
+
+  static File _detailsFileFor(String trackPath) {
+    const extension = '.m4a';
+    final base = trackPath.endsWith(extension)
+        ? trackPath.substring(0, trackPath.length - extension.length)
+        : trackPath;
+    return File('$base.json');
+  }
+
+  @override
   int get cachedTracksCount => _getCachedTracksCountSync();
 
   @override
@@ -382,7 +431,7 @@ class FailoverService implements IFailoverService {
       // Delete all expired files first
       for (final file in expiredFiles) {
         try {
-          await file.delete();
+          await _deleteCachedTrack(file);
           Logger.info(
               'FailoverService: Deleted expired cached track: ${file.path.split('/').last}');
         } catch (e) {
@@ -403,7 +452,7 @@ class FailoverService implements IFailoverService {
 
         for (final file in excessFiles) {
           try {
-            await file.delete();
+            await _deleteCachedTrack(file);
             Logger.info(
                 'FailoverService: Deleted excess cached track: ${file.path.split('/').last}');
           } catch (e) {
@@ -449,7 +498,7 @@ class FailoverService implements IFailoverService {
       int deletedCount = 0;
       for (final file in files) {
         try {
-          await file.delete();
+          await _deleteCachedTrack(file);
           deletedCount++;
           Logger.debug(
               'FailoverService: Deleted cached track: ${file.path.split('/').last}');

@@ -296,9 +296,10 @@ The application follows a clean architecture pattern with enhanced state managem
 
 - **Services**: 
   - `EnhancedRadioService` (`services/radio/`) - Core state machine orchestrating connection, failover, and live-restore
-  - `EnhancedAudioService` (`services/audio_service.dart`) - Single long-lived `just_audio` player with `just_audio_background` integration and silent-stall detection
+  - `EnhancedAudioService` (`services/audio_service.dart`) - Single long-lived `just_audio` player with silent-stall detection
   - `HlsStreamAudioSource` (`services/audio/`) - Custom HLS / streaming source that surfaces sustained playlist outages
   - `FailoverService` - Local track caching and offline playback
+  - `NowPlaying` (`services/now_playing.dart`) - System media controls on Android and iOS: the current track (title, artist, cover) or the station, play/pause routed through the radio service
   - `FailoverRecoveryBackoff` - Backoff policy for unstable live-restore
   - `ApiService` - API communication with retry logic
   - `NetworkService` - Network monitoring and connectivity
@@ -313,7 +314,7 @@ The application follows a clean architecture pattern with enhanced state managem
 
 The player is built to run unattended for long stretches (radio appliance / TV box), so background survival is a first-class concern:
 
-- **Foreground media service**: `just_audio_background` runs a `mediaPlayback` foreground service (`com.ryanheise.audioservice.AudioService`); `MainActivity` extends `AudioServiceActivity`. This keeps the process — and the failover/recovery logic — alive while the screen is off or the app is backgrounded.
+- **Foreground media service**: `audio_service` runs a `mediaPlayback` foreground service (`com.ryanheise.audioservice.AudioService`); `MainActivity` extends `AudioServiceActivity`. This keeps the process — and the failover/recovery logic — alive while the screen is off or the app is backgrounded.
 - **Single audio engine**: one `AudioPlayer` is created for the app's lifetime (no per-stream-type recreation), removing a class of state-loss/recreation races.
 - **Battery-optimization exemption**: on Android startup the app proactively requests `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` to avoid Doze / process-freeze stalling background failover.
 - **Silent-stall detection**: a position-based watchdog catches streams that stop advancing without raising an error and triggers recovery/failover.
@@ -323,7 +324,7 @@ The player is built to run unattended for long stretches (radio appliance / TV b
 ### Key Dependencies
 
 - `just_audio: ^0.9.46` - Audio playback engine (ExoPlayer/media3 on Android)
-- `just_audio_background: ^0.0.1-beta.17` - Android foreground media service, MediaSession, notification & lock-screen controls
+- `audio_service: ^0.18.18` - Android foreground media service, MediaSession, notification & lock-screen controls; iOS Lock Screen / Control Center
 - `just_audio_windows: ^0.2.2` - Windows playback backend
 - `audio_session: ^0.1.21` - Audio session / focus management
 - `connectivity_plus: ^6.1.0` - Network monitoring

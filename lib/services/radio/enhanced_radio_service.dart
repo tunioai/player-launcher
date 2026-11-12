@@ -560,10 +560,10 @@ final class EnhancedRadioService implements IRadioService {
       // Playback resumed: a pending "is this a real external pause?" probe is
       // now moot, and any prior suspension must be lifted.
       _cancelExternalPauseConfirm();
-      // External transport controls (notification / lock screen / Bluetooth)
-      // drive the player directly via just_audio_background and never go through
-      // playPause(). Mirror the in-app resume here so auto recovery is
-      // re-enabled once playback actually resumes after such a pause.
+      // Playback can come back without play() -- an audio-session interruption
+      // ending, or a transport action that reached the player directly. Mirror
+      // the in-app resume here so auto recovery is re-enabled once playback
+      // actually resumes after such a pause.
       if (_userPaused) {
         _resumeAutoRecovery();
       }
@@ -1626,11 +1626,7 @@ final class EnhancedRadioService implements IRadioService {
     final audioState = _audioService.currentState;
 
     if (audioState.isPlaying) {
-      final result = await _audioService.pause();
-      if (result.isSuccess) {
-        _suspendAutoRecovery();
-      }
-      return result;
+      return pause();
     } else if (audioState case AudioStatePaused _) {
       _resumeAutoRecovery();
       final result = await _audioService.resume();
@@ -1649,6 +1645,37 @@ final class EnhancedRadioService implements IRadioService {
     } else {
       return const Failure('No active connection');
     }
+  }
+
+  @override
+  Future<Result<void>> pause() async {
+    if (!_isInitialized) {
+      return const Failure('Service not initialized');
+    }
+
+    final result = await _audioService.pause();
+    if (result.isSuccess) {
+      _suspendAutoRecovery();
+    }
+    return result;
+  }
+
+  @override
+  Future<Result<void>> play() async {
+    if (!_isInitialized) {
+      return const Failure('Service not initialized');
+    }
+    if (_zonePaused) {
+      return const Failure('The zone is paused from the control panel');
+    }
+    final sounds = soundsAt(_currentState);
+    if (sounds == null) {
+      return const Failure('No stream to play');
+    }
+    if (_currentState.isConnecting || (sounds && !_userPaused)) {
+      return const Success(null);
+    }
+    return reconnect();
   }
 
   @override
@@ -3096,6 +3123,7 @@ final class EnhancedRadioService implements IRadioService {
       musicVolume: fallbackConfig?.musicVolume,
       title: fallbackConfig?.title ?? 'Service suspended',
       description: 'Warning message playback',
+      imageUrl: fallbackConfig?.imageUrl,
       visualizerUrl: fallbackConfig?.visualizerUrl,
       streamUuid: fallbackConfig?.streamUuid,
     );
@@ -3163,6 +3191,7 @@ final class EnhancedRadioService implements IRadioService {
       musicVolume: config.musicVolume,
       title: config.title,
       description: config.description,
+      imageUrl: config.imageUrl,
       visualizerUrl: config.visualizerUrl,
       streamUuid: config.streamUuid,
       status: config.status,
@@ -3224,6 +3253,7 @@ final class EnhancedRadioService implements IRadioService {
       volume: _storageService.getLastVolume(),
       title: remembered?.title,
       description: remembered?.description,
+      imageUrl: remembered?.imageUrl,
       visualizerUrl: remembered?.visualizerUrl,
       streamUuid: remembered?.streamUuid,
     );

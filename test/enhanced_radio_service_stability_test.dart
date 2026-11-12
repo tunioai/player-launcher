@@ -738,7 +738,8 @@ void main() {
           () => context.radioService.currentState is RadioStateConnected);
       await Future<void>.delayed(const Duration(milliseconds: 200));
 
-      expect(context.audioService.lastStreamUrl, 'https://example.com/live.aac');
+      expect(
+          context.audioService.lastStreamUrl, 'https://example.com/live.aac');
       expect(context.audioService.playStreamCalls, 1);
     });
 
@@ -1461,6 +1462,63 @@ void main() {
       expect(context.radioService.currentState, isA<RadioStateFailover>());
     });
   });
+
+  group('EnhancedRadioService media controls', () {
+    test('pause from the system controls holds; play brings the stream back',
+        () async {
+      final context = await _createContext(
+        liveConfig: liveConfig,
+        cachedTracksCount: 1,
+      );
+      addTearDown(context.dispose);
+
+      await context.radioService.connect('112233');
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateConnected);
+
+      expect((await context.radioService.pause()).isSuccess, isTrue);
+      context.audioService.emitState(
+        const AudioStatePaused(
+            config: liveConfig, position: Duration(seconds: 3)),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      final callsWhilePaused = context.audioService.playStreamCalls;
+
+      // A user pause is silence asked for: a stream error does not restart it.
+      context.audioService.emitState(
+        AudioStateError(
+          message: 'Network error',
+          config: liveConfig,
+          isRetryable: true,
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      expect(context.audioService.playStreamCalls, callsWhilePaused);
+      expect(context.audioService.playLocalFileCalls, 0);
+
+      expect((await context.radioService.play()).isSuccess, isTrue);
+      await _waitUntil(
+          () => context.audioService.playStreamCalls > callsWhilePaused);
+    });
+
+    test('play while the point already sounds starts nothing new', () async {
+      final context = await _createContext(
+        liveConfig: liveConfig,
+        cachedTracksCount: 1,
+      );
+      addTearDown(context.dispose);
+
+      await context.radioService.connect('112233');
+      await _waitUntil(() =>
+          context.radioService.currentState is RadioStateConnected &&
+          context.audioService.currentState is AudioStatePlaying);
+      final calls = context.audioService.playStreamCalls;
+
+      expect((await context.radioService.play()).isSuccess, isTrue);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(context.audioService.playStreamCalls, calls);
+    });
+  });
 }
 
 Future<void> _waitUntil(
@@ -1511,6 +1569,7 @@ extension _PausedConfig on StreamConfig {
         musicVolume: musicVolume,
         title: title,
         description: description,
+        imageUrl: imageUrl,
         current: current,
         visualizerUrl: visualizerUrl,
         streamUuid: streamUuid,
@@ -1863,6 +1922,9 @@ class _FakeFailoverService implements IFailoverService {
     }
     return randomTrack;
   }
+
+  @override
+  Future<CurrentTrack?> cachedTrack(String trackPath) async => null;
 
   @override
   Future<void> clearCache() async {

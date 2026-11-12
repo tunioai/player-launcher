@@ -18,6 +18,10 @@ class StreamConfig {
   final double? musicVolume;
   final String? title;
   final String? description;
+
+  /// The station cover, shown by the system media controls while no music
+  /// track of its own is on.
+  final String? imageUrl;
   final CurrentTrack? current;
   final String? visualizerUrl;
   final String? streamUuid;
@@ -41,6 +45,7 @@ class StreamConfig {
     this.musicVolume,
     this.title,
     this.description,
+    this.imageUrl,
     this.current,
     this.visualizerUrl,
     this.streamUuid,
@@ -91,6 +96,7 @@ class StreamConfig {
     final parsedMusicVolume = _parseOptionalVolume(json['music_volume']);
     final title = json['title']?.toString();
     final description = json['description']?.toString();
+    final imageUrl = _parseOptionalUrl(json['image_url']);
 
     CurrentTrack? current;
     if (json['current'] is Map<String, dynamic>) {
@@ -126,6 +132,7 @@ class StreamConfig {
       musicVolume: parsedMusicVolume,
       title: title,
       description: description,
+      imageUrl: imageUrl,
       current: current,
       visualizerUrl: visualizerUrl,
       streamUuid: streamUuid,
@@ -150,6 +157,7 @@ class StreamConfig {
       musicVolume: musicVolume,
       title: title,
       description: description,
+      imageUrl: imageUrl,
       current: current,
       visualizerUrl: visualizerUrl,
       streamUuid: streamUuid,
@@ -169,6 +177,7 @@ class StreamConfig {
       if (musicVolume != null) 'music_volume': musicVolume,
       'title': title,
       'description': description,
+      if (imageUrl != null) 'image_url': imageUrl,
       'current': current?.toJson(),
       if (visualizerUrl != null) 'visualizer_url': visualizerUrl,
       if (status != null) 'status': status,
@@ -190,6 +199,7 @@ class StreamConfig {
         other.visualizerUrl == visualizerUrl &&
         other.title == title &&
         other.description == description &&
+        other.imageUrl == imageUrl &&
         other.current == current &&
         other.streamUuid == streamUuid &&
         other.status == status &&
@@ -208,6 +218,7 @@ class StreamConfig {
       visualizerUrl,
       title,
       description,
+      imageUrl,
       current,
       streamUuid,
       status,

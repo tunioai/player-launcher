@@ -3,10 +3,11 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:just_audio_background/just_audio_background.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'core/dependency_injection.dart';
 import 'core/service_locator.dart';
+import 'services/now_playing.dart';
 import 'services/stream_type.dart';
 import 'services/desktop_lifecycle_service.dart';
 import 'services/screen_rotation.dart';
@@ -48,26 +49,6 @@ void main(List<String> arguments) {
       );
     }
 
-    // Foreground media service on Android: keeps the app process alive
-    // while a playback session is active, so background failover keeps running
-    // with the screen off. On iOS the same service puts the station on the
-    // Lock Screen and in Control Center with play/pause. Must run before any
-    // AudioPlayer is created. Windows/macOS keep plain just_audio. androidNotificationOngoing requires
-    // the default androidStopForegroundOnPause:true (asserted by audio_service).
-    // Wrapped in try/catch so an init failure degrades to "no FGS", never a
-    // black screen.
-    if (Platform.isAndroid || Platform.isIOS) {
-      try {
-        await JustAudioBackground.init(
-          androidNotificationChannelId: 'ai.tunio.radioplayer.channel.audio',
-          androidNotificationChannelName: 'Tunio Radio',
-          androidNotificationOngoing: true,
-        );
-      } catch (e, stackTrace) {
-        Logger.error('Background audio init failed', 'startup', e, stackTrace);
-      }
-    }
-
     await PlatformInfo.initialize();
 
     try {
@@ -88,6 +69,11 @@ void main(List<String> arguments) {
       Logger.error('Failed to initialize services', 'startup', e, stackTrace);
       rethrow;
     }
+
+    await NowPlaying.start(
+      radioService: di.radioService,
+      cachedTrack: di.failoverService.cachedTrack,
+    );
 
     runApp(const TunioApp());
   }, (error, stack) {
