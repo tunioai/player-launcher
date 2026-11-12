@@ -149,7 +149,7 @@ void main() {
       expect(state.playing, isTrue);
       expect(state.processingState, AudioProcessingState.ready);
       expect(state.controls.map((c) => c.action), [MediaAction.pause]);
-      expect(state.systemActions, isEmpty);
+      expect(state.systemActions, isNot(contains(MediaAction.seek)));
     });
 
     test('a pause offers play', () {
@@ -161,6 +161,14 @@ void main() {
       );
       expect(state.playing, isFalse);
       expect(state.controls.map((c) => c.action), [MediaAction.play]);
+      // iOS enables a remote command only while its action is declared: after a
+      // pause from Control Center, play (and the play/pause toggle) stay enabled.
+      expect(state.systemActions, {
+        MediaAction.play,
+        MediaAction.pause,
+        MediaAction.playPause,
+        MediaAction.stop,
+      });
     });
 
     test('recovery keeps the session playing so the service stays up', () {
@@ -195,6 +203,7 @@ void main() {
       );
       expect(state.playing, isFalse);
       expect(state.controls, isEmpty);
+      expect(state.systemActions, isEmpty);
     });
 
     test('disconnected and screen-only end the session', () {

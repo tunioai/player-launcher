@@ -202,9 +202,17 @@ PlaybackState nowPlayingState(RadioState state, {required bool wasPlaying}) {
     processingState: processing,
     playing: playing,
     controls: controls,
+    systemActions: controllable ? _transportActions : const {},
     androidCompactActionIndices: controls.isEmpty ? null : const [0],
   );
 }
+
+const _transportActions = {
+  MediaAction.play,
+  MediaAction.pause,
+  MediaAction.playPause,
+  MediaAction.stop,
+};
 
 (AudioProcessingState, bool) _fromAudio(AudioState audio, bool wasPlaying) {
   return switch (audio) {
