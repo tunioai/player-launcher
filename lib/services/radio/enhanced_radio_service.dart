@@ -1325,7 +1325,7 @@ final class EnhancedRadioService implements IRadioService {
       Logger.info('🐛 DEBUG: About to call _apiService.getStreamConfig()');
       final apiStartTime = DateTime.now();
 
-      final config = await _apiService
+      final fetched = await _apiService
           .getStreamConfig(token, currentPing: _currentPing)
           .timeout(
         const Duration(
@@ -1342,11 +1342,14 @@ final class EnhancedRadioService implements IRadioService {
       Logger.info(
           '🐛 DEBUG: _apiService.getStreamConfig() completed successfully');
 
-      if (config == null) {
+      if (fetched == null) {
         Logger.error('🐛 DEBUG: Config is null, throwing ApiError');
         throw ApiError(
             message: 'Invalid token or server error', isFromBackend: true);
       }
+
+      await StreamTypePreference.applyLinked(fetched.streamType);
+      final config = fetched.withResolvedStream();
 
       Logger.info('🐛 DEBUG: Config received: ${config.streamUrl}');
 

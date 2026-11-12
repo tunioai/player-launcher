@@ -20,6 +20,7 @@ import 'package:tunio_radio_player/services/failover_reporting_service.dart';
 import 'package:tunio_radio_player/services/failover_service.dart';
 import 'package:tunio_radio_player/services/radio/enhanced_radio_service.dart';
 import 'package:tunio_radio_player/services/storage_service.dart';
+import 'package:tunio_radio_player/services/stream_type.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -715,6 +716,30 @@ void main() {
       expect(context.audioService.playStreamCalls, 0);
       expect(context.audioService.playLocalFileCalls, greaterThanOrEqualTo(1));
       expect(context.radioService.currentState, isA<RadioStateFailover>());
+    });
+
+    test('a point linked to AAC starts on AAC, not HLS then AAC', () async {
+      StreamTypePreference.resetForTest();
+      addTearDown(StreamTypePreference.resetForTest);
+      const linkedAac = StreamConfig(
+        streamUrl: 'https://example.com/hls/playlist.m3u8',
+        hlsUrl: 'https://example.com/hls/playlist.m3u8',
+        aacUrl: 'https://example.com/live.aac',
+        streamType: StreamType.aac,
+        volume: 1.0,
+      );
+      final context =
+          await _createContext(liveConfig: linkedAac, cachedTracksCount: 0);
+      addTearDown(context.dispose);
+
+      final connectResult = await context.radioService.connect('556677');
+      expect(connectResult.isSuccess, isTrue);
+      await _waitUntil(
+          () => context.radioService.currentState is RadioStateConnected);
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+
+      expect(context.audioService.lastStreamUrl, 'https://example.com/live.aac');
+      expect(context.audioService.playStreamCalls, 1);
     });
 
     test('connects in screen-only mode when the backend sends no stream_url',
@@ -1594,6 +1619,7 @@ class _FakeAudioService implements IAudioService {
   double _volume = 1.0;
   int initializeCalls = 0;
   int playStreamCalls = 0;
+  String? lastStreamUrl;
   int playLocalFileCalls = 0;
   int stopCalls = 0;
   Duration playLocalFileDelay = Duration.zero;
@@ -1667,6 +1693,7 @@ class _FakeAudioService implements IAudioService {
   Future<Result<void>> playStream(StreamConfig config,
       {bool quickStart = false}) async {
     playStreamCalls++;
+    lastStreamUrl = config.streamUrl;
     if (liveSourcePreparationDelay > Duration.zero) {
       await Future<void>.delayed(liveSourcePreparationDelay);
       if (_disposed) return const Failure<void>('disposed');
