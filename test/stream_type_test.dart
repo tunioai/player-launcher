@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:tunio_radio_player/models/stream_config.dart';
@@ -84,5 +85,13 @@ void main() {
     expect(restored.hlsUrl, hls);
     expect(restored.aacUrl, aac);
     expect(restored.streamUrl, aac);
+  });
+
+  test('iOS plays HLS whatever the type: its player does not start the AAC stream', () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    await StreamTypePreference.choose(StreamType.aac);
+    expect(StreamTypePreference.resolve(hlsUrl: hls, aacUrl: aac), hls);
+    expect(StreamTypePreference.resolve(hlsUrl: null, aacUrl: aac), aac);
   });
 }
