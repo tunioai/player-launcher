@@ -30,6 +30,8 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
+import android.widget.TextView
+import android.view.Choreographer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.AudioAttributes
@@ -113,9 +115,35 @@ class VisualizerActivity : Activity() {
         const val EXTRA_URL = "visualizer_url"
         const val EXTRA_LOW_PERFORMANCE_MODE = "low_performance_mode"
         const val EXTRA_ROTATION = "screen_rotation"
-        // Experiment: how native video follows a rotated screen.
-        // `adb shell setprop debug.tunio.rotvideo codec|texture|legacy`, then restart the app.
+        // Experiment: how native video follows a rotated screen. Chosen with the
+        // temporary home-screen button (stored in prefs), or without one by
+        // `adb shell setprop debug.tunio.rotvideo codec|texture|legacy`.
         private const val ROTATION_VIDEO_PROP = "debug.tunio.rotvideo"
+        private const val EXPERIMENT_PREFS = "tunio_experiments"
+        private const val ROTATION_VIDEO_PREF = "rotvideo"
+        private val ROTATION_VIDEO_MODES = listOf("codec", "texture", "legacy")
+
+        fun rotationVideoMode(context: Context): String {
+            val stored = context.getSharedPreferences(EXPERIMENT_PREFS, Context.MODE_PRIVATE)
+                .getString(ROTATION_VIDEO_PREF, null)
+            if (stored in ROTATION_VIDEO_MODES) return stored!!
+            val prop = try {
+                Class.forName("android.os.SystemProperties")
+                    .getMethod("get", String::class.java, String::class.java)
+                    .invoke(null, ROTATION_VIDEO_PROP, "codec") as String
+            } catch (_: Throwable) {
+                "codec"
+            }
+            return if (prop in ROTATION_VIDEO_MODES) prop else "codec"
+        }
+
+        fun cycleRotationVideoMode(context: Context): String {
+            val current = rotationVideoMode(context)
+            val next = ROTATION_VIDEO_MODES[(ROTATION_VIDEO_MODES.indexOf(current) + 1) % ROTATION_VIDEO_MODES.size]
+            context.getSharedPreferences(EXPERIMENT_PREFS, Context.MODE_PRIVATE)
+                .edit().putString(ROTATION_VIDEO_PREF, next).apply()
+            return next
+        }
         private const val TAG = "VisualizerActivity"
         private const val VIDEO_CACHE_DIR_NAME = "visualizer_video_cache"
         private const val IMAGE_CACHE_DIR_NAME = "visualizer_image_cache"
@@ -449,6 +477,58 @@ class VisualizerActivity : Activity() {
     private lateinit var webView: WebView
     private lateinit var marqueeOverlayController: MarqueeOverlayController
 
+    // TEMP: video rotation experiment — on-screen smoothness counters, remove before release.
+    private lateinit var rotationStatsView: TextView
+    private val rotationStatsHandler = Handler(Looper.getMainLooper())
+    private var statsLastAt = 0L
+    private var statsLastRendered = -1
+    private var statsLastDropped = -1
+    private var statsDroppedTotal = 0
+    private var statsUiFrames = 0
+    private var statsUiJank = 0
+    private var statsLastFrameNanos = 0L
+    private val statsFrameCallback = object : Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            if (statsLastFrameNanos != 0L && frameTimeNanos - statsLastFrameNanos > 50_000_000L) {
+                statsUiJank++
+            }
+            statsLastFrameNanos = frameTimeNanos
+            statsUiFrames++
+            Choreographer.getInstance().postFrameCallback(this)
+        }
+    }
+    private val rotationStatsTick = object : Runnable {
+        override fun run() {
+            updateRotationStats()
+            rotationStatsHandler.postDelayed(this, 2000L)
+        }
+    }
+
+    @androidx.annotation.OptIn(markerClass = [androidx.media3.common.util.UnstableApi::class])
+    private fun updateRotationStats() {
+        val now = SystemClock.elapsedRealtime()
+        val counters = player?.videoDecoderCounters
+        counters?.ensureUpdated()
+        val rendered = counters?.renderedOutputBufferCount ?: 0
+        val dropped = counters?.droppedBufferCount ?: 0
+        val seconds = if (statsLastAt == 0L) 0f else (now - statsLastAt) / 1000f
+        // Counters start over with every new decoder (clip change).
+        val renderedDelta = if (statsLastRendered in 0..rendered) rendered - statsLastRendered else rendered
+        val droppedDelta = if (statsLastDropped in 0..dropped) dropped - statsLastDropped else dropped
+        statsDroppedTotal += droppedDelta
+        val videoFps = if (seconds > 0f) renderedDelta / seconds else 0f
+        val uiFps = if (seconds > 0f) statsUiFrames / seconds else 0f
+        rotationStatsView.text = String.format(
+            java.util.Locale.US,
+            "rotation test: %s  |  video %.1f fps, dropped +%d (total %d)  |  ui %.0f fps, jank %d",
+            rotationVideoMode, videoFps, droppedDelta, statsDroppedTotal, uiFps, statsUiJank,
+        )
+        statsLastAt = now
+        statsLastRendered = rendered
+        statsLastDropped = dropped
+        statsUiFrames = 0
+    }
+
     private var player: ExoPlayer? = null
     private var playlist: List<String> = emptyList()
     private val playQueue = mutableListOf<Int>()
@@ -538,7 +618,7 @@ class VisualizerActivity : Activity() {
         super.onCreate(savedInstanceState)
         lowPerformanceMode = intent?.getBooleanExtra(EXTRA_LOW_PERFORMANCE_MODE, false) ?: false
         screenRotation = normalizeRotation(intent?.getIntExtra(EXTRA_ROTATION, 0) ?: 0)
-        rotationVideoMode = readRotationVideoMode()
+        rotationVideoMode = rotationVideoMode(this)
         Log.i(TAG, "rotated video mode=$rotationVideoMode rotation=$screenRotation")
         // Allow inspecting the screen-player WebView from desktop Chrome via
         // chrome://inspect (Elements/Console/Performance/Paint-flashing) — only
@@ -602,17 +682,6 @@ class VisualizerActivity : Activity() {
         placeVideoLayerForRotation()
     }
 
-    private fun readRotationVideoMode(): String {
-        val value = try {
-            Class.forName("android.os.SystemProperties")
-                .getMethod("get", String::class.java, String::class.java)
-                .invoke(null, ROTATION_VIDEO_PROP, "codec") as String
-        } catch (_: Throwable) {
-            "codec"
-        }
-        return if (value == "texture" || value == "legacy") value else "codec"
-    }
-
     // codec mode on a rotated screen: the video layer leaves the rotated root
     // for the unrotated stage (a SurfaceView inside a rotated parent is neither
     // placed nor turned), its rect is mapped onto the stage and the decoder
@@ -652,6 +721,8 @@ class VisualizerActivity : Activity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        rotationStatsHandler.removeCallbacksAndMessages(null)
+        Choreographer.getInstance().removeFrameCallback(statsFrameCallback)
         stopPlaybackGuard()
         if (VisualizerController.currentActivity == this) {
             VisualizerController.currentActivity = null
@@ -1264,6 +1335,22 @@ class VisualizerActivity : Activity() {
         rootLayout.addView(videoLayer, FrameLayout.LayoutParams(matchParent))
         rootLayout.addView(webView, FrameLayout.LayoutParams(matchParent))
         rootLayout.addView(marqueeOverlayController.layer, FrameLayout.LayoutParams(matchParent))
+        rotationStatsView = TextView(this).apply {
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.argb(170, 0, 0, 0))
+            textSize = 12f
+            setPadding(12, 6, 12, 6)
+        }
+        rootLayout.addView(
+            rotationStatsView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP or Gravity.START,
+            ),
+        )
+        Choreographer.getInstance().postFrameCallback(statsFrameCallback)
+        rotationStatsHandler.post(rotationStatsTick)
 
         rootLayout.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
             val newWidth = right - left

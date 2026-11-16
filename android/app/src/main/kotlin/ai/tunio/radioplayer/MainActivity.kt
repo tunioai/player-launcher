@@ -161,6 +161,14 @@ class MainActivity: AudioServiceActivity() {
                         result.success(null)
                     }
                 }
+                "getRotationVideoMode" -> {
+                    result.success(VisualizerActivity.rotationVideoMode(this))
+                }
+                "cycleRotationVideoMode" -> {
+                    val mode = VisualizerActivity.cycleRotationVideoMode(this)
+                    VisualizerController.currentActivity?.recreate()
+                    result.success(mode)
+                }
                 "setVisualizerRotation" -> {
                     VisualizerController.setRotation(call.argument<Int>("rotation") ?: 0)
                     result.success(null)

@@ -99,6 +99,20 @@ class _HomeScreenState extends State<HomeScreen> {
   static const MethodChannel _visualizerChannel =
       MethodChannel('ai.tunio/visualizer');
   static const bool _androidLowPerformanceVisualizerMode = true;
+  // TEMP: video rotation experiment (codec/texture/legacy), remove before release.
+  String? _rotationVideoMode;
+
+  Future<void> _loadRotationVideoMode() async {
+    final mode =
+        await _visualizerChannel.invokeMethod<String>('getRotationVideoMode');
+    if (mounted) setState(() => _rotationVideoMode = mode);
+  }
+
+  Future<void> _cycleRotationVideoMode() async {
+    final mode =
+        await _visualizerChannel.invokeMethod<String>('cycleRotationVideoMode');
+    if (mounted) setState(() => _rotationVideoMode = mode);
+  }
 
   // Subscriptions
   StreamSubscription<RadioState>? _radioStateSubscription;
@@ -112,6 +126,7 @@ class _HomeScreenState extends State<HomeScreen> {
     ScreenRotation.degrees.addListener(_syncNativeVisualizerRotation);
     if (_isAndroid) {
       _visualizerChannel.setMethodCallHandler(_handleVisualizerChannelCall);
+      _loadRotationVideoMode();
       // Once the UI is up, make sure the OS won't freeze the app in the
       // background (battery optimization exemption) so background failover and
       // the foreground service keep running with the screen off.
@@ -1671,6 +1686,18 @@ class _HomeScreenState extends State<HomeScreen> {
                                 ),
                               ),
                             ),
+
+                            // TEMP: video rotation experiment, remove before release.
+                            if (_isAndroid)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 8),
+                                child: TextButton.icon(
+                                  onPressed: _cycleRotationVideoMode,
+                                  icon: const Icon(Icons.science),
+                                  label: Text(
+                                      'Video rotation test: ${_rotationVideoMode ?? '...'}'),
+                                ),
+                              ),
 
                             if (_radioState is RadioStateDisconnected)
                               Padding(
