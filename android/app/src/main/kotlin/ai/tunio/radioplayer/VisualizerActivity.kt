@@ -113,6 +113,9 @@ class VisualizerActivity : Activity() {
         const val EXTRA_URL = "visualizer_url"
         const val EXTRA_LOW_PERFORMANCE_MODE = "low_performance_mode"
         const val EXTRA_ROTATION = "screen_rotation"
+        // Experiment: how native video follows a rotated screen.
+        // `adb shell setprop debug.tunio.rotvideo codec|texture|legacy`, then restart the app.
+        private const val ROTATION_VIDEO_PROP = "debug.tunio.rotvideo"
         private const val TAG = "VisualizerActivity"
         private const val VIDEO_CACHE_DIR_NAME = "visualizer_video_cache"
         private const val IMAGE_CACHE_DIR_NAME = "visualizer_image_cache"
@@ -436,6 +439,9 @@ class VisualizerActivity : Activity() {
     private lateinit var stageLayout: FrameLayout
     private lateinit var rootLayout: FrameLayout
     private var screenRotation: Int = 0
+    private var rotationVideoMode: String = "codec"
+    @Volatile
+    private var codecRotation: Int = 0
     private lateinit var videoLayer: FrameLayout
     private lateinit var videoPlayerView: PlayerView
     private lateinit var dimOverlayView: View
@@ -532,6 +538,8 @@ class VisualizerActivity : Activity() {
         super.onCreate(savedInstanceState)
         lowPerformanceMode = intent?.getBooleanExtra(EXTRA_LOW_PERFORMANCE_MODE, false) ?: false
         screenRotation = normalizeRotation(intent?.getIntExtra(EXTRA_ROTATION, 0) ?: 0)
+        rotationVideoMode = readRotationVideoMode()
+        Log.i(TAG, "rotated video mode=$rotationVideoMode rotation=$screenRotation")
         // Allow inspecting the screen-player WebView from desktop Chrome via
         // chrome://inspect (Elements/Console/Performance/Paint-flashing) — only
         // in debuggable builds, so production/release stays locked down.
@@ -591,6 +599,55 @@ class VisualizerActivity : Activity() {
             rootLayout.layoutParams = FrameLayout.LayoutParams(width, height, Gravity.CENTER)
         }
         rootLayout.rotation = screenRotation.toFloat()
+        placeVideoLayerForRotation()
+    }
+
+    private fun readRotationVideoMode(): String {
+        val value = try {
+            Class.forName("android.os.SystemProperties")
+                .getMethod("get", String::class.java, String::class.java)
+                .invoke(null, ROTATION_VIDEO_PROP, "codec") as String
+        } catch (_: Throwable) {
+            "codec"
+        }
+        return if (value == "texture" || value == "legacy") value else "codec"
+    }
+
+    // codec mode on a rotated screen: the video layer leaves the rotated root
+    // for the unrotated stage (a SurfaceView inside a rotated parent is neither
+    // placed nor turned), its rect is mapped onto the stage and the decoder
+    // turns the picture. The root goes transparent so the stage's video shows
+    // through the page.
+    private fun isVideoOnStage(): Boolean = rotationVideoMode == "codec" && screenRotation != 0
+
+    private fun placeVideoLayerForRotation() {
+        codecRotation = if (isVideoOnStage()) screenRotation else 0
+        val target = if (isVideoOnStage()) stageLayout else rootLayout
+        if (videoLayer.parent !== target) {
+            (videoLayer.parent as? android.view.ViewGroup)?.removeView(videoLayer)
+            target.addView(videoLayer, 0, FrameLayout.LayoutParams(videoLayer.layoutParams ?: FrameLayout.LayoutParams(0, 0)))
+        }
+        rootLayout.setBackgroundColor(if (isVideoOnStage()) Color.TRANSPARENT else Color.BLACK)
+        if (videoLayer.visibility == View.VISIBLE) {
+            applyStoredPlacement()
+        }
+    }
+
+    private fun rootRectOnStage(left: Int, top: Int, w: Int, h: Int, rootW: Int, rootH: Int): IntArray {
+        val dx = left + w / 2f - rootW / 2f
+        val dy = top + h / 2f - rootH / 2f
+        val (rx, ry) = when (screenRotation) {
+            90 -> -dy to dx
+            180 -> -dx to -dy
+            270 -> dy to -dx
+            else -> dx to dy
+        }
+        val sideways = screenRotation == 90 || screenRotation == 270
+        val stageW = if (sideways) h else w
+        val stageH = if (sideways) w else h
+        val cx = stageLayout.width / 2f + rx
+        val cy = stageLayout.height / 2f + ry
+        return intArrayOf((cx - stageW / 2f).roundToInt(), (cy - stageH / 2f).roundToInt(), stageW, stageH)
     }
 
     override fun onDestroy() {
@@ -657,7 +714,12 @@ class VisualizerActivity : Activity() {
             .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)
             .build()
 
-        player = ExoPlayer.Builder(this)
+        val playerBuilder = if (rotationVideoMode == "codec") {
+            ExoPlayer.Builder(this, RotatingVideoRenderersFactory(this) { codecRotation })
+        } else {
+            ExoPlayer.Builder(this)
+        }
+        player = playerBuilder
             .setMediaSourceFactory(mediaSourceFactory)
             .build()
             .apply {
@@ -1153,7 +1215,12 @@ class VisualizerActivity : Activity() {
             visibility = View.GONE
         }
 
-        videoPlayerView = PlayerView(this).apply {
+        val playerView = if (rotationVideoMode == "texture") {
+            layoutInflater.inflate(R.layout.visualizer_texture_player, null) as PlayerView
+        } else {
+            PlayerView(this)
+        }
+        videoPlayerView = playerView.apply {
             useController = false
             resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
             setShutterBackgroundColor(Color.BLACK)
@@ -3281,9 +3348,17 @@ class VisualizerActivity : Activity() {
         val w = (containerW * (placement.width / 100f)).roundToInt().coerceAtLeast(1)
         val h = (containerH * (placement.height / 100f)).roundToInt().coerceAtLeast(1)
 
-        val params = FrameLayout.LayoutParams(w, h).apply {
-            leftMargin = left
-            topMargin = top
+        val params = if (isVideoOnStage()) {
+            val (stageLeft, stageTop, stageW, stageH) = rootRectOnStage(left, top, w, h, rootW, rootH).toList()
+            FrameLayout.LayoutParams(stageW, stageH).apply {
+                leftMargin = stageLeft
+                topMargin = stageTop
+            }
+        } else {
+            FrameLayout.LayoutParams(w, h).apply {
+                leftMargin = left
+                topMargin = top
+            }
         }
 
         videoLayer.layoutParams = params
