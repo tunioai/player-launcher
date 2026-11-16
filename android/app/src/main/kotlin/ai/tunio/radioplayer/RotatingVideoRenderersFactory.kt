@@ -22,6 +22,7 @@ import androidx.media3.exoplayer.video.VideoRendererEventListener
 class RotatingVideoRenderersFactory(
     context: Context,
     private val extraRotation: () -> Int,
+    private val onUprightSize: (Int, Int) -> Unit,
 ) : DefaultRenderersFactory(context) {
     override fun buildVideoRenderers(
         context: Context,
@@ -55,6 +56,7 @@ class RotatingVideoRenderersFactory(
                         eventHandler,
                         eventListener,
                         extraRotation,
+                        onUprightSize,
                     ),
                 )
             } else {
@@ -73,6 +75,7 @@ private class RotatingVideoRenderer(
     eventHandler: Handler,
     eventListener: VideoRendererEventListener,
     private val extraRotation: () -> Int,
+    private val onUprightSize: (Int, Int) -> Unit,
 ) : MediaCodecVideoRenderer(
     context,
     mediaCodecSelector,
@@ -84,6 +87,10 @@ private class RotatingVideoRenderer(
 ) {
     override fun onInputFormatChanged(formatHolder: FormatHolder): DecoderReuseEvaluation? {
         val format = formatHolder.format
+        if (format != null && format.width > 0 && format.height > 0) {
+            val sideways = format.rotationDegrees == 90 || format.rotationDegrees == 270
+            onUprightSize(if (sideways) format.height else format.width, if (sideways) format.width else format.height)
+        }
         val extra = extraRotation()
         if (format != null && extra != 0) {
             formatHolder.format = format.buildUpon()

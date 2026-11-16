@@ -30,8 +30,6 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
-import android.widget.TextView
-import android.view.Choreographer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.AudioAttributes
@@ -115,35 +113,6 @@ class VisualizerActivity : Activity() {
         const val EXTRA_URL = "visualizer_url"
         const val EXTRA_LOW_PERFORMANCE_MODE = "low_performance_mode"
         const val EXTRA_ROTATION = "screen_rotation"
-        // Experiment: how native video follows a rotated screen. Chosen with the
-        // temporary home-screen button (stored in prefs), or without one by
-        // `adb shell setprop debug.tunio.rotvideo codec|texture|legacy`.
-        private const val ROTATION_VIDEO_PROP = "debug.tunio.rotvideo"
-        private const val EXPERIMENT_PREFS = "tunio_experiments"
-        private const val ROTATION_VIDEO_PREF = "rotvideo"
-        private val ROTATION_VIDEO_MODES = listOf("codec", "texture", "legacy")
-
-        fun rotationVideoMode(context: Context): String {
-            val stored = context.getSharedPreferences(EXPERIMENT_PREFS, Context.MODE_PRIVATE)
-                .getString(ROTATION_VIDEO_PREF, null)
-            if (stored in ROTATION_VIDEO_MODES) return stored!!
-            val prop = try {
-                Class.forName("android.os.SystemProperties")
-                    .getMethod("get", String::class.java, String::class.java)
-                    .invoke(null, ROTATION_VIDEO_PROP, "codec") as String
-            } catch (_: Throwable) {
-                "codec"
-            }
-            return if (prop in ROTATION_VIDEO_MODES) prop else "codec"
-        }
-
-        fun cycleRotationVideoMode(context: Context): String {
-            val current = rotationVideoMode(context)
-            val next = ROTATION_VIDEO_MODES[(ROTATION_VIDEO_MODES.indexOf(current) + 1) % ROTATION_VIDEO_MODES.size]
-            context.getSharedPreferences(EXPERIMENT_PREFS, Context.MODE_PRIVATE)
-                .edit().putString(ROTATION_VIDEO_PREF, next).apply()
-            return next
-        }
         private const val TAG = "VisualizerActivity"
         private const val VIDEO_CACHE_DIR_NAME = "visualizer_video_cache"
         private const val IMAGE_CACHE_DIR_NAME = "visualizer_image_cache"
@@ -233,6 +202,14 @@ class VisualizerActivity : Activity() {
         // A handover whose first frame is never reported stops blocking
         // correction after this.
         private const val SYNC_HANDOVER_GRACE_MS = 1_500L
+        // A clip just started (gapless or handed over) lands a little off the
+        // program: whole-second catalog durations against the file's own end.
+        // That is eased in at ±3% speed; a seek or pause there is what viewers
+        // saw as a freeze on every clip of an appliance.
+        private const val SYNC_START_SETTLE_MS = 3_000L
+        private const val SYNC_START_HARD_DRIFT_MS = 1_500L
+        // The queued next clip is waited for when the current file ends this soon.
+        private const val SYNC_QUEUED_NEXT_WAIT_MS = 1_000L
         private const val SYNC_CLIP_RETRY_MS = 3_000L
         // The program's next clip downloads above the clips' bitrate (720p up
         // to 2.5 Mbit/s) so it keeps ahead of playback; the precache's rate
@@ -467,9 +444,10 @@ class VisualizerActivity : Activity() {
     private lateinit var stageLayout: FrameLayout
     private lateinit var rootLayout: FrameLayout
     private var screenRotation: Int = 0
-    private var rotationVideoMode: String = "codec"
     @Volatile
     private var codecRotation: Int = 0
+    private var uprightVideoWidth = 0
+    private var uprightVideoHeight = 0
     private lateinit var videoLayer: FrameLayout
     private lateinit var videoPlayerView: PlayerView
     private lateinit var dimOverlayView: View
@@ -477,57 +455,6 @@ class VisualizerActivity : Activity() {
     private lateinit var webView: WebView
     private lateinit var marqueeOverlayController: MarqueeOverlayController
 
-    // TEMP: video rotation experiment — on-screen smoothness counters, remove before release.
-    private lateinit var rotationStatsView: TextView
-    private val rotationStatsHandler = Handler(Looper.getMainLooper())
-    private var statsLastAt = 0L
-    private var statsLastRendered = -1
-    private var statsLastDropped = -1
-    private var statsDroppedTotal = 0
-    private var statsUiFrames = 0
-    private var statsUiJank = 0
-    private var statsLastFrameNanos = 0L
-    private val statsFrameCallback = object : Choreographer.FrameCallback {
-        override fun doFrame(frameTimeNanos: Long) {
-            if (statsLastFrameNanos != 0L && frameTimeNanos - statsLastFrameNanos > 50_000_000L) {
-                statsUiJank++
-            }
-            statsLastFrameNanos = frameTimeNanos
-            statsUiFrames++
-            Choreographer.getInstance().postFrameCallback(this)
-        }
-    }
-    private val rotationStatsTick = object : Runnable {
-        override fun run() {
-            updateRotationStats()
-            rotationStatsHandler.postDelayed(this, 2000L)
-        }
-    }
-
-    @androidx.annotation.OptIn(markerClass = [androidx.media3.common.util.UnstableApi::class])
-    private fun updateRotationStats() {
-        val now = SystemClock.elapsedRealtime()
-        val counters = player?.videoDecoderCounters
-        counters?.ensureUpdated()
-        val rendered = counters?.renderedOutputBufferCount ?: 0
-        val dropped = counters?.droppedBufferCount ?: 0
-        val seconds = if (statsLastAt == 0L) 0f else (now - statsLastAt) / 1000f
-        // Counters start over with every new decoder (clip change).
-        val renderedDelta = if (statsLastRendered in 0..rendered) rendered - statsLastRendered else rendered
-        val droppedDelta = if (statsLastDropped in 0..dropped) dropped - statsLastDropped else dropped
-        statsDroppedTotal += droppedDelta
-        val videoFps = if (seconds > 0f) renderedDelta / seconds else 0f
-        val uiFps = if (seconds > 0f) statsUiFrames / seconds else 0f
-        rotationStatsView.text = String.format(
-            java.util.Locale.US,
-            "rotation test: %s  |  video %.1f fps, dropped +%d (total %d)  |  ui %.0f fps, jank %d",
-            rotationVideoMode, videoFps, droppedDelta, statsDroppedTotal, uiFps, statsUiJank,
-        )
-        statsLastAt = now
-        statsLastRendered = rendered
-        statsLastDropped = dropped
-        statsUiFrames = 0
-    }
 
     private var player: ExoPlayer? = null
     private var playlist: List<String> = emptyList()
@@ -543,6 +470,7 @@ class VisualizerActivity : Activity() {
     private var cachedSceneViewportRect: RectF? = null
     private var waitingForFirstFrame = false
     private var firstFrameWaitToken = 0L
+    private var revealRealignToken = -1L
     private var pendingRevealAfterTransform = false
     private var firstFrameWaitStartedAtMs = 0L
     private var pendingClearRunnable: Runnable? = null
@@ -618,8 +546,6 @@ class VisualizerActivity : Activity() {
         super.onCreate(savedInstanceState)
         lowPerformanceMode = intent?.getBooleanExtra(EXTRA_LOW_PERFORMANCE_MODE, false) ?: false
         screenRotation = normalizeRotation(intent?.getIntExtra(EXTRA_ROTATION, 0) ?: 0)
-        rotationVideoMode = rotationVideoMode(this)
-        Log.i(TAG, "rotated video mode=$rotationVideoMode rotation=$screenRotation")
         // Allow inspecting the screen-player WebView from desktop Chrome via
         // chrome://inspect (Elements/Console/Performance/Paint-flashing) — only
         // in debuggable builds, so production/release stays locked down.
@@ -682,12 +608,12 @@ class VisualizerActivity : Activity() {
         placeVideoLayerForRotation()
     }
 
-    // codec mode on a rotated screen: the video layer leaves the rotated root
+    // On a rotated screen the video layer leaves the rotated root
     // for the unrotated stage (a SurfaceView inside a rotated parent is neither
     // placed nor turned), its rect is mapped onto the stage and the decoder
     // turns the picture. The root goes transparent so the stage's video shows
     // through the page.
-    private fun isVideoOnStage(): Boolean = rotationVideoMode == "codec" && screenRotation != 0
+    private fun isVideoOnStage(): Boolean = screenRotation != 0
 
     private fun placeVideoLayerForRotation() {
         codecRotation = if (isVideoOnStage()) screenRotation else 0
@@ -699,6 +625,46 @@ class VisualizerActivity : Activity() {
         rootLayout.setBackgroundColor(if (isVideoOnStage()) Color.TRANSPARENT else Color.BLACK)
         if (videoLayer.visibility == View.VISIBLE) {
             applyStoredPlacement()
+        }
+        layoutRotatedVideo()
+    }
+
+    // The player sizes its surface by the frame it decodes, before the decoder
+    // turns it, so a turned clip came out squeezed. On the stage the surface is
+    // sized here instead: the clip shown whole in the layer as the turned page
+    // sees it, then turned back into stage axes. Whole, not cropped: Amlogic's
+    // video plane ignores a source crop and squeezes a surface larger than the
+    // screen into it (x96 mini, 2026-11-17). The server's other-orientation
+    // version of each clip makes "whole" fill the layer.
+    private fun layoutRotatedVideo() {
+        val layerParams = videoLayer.layoutParams
+        val layerW = layerParams?.width ?: 0
+        val layerH = layerParams?.height ?: 0
+        if (!isVideoOnStage() || uprightVideoWidth <= 0 || uprightVideoHeight <= 0 || layerW <= 0 || layerH <= 0) {
+            if (videoPlayerView.resizeMode != AspectRatioFrameLayout.RESIZE_MODE_ZOOM) {
+                videoPlayerView.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                videoPlayerView.layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                )
+            }
+            return
+        }
+        val sideways = screenRotation == 90 || screenRotation == 270
+        val pageW = if (sideways) layerH else layerW
+        val pageH = if (sideways) layerW else layerH
+        val videoAspect = uprightVideoWidth.toFloat() / uprightVideoHeight
+        val (fitW, fitH) = if (pageW.toFloat() / pageH > videoAspect) {
+            (pageH * videoAspect).roundToInt() to pageH
+        } else {
+            pageW to (pageW / videoAspect).roundToInt()
+        }
+        val stageW = if (sideways) fitH else fitW
+        val stageH = if (sideways) fitW else fitH
+        videoPlayerView.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FILL
+        val current = videoPlayerView.layoutParams as? FrameLayout.LayoutParams
+        if (current?.width != stageW || current.height != stageH || current.gravity != Gravity.CENTER) {
+            videoPlayerView.layoutParams = FrameLayout.LayoutParams(stageW, stageH, Gravity.CENTER)
         }
     }
 
@@ -721,8 +687,6 @@ class VisualizerActivity : Activity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        rotationStatsHandler.removeCallbacksAndMessages(null)
-        Choreographer.getInstance().removeFrameCallback(statsFrameCallback)
         stopPlaybackGuard()
         if (VisualizerController.currentActivity == this) {
             VisualizerController.currentActivity = null
@@ -785,12 +749,14 @@ class VisualizerActivity : Activity() {
             .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)
             .build()
 
-        val playerBuilder = if (rotationVideoMode == "codec") {
-            ExoPlayer.Builder(this, RotatingVideoRenderersFactory(this) { codecRotation })
-        } else {
-            ExoPlayer.Builder(this)
+        val renderersFactory = RotatingVideoRenderersFactory(this, { codecRotation }) { width, height ->
+            runOnUiThread {
+                uprightVideoWidth = width
+                uprightVideoHeight = height
+                layoutRotatedVideo()
+            }
         }
-        player = playerBuilder
+        player = ExoPlayer.Builder(this, renderersFactory)
             .setMediaSourceFactory(mediaSourceFactory)
             .build()
             .apply {
@@ -808,6 +774,7 @@ class VisualizerActivity : Activity() {
             addListener(
                 object : Player.Listener {
                     override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                        adoptQueuedSyncClip(mediaItem?.mediaId)
                         val mediaId = mediaItem?.mediaId
                         if (!mediaId.isNullOrEmpty()) {
                             val transitionedIndex = mediaIdToPlaylistIndex[mediaId]
@@ -885,7 +852,9 @@ class VisualizerActivity : Activity() {
                             if (handoverAwaitingFirstFrame) {
                                 handoverAwaitingFirstFrame = false
                                 val instance = player
-                                if (instance != null && (syncVideoPositionMs != null || instance.currentPosition > REVEAL_REALIGN_THRESHOLD_MS)) {
+                                // In sync the clip is eased onto the program by
+                                // the correction's start window, not seeked here.
+                                if (instance != null && syncVideoPositionMs == null && instance.currentPosition > REVEAL_REALIGN_THRESHOLD_MS) {
                                     Log.d(
                                         TAG,
                                         "handover realign: clip drifted to ${instance.currentPosition}ms before first frame, restarting from 0",
@@ -1286,12 +1255,7 @@ class VisualizerActivity : Activity() {
             visibility = View.GONE
         }
 
-        val playerView = if (rotationVideoMode == "texture") {
-            layoutInflater.inflate(R.layout.visualizer_texture_player, null) as PlayerView
-        } else {
-            PlayerView(this)
-        }
-        videoPlayerView = playerView.apply {
+        videoPlayerView = PlayerView(this).apply {
             useController = false
             resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
             setShutterBackgroundColor(Color.BLACK)
@@ -1335,22 +1299,6 @@ class VisualizerActivity : Activity() {
         rootLayout.addView(videoLayer, FrameLayout.LayoutParams(matchParent))
         rootLayout.addView(webView, FrameLayout.LayoutParams(matchParent))
         rootLayout.addView(marqueeOverlayController.layer, FrameLayout.LayoutParams(matchParent))
-        rotationStatsView = TextView(this).apply {
-            setTextColor(Color.WHITE)
-            setBackgroundColor(Color.argb(170, 0, 0, 0))
-            textSize = 12f
-            setPadding(12, 6, 12, 6)
-        }
-        rootLayout.addView(
-            rotationStatsView,
-            FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.TOP or Gravity.START,
-            ),
-        )
-        Choreographer.getInstance().postFrameCallback(statsFrameCallback)
-        rotationStatsHandler.post(rotationStatsTick)
 
         rootLayout.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
             val newWidth = right - left
@@ -1518,6 +1466,16 @@ class VisualizerActivity : Activity() {
     private var syncSeekMeasured = false
     private var syncSeekLatencyMs = 0L
     private var handoverStartedAtMs = 0L
+    // The program's next clip queued behind the playing one, for ExoPlayer to
+    // start it gaplessly from its first frame when the file ends.
+    private var syncQueuedNextSource: String? = null
+    private var syncQueuedNextMediaId: String? = null
+    private var syncClipStartedAtMs = 0L
+    // The clip the program is on, as the last message said.
+    private var syncProgramSource: String? = null
+    // The clip a gapless start left: the program may still be on it for its
+    // last moments, which is no reason to go back to it.
+    private var syncLeftSource: String? = null
     private var syncCorrectionPosted = false
     private val syncCorrectionRunnable = Runnable {
         syncCorrectionPosted = false
@@ -1583,16 +1541,18 @@ class VisualizerActivity : Activity() {
     // Where a clip that just showed goes: in sync to the group's position
     // (only when out of step and no seek is landing yet: an appliance shows
     // every seek), else its start.
-    private fun realignRevealedClip(instance: ExoPlayer) {
+    private fun realignRevealedClip(instance: ExoPlayer): Boolean {
         if (syncVideoPositionMs == null) {
             instance.seekTo(0)
-            return
+            return true
         }
-        if (syncSeekRequestedAtMs != 0L) return
-        val program = syncProgramPositionMs() ?: return
+        if (syncSeekRequestedAtMs != 0L) return false
+        val program = syncProgramPositionMs() ?: return false
         if (kotlin.math.abs(program - instance.currentPosition) > SYNC_HARD_SEEK_DRIFT_MS) {
             syncSeekTo(instance)
+            return true
         }
+        return false
     }
 
     // After the messages already queued: a burst of them, delivered at once
@@ -1610,13 +1570,25 @@ class VisualizerActivity : Activity() {
         // handed-over clip is corrected like any other.
         if (handoverAwaitingFirstFrame && SystemClock.elapsedRealtime() - handoverStartedAtMs < SYNC_HANDOVER_GRACE_MS) return
         val instance = player ?: return
+        // The program is already on the queued clip, the file before it is
+        // finishing: wait for the gapless start. The message's next clip is
+        // the one after, and its position is the new clip's, not this one's.
+        val queued = syncQueuedNextSource
+        val waitingForQueued = queued != null && queued == syncProgramSource && queued != playlist.firstOrNull()
+        val programOnLeftClip = syncProgramSource != null && syncProgramSource == syncLeftSource && syncProgramSource != playlist.firstOrNull()
+        if (waitingForQueued || programOnLeftClip) {
+            releaseSyncHold()
+            instance.setPlaybackSpeed(1f)
+            return
+        }
         val looping = syncAwaitingSource == null && (syncNextSource == null || syncNextSource == playlist.firstOrNull())
         if (!looping) {
-            // The next clip is another (or the one due is still downloading):
-            // this one plays to its end and holds its last frame (the codec
-            // stays) for the program to switch, instead of rolling into a pass
-            // of it the other screens never show.
-            trimQueueToCurrentItem()
+            // The next clip is another: queued behind this one when it is on
+            // disk, so it starts on time from its first frame. Otherwise (or
+            // while the one due still downloads) this one plays to its end and
+            // holds its last frame for the program to switch, instead of
+            // rolling into a pass of it the other screens never show.
+            queueSyncNextOrTrim(instance)
         }
         if (syncAwaitingSource != null) {
             releaseSyncHold()
@@ -1636,6 +1608,8 @@ class VisualizerActivity : Activity() {
         // Ended a little early: the frame holds. Back inside the clip (the
         // clock was recalibrated, the same clip came again): seek, from ENDED too.
         if (state == Player.STATE_ENDED && !looping && program >= clipEnd - SYNC_HARD_SEEK_DRIFT_MS) return
+        val settling = SystemClock.elapsedRealtime() - syncClipStartedAtMs < SYNC_START_SETTLE_MS
+        val hardDriftMs = if (settling) SYNC_START_HARD_DRIFT_MS else SYNC_HARD_SEEK_DRIFT_MS
         var drift = program - instance.currentPosition
         // A loop's next pass starts when the file ends, the program's when its
         // catalog duration does: positions compare within the loop.
@@ -1655,7 +1629,7 @@ class VisualizerActivity : Activity() {
         val ahead = -drift
         val absDrift = kotlin.math.abs(drift)
         when {
-            ahead > SYNC_HARD_SEEK_DRIFT_MS && ahead <= SYNC_HOLD_MAX_MS && state == Player.STATE_READY -> {
+            ahead > hardDriftMs && ahead <= SYNC_HOLD_MAX_MS && state == Player.STATE_READY -> {
                 syncSoftCorrecting = false
                 instance.setPlaybackSpeed(1f)
                 instance.pause()
@@ -1665,7 +1639,7 @@ class VisualizerActivity : Activity() {
                 playbackGuardHandler.postDelayed(syncHoldReleaseRunnable, ahead)
                 return
             }
-            absDrift > SYNC_HARD_SEEK_DRIFT_MS -> {
+            absDrift > hardDriftMs -> {
                 syncSoftCorrecting = false
                 syncSeekTo(instance)
                 instance.setPlaybackSpeed(1f)
@@ -1676,6 +1650,71 @@ class VisualizerActivity : Activity() {
             }
         }
         if (state != Player.STATE_ENDED) instance.play()
+    }
+
+    private fun queueSyncNextOrTrim(instance: ExoPlayer) {
+        val next = syncNextSource
+        if (next == null || syncAwaitingSource != null || next == playlist.firstOrNull() || !isSyncSourceCached(next)) {
+            syncQueuedNextSource = null
+            syncQueuedNextMediaId = null
+            trimQueueToCurrentItem()
+            return
+        }
+        // A file shorter than its slot loops: the next clip is queued only for
+        // the pass that ends when the program moves on.
+        val program = syncProgramPositionMs()
+        val fileDuration = instance.duration
+        if (program != null && fileDuration != C.TIME_UNSET && fileDuration > 0L) {
+            val programLeft = syncVideoDurationMs - program
+            val fileLeft = fileDuration - instance.currentPosition
+            if (programLeft > fileLeft + SYNC_QUEUED_NEXT_WAIT_MS) {
+                if (syncQueuedNextSource != null) {
+                    syncQueuedNextSource = null
+                    syncQueuedNextMediaId = null
+                    trimQueueToCurrentItem()
+                }
+                ensureQueueDepth()
+                return
+            }
+        }
+        val followIndex = instance.currentMediaItemIndex + 1
+        val queuedId = syncQueuedNextMediaId
+        if (
+            syncQueuedNextSource == next &&
+            queuedId != null &&
+            instance.mediaItemCount == followIndex + 1 &&
+            instance.getMediaItemAt(followIndex).mediaId == queuedId
+        ) {
+            return
+        }
+        trimQueueToCurrentItem()
+        val mediaId = "sync-next-${mediaIdSerial++}"
+        instance.addMediaItem(MediaItem.Builder().setUri(Uri.parse(next)).setMediaId(mediaId).build())
+        syncQueuedNextSource = next
+        syncQueuedNextMediaId = mediaId
+        Log.d(TAG, "sync: next clip queued for a gapless start: $next")
+    }
+
+    // ExoPlayer moved on to the queued next clip by itself: that clip is the
+    // playlist now, as if the program had handed it over, without a restart.
+    private fun adoptQueuedSyncClip(mediaId: String?): Boolean {
+        val source = syncQueuedNextSource ?: return false
+        if (mediaId == null || mediaId != syncQueuedNextMediaId) return false
+        syncQueuedNextSource = null
+        syncQueuedNextMediaId = null
+        syncLeftSource = playlist.firstOrNull()
+        playlist = listOf(source)
+        currentPlaylistKey = "${PlaybackMode.ORDERED.name}\u0000$source"
+        currentPlaybackMode = PlaybackMode.ORDERED
+        currentIndex = 0
+        mediaIdToPlaylistIndex[mediaId] = 0
+        playQueue.clear()
+        resetSyncSeek()
+        syncClipStartedAtMs = SystemClock.elapsedRealtime()
+        scenePlaybackStartedAtMs = SystemClock.elapsedRealtime()
+        Log.d(TAG, "sync: queued clip started gaplessly: $source")
+        notifyNativeVideoReady(currentOwnerId)
+        return true
     }
 
     private fun applyPlacementIfMoved(rect: JSONObject?) {
@@ -1704,7 +1743,22 @@ class VisualizerActivity : Activity() {
         syncVideoReceivedAtMs = SystemClock.elapsedRealtime()
         syncVideoDurationMs = duration
         syncNextSource = json.optString("nextSource").ifBlank { null }
+        syncProgramSource = source
         cancelPendingClear()
+        val instanceNow = player
+        val queuedEndsSoon = instanceNow != null &&
+            source == syncQueuedNextSource &&
+            currentOwnerId == ownerId &&
+            instanceNow.duration != C.TIME_UNSET &&
+            instanceNow.duration - instanceNow.currentPosition <= SYNC_QUEUED_NEXT_WAIT_MS
+        val programLeftMs = duration - (syncVideoPositionMs ?: 0L)
+        val stillOnLeftClip = source == syncLeftSource &&
+            currentOwnerId == ownerId &&
+            programLeftMs <= SYNC_QUEUED_NEXT_WAIT_MS
+        if (queuedEndsSoon || stillOnLeftClip) {
+            scheduleSyncCorrection()
+            return
+        }
         if (currentOwnerId != ownerId || playlist != listOf(source)) {
             // Shown, not merely laid out: a clip still waiting for its first
             // frame is one the program has already left.
@@ -2703,6 +2757,10 @@ class VisualizerActivity : Activity() {
         instance.play()
         handoverAwaitingFirstFrame = true
         handoverStartedAtMs = SystemClock.elapsedRealtime()
+        syncClipStartedAtMs = handoverStartedAtMs
+        syncLeftSource = null
+        syncQueuedNextSource = null
+        syncQueuedNextMediaId = null
         scenePlaybackStartedAtMs = SystemClock.elapsedRealtime()
         markPlaybackProgressIfAdvanced(forceRefresh = true)
     }
@@ -2710,6 +2768,8 @@ class VisualizerActivity : Activity() {
     private fun clearNativeVideo() {
         syncVideoPositionMs = null
         syncNextSource = null
+        syncQueuedNextSource = null
+        syncQueuedNextMediaId = null
         syncAwaitingSource = null
         syncCachedSources.clear()
         resetSyncSeek()
@@ -3065,18 +3125,30 @@ class VisualizerActivity : Activity() {
         }
         // The playback clock ticks even while the decoder renders late (video-
         // only streams use the standalone clock), so on slow SoCs the clip can
-        // be seconds in by the time its first frame appears. Snap back to zero
-        // AT the reveal — never wait for another rendered frame, the same slow
-        // decoder would just drift the clock again. Viewers always see the
-        // clip from the start; the scene-end window absorbs the extra tail.
+        // be seconds in by the time its first frame appears. It is snapped
+        // back while still hidden and shown on the frame after that seek: a
+        // seek after the reveal froze the first frame for a second or two on
+        // Amlogic boxes. Only once per wait — a decoder that drifts again is
+        // shown as it is.
         val instance = player
-        if (instance != null && (syncVideoPositionMs != null || instance.currentPosition > REVEAL_REALIGN_THRESHOLD_MS)) {
-            Log.d(TAG, "reveal realign: clip drifted to ${instance.currentPosition}ms while hidden, restarting from 0")
-            realignRevealedClip(instance)
+        if (
+            instance != null &&
+            revealRealignToken != firstFrameWaitToken &&
+            (syncVideoPositionMs != null || instance.currentPosition > REVEAL_REALIGN_THRESHOLD_MS)
+        ) {
+            revealRealignToken = firstFrameWaitToken
+            val drifted = instance.currentPosition
+            if (realignRevealedClip(instance)) {
+                Log.d(TAG, "reveal realign: clip drifted to ${drifted}ms while hidden, realigned before showing")
+                pendingRevealAfterTransform = false
+                scheduleFirstFrameReadyFallback()
+                return
+            }
         }
         waitingForFirstFrame = false
         pendingRevealAfterTransform = false
         suppressWaitingBlackout = false
+        syncClipStartedAtMs = SystemClock.elapsedRealtime()
         transitionOverlayView.animate().cancel()
         transitionOverlayView.alpha = 0f
         videoPlayerView.alpha = 1f
@@ -3450,6 +3522,7 @@ class VisualizerActivity : Activity() {
 
         videoLayer.layoutParams = params
         videoLayer.visibility = View.VISIBLE
+        layoutRotatedVideo()
         if (applyVideoCenterCropTransform()) {
             maybeRevealVideoAfterFirstFrame()
         }
