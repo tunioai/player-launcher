@@ -100,6 +100,10 @@ final class EnhancedAudioService implements IAudioService {
   static const Duration _loadingTimeout = Duration(seconds: 10);
   static const Duration _hangDetectionInterval = Duration(seconds: 2);
   static const Duration _maxHangTime = Duration(seconds: 20);
+  // When the player went into buffering; a hang is measured from here, not
+  // from the stream's start (which made any short buffering past the first
+  // 20 s an instant "hang" and an audible restart).
+  DateTime? _bufferingSince;
   static const Duration _bufferStallThreshold = Duration(seconds: 20);
   // How long playback position may stay frozen (while playing=true) before we
   // treat it as a stalled stream and trigger recovery.
@@ -583,12 +587,14 @@ final class EnhancedAudioService implements IAudioService {
     }
 
     if (processingState == ProcessingState.buffering) {
+      final since = _bufferingSince ??= DateTime.now();
       return AudioStateBuffering(
         config: _currentConfig!,
         bufferSize: _currentBufferSize,
-        elapsed: _getElapsedTime(),
+        elapsed: DateTime.now().difference(since),
       );
     }
+    _bufferingSince = null;
 
     if (processingState == ProcessingState.completed) {
       return const AudioStateIdle();
@@ -950,10 +956,12 @@ final class EnhancedAudioService implements IAudioService {
         _handlePlayerError(
             TimeoutException('Loading hang detected', _maxHangTime));
       }
-    } else if (_currentState case AudioStateBuffering buffering) {
-      if (buffering.elapsed > _maxHangTime && !_audioPlayer.playing) {
-        Logger.error(
-            'Detected buffering hang: ${buffering.elapsed.inSeconds}s');
+    } else if (_currentState is AudioStateBuffering) {
+      final since = _bufferingSince;
+      final bufferingFor =
+          since == null ? Duration.zero : now.difference(since);
+      if (bufferingFor > _maxHangTime && !_audioPlayer.playing) {
+        Logger.error('Detected buffering hang: ${bufferingFor.inSeconds}s');
         _handlePlayerError(
             TimeoutException('Buffering hang detected', _maxHangTime));
       }
