@@ -68,6 +68,7 @@ jobs:
     # build_rustore.sh). Without the secrets the bundle is skipped, not signed
     # with the Play key: RuStore would refuse an update signed differently.
     - name: Build Android App Bundle (RuStore)
+      continue-on-error: true
       env:
         RUSTORE_KEYSTORE: ${{ secrets.RUSTORE_KEYSTORE }}
         RUSTORE_KEYSTORE_PASSWORD: ${{ secrets.RUSTORE_KEYSTORE_PASSWORD }}
