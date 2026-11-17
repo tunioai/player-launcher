@@ -35,6 +35,30 @@ void main() {
     expect(storage.screenRotation(), 0);
   });
 
+  test('a turn from one link is undone by an upright link after a restart',
+      () async {
+    ScreenRotation.forgetLink();
+    await ScreenRotation.applyLinked(90);
+    expect(ScreenRotation.degrees.value, 90);
+
+    // Restarted (nothing linked yet this run), now on a landscape point.
+    ScreenRotation.forgetLink();
+    await ScreenRotation.restore();
+    expect(ScreenRotation.degrees.value, 90);
+    await ScreenRotation.applyLinked(0);
+    expect(ScreenRotation.degrees.value, 0);
+  });
+
+  test('a hand turn survives an upright link after a restart too', () async {
+    ScreenRotation.forgetLink();
+    await ScreenRotation.applyLinked(0);
+    await ScreenRotation.rotateClockwise();
+    ScreenRotation.forgetLink();
+    await ScreenRotation.restore();
+    await ScreenRotation.applyLinked(0);
+    expect(ScreenRotation.degrees.value, 90);
+  });
+
   for (final degrees in ScreenRotation.supported) {
     testWidgets('down on the remote moves down the picture at $degrees°',
         (tester) async {

@@ -17,6 +17,7 @@ class StorageService {
   static const String _isAutoStartEnabledKey = 'auto_start_enabled';
   static const String _isDarkModeEnabledKey = 'dark_mode_enabled';
   static const String _screenRotationKey = 'screen_rotation';
+  static const String _screenRotationFromLinkKey = 'screen_rotation_from_link';
   static const String _streamTypeKey = 'stream_type';
   static const String _failoverEventsKey = 'failover_events';
   static const String _failoverTrackLastPlayedKey =
@@ -200,6 +201,16 @@ class StorageService {
 
   int screenRotation() {
     return _prefs!.getInt(_screenRotationKey) ?? 0;
+  }
+
+  Future<void> setScreenRotationFromLink(bool fromLink) async {
+    await _prefs!.setBool(_screenRotationFromLinkKey, fromLink);
+  }
+
+  /// Whether the remembered rotation came from a Tunio Link (not the
+  /// installer's own turn before the PIN).
+  bool screenRotationFromLink() {
+    return _prefs!.getBool(_screenRotationFromLinkKey) ?? false;
   }
 
   Future<void> setStreamType(String type) async {
