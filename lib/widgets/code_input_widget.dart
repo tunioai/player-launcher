@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../main.dart' show TunioColors;
 import 'package:flutter/foundation.dart';
+import 'pin_pad.dart';
 
 class CodeInputWidget extends StatefulWidget {
   final String value;
@@ -32,6 +33,7 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
   late TextEditingController _textController;
   String _lastSubmittedValue = '';
   bool _suppressTextCallbacks = false;
+  bool _pinPadOpen = false;
 
   // Detect if we're on mobile platform
   bool get _isMobile =>
@@ -99,10 +101,31 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
         extentOffset: _textController.text.length,
       );
     }
-    final navigationMode = MediaQuery.maybeOf(context)?.navigationMode;
-    if (navigationMode == NavigationMode.directional) {
-      SystemChannels.textInput.invokeMethod('TextInput.show');
+    if (_textController.text.isEmpty) _openPinPad();
+  }
+
+  Future<void> _openPinPad() async {
+    if (_pinPadOpen || !widget.enabled) return;
+    _pinPadOpen = true;
+    final code = await PinPad.show(context, length: _codeLength);
+    _pinPadOpen = false;
+    if (!mounted || code == null) return;
+    _lastSubmittedValue = '';
+    _textController.text = code;
+    _onTextChanged(code);
+  }
+
+  KeyEventResult _onFieldKey(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.select ||
+        key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter ||
+        key == LogicalKeyboardKey.gameButtonA) {
+      _openPinPad();
+      return KeyEventResult.handled;
     }
+    return KeyEventResult.ignored;
   }
 
   @override
@@ -165,80 +188,84 @@ class _CodeInputWidgetState extends State<CodeInputWidget> {
             ),
           ),
           const SizedBox(height: 16),
-          TextField(
-            controller: _textController,
-            focusNode: _focusNode,
-            enabled: widget.enabled,
-            keyboardType: TextInputType.number,
-            inputFormatters: [
-              FilteringTextInputFormatter.digitsOnly,
-              LengthLimitingTextInputFormatter(_codeLength),
-            ],
-            onChanged: _onTextChanged,
-            onTap: widget.onTap,
-            onSubmitted: (_) {
-              if (!widget.enabled) return;
-              final cleanText =
-                  _textController.text.replaceAll(RegExp(r'\D'), '');
-              if (cleanText.length == _codeLength) {
-                widget.onSubmitted?.call();
-              }
-            },
-            decoration: InputDecoration(
-              labelText: 'PIN Code',
-              helperText: 'Enter your 6-digit PIN code',
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide(
-                  color: _focusNode.hasFocus
-                      ? TunioColors.primary
-                      : Colors.grey[300]!,
-                  width: _focusNode.hasFocus ? 3 : 2,
+          Focus(
+            canRequestFocus: false,
+            skipTraversal: true,
+            onKeyEvent: _onFieldKey,
+            child: TextField(
+              controller: _textController,
+              focusNode: _focusNode,
+              enabled: widget.enabled,
+              keyboardType: TextInputType.none,
+              inputFormatters: [
+                FilteringTextInputFormatter.digitsOnly,
+                LengthLimitingTextInputFormatter(_codeLength),
+              ],
+              onChanged: _onTextChanged,
+              onTap: () {
+                widget.onTap?.call();
+                _openPinPad();
+              },
+              onSubmitted: (_) {
+                if (!widget.enabled) return;
+                final cleanText =
+                    _textController.text.replaceAll(RegExp(r'\D'), '');
+                if (cleanText.length == _codeLength) {
+                  widget.onSubmitted?.call();
+                }
+              },
+              decoration: InputDecoration(
+                labelText: 'PIN Code',
+                helperText: 'Enter your 6-digit PIN code',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(
+                    color: _focusNode.hasFocus
+                        ? TunioColors.primary
+                        : Colors.grey[300]!,
+                    width: _focusNode.hasFocus ? 3 : 2,
+                  ),
                 ),
-              ),
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: const BorderSide(
-                  color: TunioColors.primary,
-                  width: 3,
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(
+                    color: TunioColors.primary,
+                    width: 3,
+                  ),
                 ),
+                counterText: '${_digits.join('').length}/$_codeLength',
+                prefixIcon: const Icon(Icons.lock_outline),
+                suffixIcon: _digits.join('').isNotEmpty
+                    ? IconButton(
+                        icon: const Icon(Icons.clear),
+                        onPressed: () {
+                          _textController.clear();
+                          _onTextChanged('');
+                        },
+                      )
+                    : null,
               ),
-              counterText: '${_digits.join('').length}/$_codeLength',
-              prefixIcon: const Icon(Icons.lock_outline),
-              suffixIcon: _digits.join('').isNotEmpty
-                  ? IconButton(
-                      icon: const Icon(Icons.clear),
-                      onPressed: () {
-                        _textController.clear();
-                        _onTextChanged('');
-                      },
-                    )
-                  : null,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: isMobile ? 18 : 20,
+                fontWeight: FontWeight.bold,
+                letterSpacing: isMobile ? 4 : 6,
+                color: isDark ? Colors.white : Colors.black,
+              ),
+              maxLength: _codeLength,
+              textInputAction: TextInputAction.done,
+              autofocus: isDirectionalNav || !isMobile,
+              autocorrect: false,
+              enableSuggestions: false,
             ),
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: isMobile ? 18 : 20,
-              fontWeight: FontWeight.bold,
-              letterSpacing: isMobile ? 4 : 6,
-              color: isDark ? Colors.white : Colors.black,
-            ),
-            maxLength: _codeLength,
-            textInputAction: TextInputAction.done,
-            autofocus: isDirectionalNav || !isMobile,
-            autocorrect: false,
-            enableSuggestions: false,
           ),
           const SizedBox(height: 8),
           Text(
-            _focusNode.hasFocus
-                ? (isDirectionalNav
-                    ? 'Use on-screen keyboard or number keys'
-                    : (isMobile
-                        ? 'Use on-screen keyboard to enter digits'
-                        : 'Use number keys on remote control or keyboard'))
+            isDirectionalNav
+                ? 'Press OK for the keypad, or type with number keys'
                 : (isMobile
                     ? 'Tap to enter code'
-                    : 'Click to focus and enter digits'),
+                    : 'Click for the keypad, or type digits'),
             style: TextStyle(
               fontSize: 12,
               color: _focusNode.hasFocus
