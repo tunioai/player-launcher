@@ -63,13 +63,38 @@ jobs:
       
     - name: Build Android APK (Standalone)
       run: flutter build apk --release --flavor standalone --dart-define=APP_FLAVOR=standalone
-      
+
+    # RuStore takes its own upload key (rustore* entries of key.properties, see
+    # build_rustore.sh). Without the secrets the bundle is skipped, not signed
+    # with the Play key: RuStore would refuse an update signed differently.
+    - name: Build Android App Bundle (RuStore)
+      env:
+        RUSTORE_KEYSTORE: ${{ secrets.RUSTORE_KEYSTORE }}
+        RUSTORE_KEYSTORE_PASSWORD: ${{ secrets.RUSTORE_KEYSTORE_PASSWORD }}
+        RUSTORE_KEY_PASSWORD: ${{ secrets.RUSTORE_KEY_PASSWORD }}
+        RUSTORE_KEY_ALIAS: ${{ secrets.RUSTORE_KEY_ALIAS }}
+      run: |
+        if [ -z "$RUSTORE_KEYSTORE" ]; then
+          echo "::warning::RUSTORE_KEYSTORE is not set; the RuStore bundle is not built."
+          exit 0
+        fi
+        echo "$RUSTORE_KEYSTORE" | base64 -d > android/rustore-keystore.jks
+        {
+          echo "rustoreStorePassword=$RUSTORE_KEYSTORE_PASSWORD"
+          echo "rustoreKeyPassword=$RUSTORE_KEY_PASSWORD"
+          echo "rustoreKeyAlias=$RUSTORE_KEY_ALIAS"
+          echo "rustoreStoreFile=../rustore-keystore.jks"
+        } >> android/key.properties
+        flutter build appbundle --release --flavor rustore --dart-define=APP_FLAVOR=rustore
+
     - name: Upload Android artifacts
       uses: actions/upload-artifact@v4
       with:
         name: android-builds
+        if-no-files-found: warn
         path: |
           build/app/outputs/bundle/playRelease/app-play-release.aab
+          build/app/outputs/bundle/rustoreRelease/app-rustore-release.aab
           build/app/outputs/flutter-apk/app-standalone-release.apk
 
     # The standalone flavour updates itself from the CDN, and until now the
@@ -333,6 +358,7 @@ jobs:
           
           ### Download files:
           - **app-play-release.aab** - Android App Bundle for Google Play upload
+          - **app-rustore-release.aab** - Android App Bundle for RuStore upload (when the RuStore key is configured)
           - **app-standalone-release.apk** - Standalone APK with in-app self-update
           - **tunio-spot-macos.tar.gz** - macOS application
           - **tunio-spot-windows-x64.zip** - Windows application (64-bit)
@@ -341,6 +367,7 @@ jobs:
           
           #### Android:
           - For Google Play publishing: use `app-play-release.aab`
+          - For RuStore publishing: use `app-rustore-release.aab`
           - For direct install/update outside Play: use `app-standalone-release.apk`
           
           #### macOS:
@@ -353,8 +380,10 @@ jobs:
           ---
           
           Project automatically built via GitHub Actions
+        fail_on_unmatched_files: false
         files: |
           ./android-builds/bundle/playRelease/app-play-release.aab
+          ./android-builds/bundle/rustoreRelease/app-rustore-release.aab
           ./android-builds/flutter-apk/app-standalone-release.apk
           ./macos-builds/tunio-spot-macos.tar.gz
           ./windows-x64-builds/tunio-spot-windows-x64.zip
